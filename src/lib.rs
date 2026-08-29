@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+mod input;
 mod pty;
 mod size;
 mod terminal;
@@ -13,6 +14,7 @@ mod terminal_buffer;
 mod terminal_emu;
 mod terminal_types;
 
+pub use input::{KeyCode, KeyEvent, Modifiers, MouseButton, encode_key, encode_paste};
 pub use pty::PtyProcess;
 pub use size::Size;
 pub use terminal::{

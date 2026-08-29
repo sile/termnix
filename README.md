@@ -27,3 +27,11 @@ Supported in the modes milestone:
 Explicitly out of scope: Sixel, Kitty graphics, iTerm2 images, and DCS payloads
 (ignored without becoming visible text).
 
+## Input encoding
+
+`encode_key` and `encode_paste` turn logical input into PTY bytes. Modes come
+from an explicit `TerminalModes` argument (for example from the destination
+pane); host focus is never implied. Plain text and raw bytes are written by the
+caller. Mouse report bytes are not encoded yet—only `MouseButton` is defined for
+later pane routing (coordinates reuse `Position`).
+
