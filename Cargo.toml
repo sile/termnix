@@ -2,6 +2,8 @@
 name = "muxnix"
 version = "0.0.1"
 edition = "2024"
+rust-version = "1.93"
 publish = false
 
 [dependencies]
+libc = "0.2"
