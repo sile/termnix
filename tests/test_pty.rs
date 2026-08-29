@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn spawn_shell(script: &str, size: muxnix::PtySize) -> muxnix::PtyProcess {
+fn spawn_shell(script: &str, size: muxnix::Size) -> muxnix::PtyProcess {
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(script);
     muxnix::PtyProcess::spawn(&mut command, size).expect("spawn pty child")
@@ -41,7 +41,7 @@ where
 
 #[test]
 fn master_reads_child_output() {
-    let mut pty = spawn_shell("printf 'hello-pty'", muxnix::PtySize { rows: 24, cols: 80 });
+    let mut pty = spawn_shell("printf 'hello-pty'", muxnix::Size { rows: 24, cols: 80 });
     let output = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(9).any(|w| w == b"hello-pty")
     });
@@ -58,7 +58,7 @@ fn master_reads_child_output() {
 fn child_reads_master_input() {
     let mut pty = spawn_shell(
         "stty -echo 2>/dev/null; IFS= read -r line; printf 'GOT:%s' \"$line\"",
-        muxnix::PtySize { rows: 24, cols: 80 },
+        muxnix::Size { rows: 24, cols: 80 },
     );
     pty.write_all(b"ping-input\n").expect("write");
     pty.flush().expect("flush");
@@ -79,7 +79,7 @@ fn child_reads_master_input() {
 fn stdio_are_connected_to_controlling_terminal() {
     let mut pty = spawn_shell(
         "test -t 0 && test -t 1 && test -t 2 && printf 'tty-ok'",
-        muxnix::PtySize { rows: 24, cols: 80 },
+        muxnix::Size { rows: 24, cols: 80 },
     );
     let output = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(6).any(|w| w == b"tty-ok")
@@ -95,7 +95,7 @@ fn stdio_are_connected_to_controlling_terminal() {
 
 #[test]
 fn resize_is_visible_to_child() {
-    let size = muxnix::PtySize { rows: 37, cols: 91 };
+    let size = muxnix::Size { rows: 37, cols: 91 };
     let mut pty = spawn_shell("stty size", size);
     let output = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         String::from_utf8_lossy(buf).contains("37 91")
@@ -111,14 +111,14 @@ fn resize_is_visible_to_child() {
 
 #[test]
 fn exit_status_is_reaped() {
-    let mut pty = spawn_shell("exit 42", muxnix::PtySize { rows: 24, cols: 80 });
+    let mut pty = spawn_shell("exit 42", muxnix::Size { rows: 24, cols: 80 });
     let status = pty.wait().expect("wait");
     assert_eq!(status.code(), Some(42));
 }
 
 #[test]
 fn nonblocking_read_returns_would_block() {
-    let mut pty = spawn_shell("sleep 2", muxnix::PtySize { rows: 24, cols: 80 });
+    let mut pty = spawn_shell("sleep 2", muxnix::Size { rows: 24, cols: 80 });
     pty.set_nonblocking(true).expect("set nonblocking");
 
     let mut buf = [0u8; 16];
@@ -145,7 +145,7 @@ fn spawn_failure_does_not_leave_usable_process() {
     let before = count_open_fds();
     for _ in 0..64 {
         let mut command = Command::new("/path/that/does/not/exist/muxnix-pty");
-        let err = muxnix::PtyProcess::spawn(&mut command, muxnix::PtySize { rows: 24, cols: 80 })
+        let err = muxnix::PtyProcess::spawn(&mut command, muxnix::Size { rows: 24, cols: 80 })
             .expect_err("spawn should fail");
         assert_eq!(err.kind(), ErrorKind::NotFound);
     }
@@ -158,7 +158,7 @@ fn spawn_failure_does_not_leave_usable_process() {
 
 #[test]
 fn as_raw_fd_matches_master() {
-    let pty = spawn_shell("printf x", muxnix::PtySize { rows: 24, cols: 80 });
+    let pty = spawn_shell("printf x", muxnix::Size { rows: 24, cols: 80 });
     assert!(pty.as_raw_fd() >= 0);
     let _ = pty.close();
 }

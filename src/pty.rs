@@ -15,14 +15,7 @@ use std::{
     process::{Child, Command, ExitStatus},
 };
 
-/// Terminal size expressed in character cells.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PtySize {
-    /// Number of rows.
-    pub rows: u16,
-    /// Number of columns.
-    pub cols: u16,
-}
+use crate::size::Size;
 
 /// A child process attached to a PTY.
 ///
@@ -51,7 +44,7 @@ impl PtyProcess {
     ///
     /// On failure, opened PTY file descriptors are closed before the error is
     /// returned.
-    pub fn spawn(command: &mut Command, size: PtySize) -> io::Result<Self> {
+    pub fn spawn(command: &mut Command, size: Size) -> io::Result<Self> {
         let (master, slave) = open_pty_pair()?;
         set_cloexec(master.as_raw_fd())?;
         set_cloexec(slave.as_raw_fd())?;
@@ -85,7 +78,7 @@ impl PtyProcess {
     }
 
     /// Resizes the PTY and notifies the child via `TIOCSWINSZ`.
-    pub fn resize(&self, size: PtySize) -> io::Result<()> {
+    pub fn resize(&self, size: Size) -> io::Result<()> {
         set_winsize(self.master.as_raw_fd(), size)
     }
 
@@ -197,7 +190,7 @@ fn setup_child_session(master_fd: RawFd, slave_fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-fn set_winsize(fd: RawFd, size: PtySize) -> io::Result<()> {
+fn set_winsize(fd: RawFd, size: Size) -> io::Result<()> {
     let winsize = libc::winsize {
         ws_row: size.rows,
         ws_col: size.cols,
@@ -265,7 +258,7 @@ mod tests {
     #[test]
     fn set_winsize_round_trips_on_master() {
         let (master, _slave) = open_pty_pair().expect("open pty");
-        let size = PtySize { rows: 31, cols: 97 };
+        let size = Size { rows: 31, cols: 97 };
         set_winsize(master.as_raw_fd(), size).expect("set winsize");
 
         let mut winsize = MaybeUninit::<libc::winsize>::uninit();

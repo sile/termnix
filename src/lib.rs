@@ -7,5 +7,9 @@
 #![warn(missing_docs)]
 
 mod pty;
+mod size;
+mod terminal;
 
-pub use pty::{PtyProcess, PtySize};
+pub use pty::PtyProcess;
+pub use size::Size;
+pub use terminal::{Cell, Position, Terminal};

@@ -7,3 +7,10 @@ publish = false
 
 [dependencies]
 libc = "0.2"
+# std has no East Asian Width tables. Column width is required for wrap and
+# scroll. Only used inside the terminal emulator; unicode-width types are not
+# part of the public API.
+unicode-width = "0.2"
+
+[dev-dependencies]
+noprop = "0.2"
