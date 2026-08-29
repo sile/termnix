@@ -35,40 +35,6 @@ pub struct WindowId(u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PaneId(u64);
 
-/// Error returned when a multiplexer model operation fails.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MultiplexerError {
-    /// No window exists with this identifier.
-    UnknownWindow(WindowId),
-    /// No pane exists with this identifier.
-    UnknownPane(PaneId),
-    /// The pane exists but does not belong to the given window.
-    PaneNotInWindow {
-        /// Pane that was looked up.
-        pane: PaneId,
-        /// Window that was expected to own it.
-        window: WindowId,
-    },
-}
-
-impl std::fmt::Display for MultiplexerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            MultiplexerError::UnknownWindow(id) => {
-                write!(f, "unknown window id {id:?}")
-            }
-            MultiplexerError::UnknownPane(id) => {
-                write!(f, "unknown pane id {id:?}")
-            }
-            MultiplexerError::PaneNotInWindow { pane, window } => {
-                write!(f, "pane {pane:?} is not in window {window:?}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for MultiplexerError {}
-
 /// Lifecycle changes produced by model mutations and child-process reaping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LifecycleEvent {
@@ -249,35 +215,28 @@ impl Multiplexer {
     }
 
     /// Returns a shared reference to a window.
-    pub fn window(&self, id: WindowId) -> Result<&Window, MultiplexerError> {
-        self.windows
-            .get(&id)
-            .ok_or(MultiplexerError::UnknownWindow(id))
+    pub fn window(&self, id: WindowId) -> Option<&Window> {
+        self.windows.get(&id)
     }
 
     /// Returns a shared reference to a pane.
-    pub fn pane(&self, id: PaneId) -> Result<&Pane, MultiplexerError> {
-        self.panes.get(&id).ok_or(MultiplexerError::UnknownPane(id))
+    pub fn pane(&self, id: PaneId) -> Option<&Pane> {
+        self.panes.get(&id)
     }
 
     /// Returns a mutable reference to a pane.
-    pub fn pane_mut(&mut self, id: PaneId) -> Result<&mut Pane, MultiplexerError> {
-        self.panes
-            .get_mut(&id)
-            .ok_or(MultiplexerError::UnknownPane(id))
+    pub fn pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
+        self.panes.get_mut(&id)
     }
 
     /// Returns the window that owns `pane`.
-    pub fn window_of_pane(&self, pane: PaneId) -> Result<WindowId, MultiplexerError> {
-        self.pane_window
-            .get(&pane)
-            .copied()
-            .ok_or(MultiplexerError::UnknownPane(pane))
+    pub fn window_of_pane(&self, pane: PaneId) -> Option<WindowId> {
+        self.pane_window.get(&pane).copied()
     }
 
     /// Returns the focus pane of `window`.
-    pub fn focus_pane(&self, window: WindowId) -> Result<PaneId, MultiplexerError> {
-        Ok(self.window(window)?.focus)
+    pub fn focus_pane(&self, window: WindowId) -> Option<PaneId> {
+        self.window(window).map(|w| w.focus)
     }
 
     /// Creates a window containing one pane that runs `command`.
@@ -316,19 +275,18 @@ impl Multiplexer {
     /// Creates a pane in `window` that runs `command`.
     ///
     /// The new pane becomes the window's focus. The active window is unchanged.
+    /// Returns [`None`] if `window` does not exist.
     pub fn create_pane(
         &mut self,
         window: WindowId,
         command: &mut Command,
         size: Size,
-    ) -> Result<PaneId, CreateError> {
+    ) -> io::Result<Option<PaneId>> {
         if !self.windows.contains_key(&window) {
-            return Err(CreateError::Model(MultiplexerError::UnknownWindow(window)));
+            return Ok(None);
         }
         let pane_id = self.alloc_pane_id();
-        let pane = self
-            .spawn_pane(pane_id, command, size)
-            .map_err(CreateError::Io)?;
+        let pane = self.spawn_pane(pane_id, command, size)?;
 
         let win = self.windows.get_mut(&window).expect("window checked above");
         win.pane_ids.push(pane_id);
@@ -344,40 +302,38 @@ impl Multiplexer {
             window,
             pane: pane_id,
         });
-        Ok(pane_id)
+        Ok(Some(pane_id))
     }
 
     /// Makes `window` the active window.
-    pub fn select_window(&mut self, window: WindowId) -> Result<(), MultiplexerError> {
+    ///
+    /// Returns `false` if `window` does not exist.
+    pub fn select_window(&mut self, window: WindowId) -> bool {
         if !self.windows.contains_key(&window) {
-            return Err(MultiplexerError::UnknownWindow(window));
+            return false;
         }
         self.set_active(Some(window));
-        Ok(())
+        true
     }
 
     /// Sets the focus pane of `window` to `pane`.
-    pub fn set_focus(&mut self, window: WindowId, pane: PaneId) -> Result<(), MultiplexerError> {
-        let owner = self.window_of_pane(pane)?;
-        if owner != window {
-            return Err(MultiplexerError::PaneNotInWindow { pane, window });
-        }
-        let changed = {
-            let win = self
-                .windows
-                .get_mut(&window)
-                .ok_or(MultiplexerError::UnknownWindow(window))?;
-            if win.focus != pane {
-                win.focus = pane;
-                true
-            } else {
-                false
-            }
+    ///
+    /// Returns `false` if `pane` is missing or does not belong to `window`.
+    pub fn set_focus(&mut self, window: WindowId, pane: PaneId) -> bool {
+        let Some(owner) = self.window_of_pane(pane) else {
+            return false;
         };
-        if changed {
+        if owner != window {
+            return false;
+        }
+        let Some(win) = self.windows.get_mut(&window) else {
+            return false;
+        };
+        if win.focus != pane {
+            win.focus = pane;
             self.push_event(LifecycleEvent::FocusPaneChanged { window, pane });
         }
-        Ok(())
+        true
     }
 
     /// Removes `pane` and drops its PTY resources once.
@@ -386,10 +342,14 @@ impl Multiplexer {
     /// If it was the focused pane, another remaining pane (if any) becomes
     /// focus. If the window was active and is removed, another window becomes
     /// active, or the multiplexer becomes empty.
-    pub fn remove_pane(&mut self, pane: PaneId) -> Result<(), MultiplexerError> {
-        let window = self.window_of_pane(pane)?;
+    ///
+    /// Returns `false` if `pane` does not exist.
+    pub fn remove_pane(&mut self, pane: PaneId) -> bool {
+        let Some(window) = self.window_of_pane(pane) else {
+            return false;
+        };
         if !self.windows.contains_key(&window) {
-            return Err(MultiplexerError::UnknownWindow(window));
+            return false;
         }
 
         let (was_last, new_focus) = {
@@ -429,13 +389,15 @@ impl Multiplexer {
         if was_last {
             self.remove_window_inner(window);
         }
-        Ok(())
+        true
     }
 
     /// Removes `window` and all of its panes, dropping each PTY once.
-    pub fn remove_window(&mut self, window: WindowId) -> Result<(), MultiplexerError> {
+    ///
+    /// Returns `false` if `window` does not exist.
+    pub fn remove_window(&mut self, window: WindowId) -> bool {
         if !self.windows.contains_key(&window) {
-            return Err(MultiplexerError::UnknownWindow(window));
+            return false;
         }
         let pane_ids: Vec<PaneId> = self
             .windows
@@ -449,7 +411,7 @@ impl Multiplexer {
             self.push_event(LifecycleEvent::PaneClosed { window, pane });
         }
         self.remove_window_inner(window);
-        Ok(())
+        true
     }
 
     /// Reaps exited children without blocking and records [`LifecycleEvent::PaneExited`].
@@ -531,38 +493,5 @@ impl Multiplexer {
             let next = self.window_order.first().copied();
             self.set_active(next);
         }
-    }
-}
-
-/// Error from [`Multiplexer::create_pane`], which may fail on model lookup or I/O.
-#[derive(Debug)]
-pub enum CreateError {
-    /// Model lookup failed before spawning.
-    Model(MultiplexerError),
-    /// Spawning the PTY child failed.
-    Io(io::Error),
-}
-
-impl std::fmt::Display for CreateError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CreateError::Model(err) => write!(f, "{err}"),
-            CreateError::Io(err) => write!(f, "{err}"),
-        }
-    }
-}
-
-impl std::error::Error for CreateError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            CreateError::Model(err) => Some(err),
-            CreateError::Io(err) => Some(err),
-        }
-    }
-}
-
-impl From<MultiplexerError> for CreateError {
-    fn from(value: MultiplexerError) -> Self {
-        CreateError::Model(value)
     }
 }

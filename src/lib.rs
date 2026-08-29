@@ -16,9 +16,7 @@ mod terminal_emu;
 mod terminal_types;
 
 pub use input::{KeyCode, KeyEvent, Modifiers, MouseButton, encode_key, encode_paste};
-pub use multiplexer::{
-    CreateError, LifecycleEvent, Multiplexer, MultiplexerError, Pane, PaneId, Window, WindowId,
-};
+pub use multiplexer::{LifecycleEvent, Multiplexer, Pane, PaneId, Window, WindowId};
 pub use pty::PtyProcess;
 pub use size::Size;
 pub use terminal::{
