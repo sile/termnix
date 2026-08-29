@@ -40,7 +40,7 @@ fn sample_cuts(ctx: &mut noprop::TestCaseContext, len: usize) -> Vec<usize> {
     cuts
 }
 
-fn feed_with_cuts(term: &mut muxnix::Terminal, bytes: &[u8], cuts: &[usize]) {
+fn feed_with_cuts(term: &mut muxnix::TerminalState, bytes: &[u8], cuts: &[usize]) {
     let mut start = 0;
     for &cut in cuts {
         if cut > start && cut <= bytes.len() {
@@ -69,10 +69,10 @@ fn chunk_boundaries_do_not_change_terminal_state() -> noprop::TestResult {
             saw_split.set(true);
         }
 
-        let mut whole = muxnix::Terminal::new(muxnix::Size { rows, cols });
+        let mut whole = muxnix::TerminalState::new(muxnix::Size { rows, cols });
         whole.feed(&input);
 
-        let mut split = muxnix::Terminal::new(muxnix::Size { rows, cols });
+        let mut split = muxnix::TerminalState::new(muxnix::Size { rows, cols });
         feed_with_cuts(&mut split, &input, &cuts);
 
         assert_eq!(whole, split);

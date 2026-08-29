@@ -1,8 +1,8 @@
-fn term(rows: u16, cols: u16) -> muxnix::Terminal {
-    muxnix::Terminal::new(muxnix::Size { rows, cols })
+fn term(rows: u16, cols: u16) -> muxnix::TerminalState {
+    muxnix::TerminalState::new(muxnix::Size { rows, cols })
 }
 
-fn text_at(term: &muxnix::Terminal, row: u16) -> String {
+fn text_at(term: &muxnix::TerminalState, row: u16) -> String {
     let cols = term.size().cols;
     let mut out = String::new();
     for col in 0..cols {

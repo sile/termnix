@@ -12,4 +12,4 @@ mod terminal;
 
 pub use pty::PtyProcess;
 pub use size::Size;
-pub use terminal::{Cell, Position, Terminal};
+pub use terminal::{Cell, Position, TerminalState};

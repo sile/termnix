@@ -1,6 +1,6 @@
 //! I/O-free terminal emulator state for a primary screen.
 //!
-//! [`Terminal`] accepts output bytes through [`Terminal::feed`] and updates
+//! [`TerminalState`] accepts output bytes through [`TerminalState::feed`] and updates
 //! cells and the cursor. Escape sequences beyond basic C0 controls are out of
 //! scope here; incomplete UTF-8 sequences are buffered across `feed` calls.
 //!
@@ -27,7 +27,7 @@ use crate::size::Size;
 /// Zero-based position on the primary screen.
 ///
 /// Used both for the active cursor and for addressing cells through
-/// [`Terminal::cell`].
+/// [`TerminalState::cell`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Position {
     /// Zero-based row.
@@ -63,7 +63,7 @@ impl Cell {
 /// PTY output (or any byte stream) and read cells for rendering or headless
 /// inspection.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Terminal {
+pub struct TerminalState {
     size: Size,
     cursor: Position,
     cells: Vec<Cell>,
@@ -75,8 +75,8 @@ pub struct Terminal {
     wrap_pending: bool,
 }
 
-impl Terminal {
-    /// Creates a blank terminal of `size`.
+impl TerminalState {
+    /// Creates a blank primary-screen state of `size`.
     ///
     /// A zero row or column count is clamped to `1` so the screen always has
     /// at least one addressable cell.
