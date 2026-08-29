@@ -31,15 +31,15 @@ pub struct PtySize {
 ///
 /// # Drop behavior
 ///
-/// Dropping a [`PtyProcess`] closes the master file descriptor if it is still
-/// open, but does **not** wait for the child. Callers should use
-/// [`PtyProcess::try_wait`], [`PtyProcess::wait`], or [`PtyProcess::close`] to
-/// reap the child. An unreaped child may become a zombie until the parent
-/// process exits or later waits on it.
+/// Dropping a [`PtyProcess`] closes the master file descriptor, but does **not**
+/// wait for the child. Callers should use [`PtyProcess::try_wait`],
+/// [`PtyProcess::wait`], or [`PtyProcess::close`] to reap the child. An
+/// unreaped child may become a zombie until the parent process exits or later
+/// waits on it.
 #[derive(Debug)]
 pub struct PtyProcess {
-    master: Option<File>,
-    child: Option<Child>,
+    master: File,
+    child: Child,
 }
 
 impl PtyProcess {
@@ -76,96 +76,56 @@ impl PtyProcess {
         // The parent retains only the master. `slave` is not moved into
         // `PtyProcess`, so leaving this function closes it and lets the parent
         // observe EOF once the child exits and closes its stdio.
-        Ok(Self {
-            master: Some(master),
-            child: Some(child),
-        })
+        Ok(Self { master, child })
     }
 
     /// Sets whether master I/O is non-blocking.
     pub fn set_nonblocking(&mut self, nonblocking: bool) -> io::Result<()> {
-        set_nonblocking(self.master_fd()?, nonblocking)
+        set_nonblocking(self.master.as_raw_fd(), nonblocking)
     }
 
     /// Resizes the PTY and notifies the child via `TIOCSWINSZ`.
     pub fn resize(&self, size: PtySize) -> io::Result<()> {
-        set_winsize(self.master_fd()?, size)
+        set_winsize(self.master.as_raw_fd(), size)
     }
 
     /// Checks whether the child has exited without blocking.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        let child = self
-            .child
-            .as_mut()
-            .ok_or_else(|| Error::other("child process has already been closed"))?;
-        child.try_wait()
+        self.child.try_wait()
     }
 
     /// Blocks until the child exits and returns its status.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        let child = self
-            .child
-            .as_mut()
-            .ok_or_else(|| Error::other("child process has already been closed"))?;
-        child.wait()
+        self.child.wait()
     }
 
     /// Closes the master file descriptor and waits for the child to exit.
-    ///
-    /// Both operations happen at most once for a given [`PtyProcess`].
-    pub fn close(mut self) -> io::Result<ExitStatus> {
-        self.master.take();
-        let mut child = self
-            .child
-            .take()
-            .ok_or_else(|| Error::other("child process has already been closed"))?;
+    pub fn close(self) -> io::Result<ExitStatus> {
+        let Self { master, mut child } = self;
+        drop(master);
         child.wait()
-    }
-
-    fn master_file(&mut self) -> io::Result<&mut File> {
-        self.master
-            .as_mut()
-            .ok_or_else(|| Error::other("master file descriptor has already been closed"))
-    }
-
-    fn master_fd(&self) -> io::Result<RawFd> {
-        self.master
-            .as_ref()
-            .map(AsRawFd::as_raw_fd)
-            .ok_or_else(|| Error::other("master file descriptor has already been closed"))
     }
 }
 
 impl Read for PtyProcess {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.master_file()?.read(buf)
+        self.master.read(buf)
     }
 }
 
 impl Write for PtyProcess {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.master_file()?.write(buf)
+        self.master.write(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.master_file()?.flush()
+        self.master.flush()
     }
 }
 
 impl AsRawFd for PtyProcess {
     fn as_raw_fd(&self) -> RawFd {
-        self.master
-            .as_ref()
-            .map(AsRawFd::as_raw_fd)
-            .expect("master file descriptor has already been closed")
-    }
-}
-
-impl Drop for PtyProcess {
-    fn drop(&mut self) {
-        // Close the master fd if the caller has not already closed it via
-        // `close`. Do not wait for the child here; waiting could block Drop.
-        self.master.take();
+        self.master.as_raw_fd()
     }
 }
 
