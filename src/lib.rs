@@ -9,7 +9,12 @@
 mod pty;
 mod size;
 mod terminal;
+mod terminal_buffer;
+mod terminal_emu;
+mod terminal_types;
 
 pub use pty::PtyProcess;
 pub use size::Size;
-pub use terminal::{Cell, Position, TerminalState};
+pub use terminal::{
+    Cell, Color, MouseReporting, Position, Style, TerminalAction, TerminalModes, TerminalState,
+};
