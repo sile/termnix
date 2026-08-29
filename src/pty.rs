@@ -68,20 +68,14 @@ impl PtyProcess {
             command.pre_exec(move || setup_child_session(master_fd, slave_fd));
         }
 
-        let child = match command.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                // Explicitly drop both ends so spawn failures never leak fds.
-                drop(master);
-                drop(slave);
-                return Err(err);
-            }
-        };
+        // On spawn failure, `master` and `slave` are closed by `File`'s `Drop`
+        // as this function returns. Keep both locals scoped here so a later
+        // refactor cannot move them into a longer-lived value on the error path.
+        let child = command.spawn()?;
 
-        // The parent only keeps the master; closing the slave lets us observe
-        // EOF when the child exits and closes its stdio.
-        drop(slave);
-
+        // The parent retains only the master. `slave` is not moved into
+        // `PtyProcess`, so leaving this function closes it and lets the parent
+        // observe EOF once the child exits and closes its stdio.
         Ok(Self {
             master: Some(master),
             child: Some(child),
