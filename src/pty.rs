@@ -146,7 +146,7 @@ fn open_pty_pair() -> io::Result<(File, File)> {
     // SAFETY: `openpty` writes the resulting fds into the provided pointers.
     // Passing null for name/termios/winsize requests the defaults; the window
     // size is set afterward with `TIOCSWINSZ`.
-    check_libc_result(unsafe {
+    check_libc_zero(unsafe {
         libc::openpty(
             &mut master,
             &mut slave,
@@ -170,18 +170,16 @@ fn open_pty_pair() -> io::Result<(File, File)> {
 fn setup_child_session(master_fd: RawFd, slave_fd: RawFd) -> io::Result<()> {
     // SAFETY: Called only in the forked child before exec. `setsid` creates a
     // new session so the subsequent `TIOCSCTTY` can assign a controlling tty.
-    if unsafe { libc::setsid() } == -1 {
-        return Err(Error::last_os_error());
-    }
+    check_libc_non_neg(unsafe { libc::setsid() })?;
 
     // SAFETY: `slave_fd` refers to the open PTY slave in this child.
-    if unsafe { libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) } == -1 {
-        return Err(Error::last_os_error());
-    }
+    check_libc_non_neg(unsafe { libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) })?;
 
-    dup2_or_close(slave_fd, 0)?;
-    dup2_or_close(slave_fd, 1)?;
-    dup2_or_close(slave_fd, 2)?;
+    // SAFETY: Both descriptors are valid in the child at this point. In this
+    // spawn path `slave_fd` is distinct from 0/1/2, so these calls always copy.
+    check_libc_non_neg(unsafe { libc::dup2(slave_fd, 0) })?;
+    check_libc_non_neg(unsafe { libc::dup2(slave_fd, 1) })?;
+    check_libc_non_neg(unsafe { libc::dup2(slave_fd, 2) })?;
 
     // SAFETY: Closing fds that are not stdin/stdout/stderr is safe; those
     // descriptors remain open through the dup2 targets above.
@@ -199,17 +197,6 @@ fn setup_child_session(master_fd: RawFd, slave_fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-fn dup2_or_close(src: RawFd, dst: RawFd) -> io::Result<()> {
-    if src == dst {
-        return Ok(());
-    }
-    // SAFETY: Both descriptors are valid in the child at this point.
-    if unsafe { libc::dup2(src, dst) } == -1 {
-        return Err(Error::last_os_error());
-    }
-    Ok(())
-}
-
 fn set_winsize(fd: RawFd, size: PtySize) -> io::Result<()> {
     let winsize = libc::winsize {
         ws_row: size.rows,
@@ -219,45 +206,45 @@ fn set_winsize(fd: RawFd, size: PtySize) -> io::Result<()> {
     };
     // SAFETY: `fd` is an open PTY descriptor owned by the caller; `winsize`
     // points to a valid local struct for the duration of the call.
-    check_libc_result(unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as _, &winsize) })
+    check_libc_zero(unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as _, &winsize) })
 }
 
 fn set_cloexec(fd: RawFd) -> io::Result<()> {
     // SAFETY: `fd` is open and owned by the caller.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if flags < 0 {
-        return Err(Error::last_os_error());
-    }
+    let flags = check_libc_non_neg(unsafe { libc::fcntl(fd, libc::F_GETFD) })?;
     // SAFETY: Same fd; only updates the close-on-exec flag.
-    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-        return Err(Error::last_os_error());
-    }
+    check_libc_non_neg(unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) })?;
     Ok(())
 }
 
 fn set_nonblocking(fd: RawFd, nonblocking: bool) -> io::Result<()> {
     // SAFETY: `fd` is open and owned by the caller.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-    if flags < 0 {
-        return Err(Error::last_os_error());
-    }
+    let flags = check_libc_non_neg(unsafe { libc::fcntl(fd, libc::F_GETFL) })?;
     let new_flags = if nonblocking {
         flags | libc::O_NONBLOCK
     } else {
         flags & !libc::O_NONBLOCK
     };
     // SAFETY: Same fd; only updates the status flags.
-    if unsafe { libc::fcntl(fd, libc::F_SETFL, new_flags) } < 0 {
-        return Err(Error::last_os_error());
-    }
+    check_libc_non_neg(unsafe { libc::fcntl(fd, libc::F_SETFL, new_flags) })?;
     Ok(())
 }
 
-fn check_libc_result(result: libc::c_int) -> io::Result<()> {
+/// Checks a libc return value where `0` means success.
+fn check_libc_zero(result: libc::c_int) -> io::Result<()> {
     if result == 0 {
         Ok(())
     } else {
         Err(Error::last_os_error())
+    }
+}
+
+/// Checks a libc return value where a negative value means failure.
+fn check_libc_non_neg(result: libc::c_int) -> io::Result<libc::c_int> {
+    if result < 0 {
+        Err(Error::last_os_error())
+    } else {
+        Ok(result)
     }
 }
 
@@ -282,7 +269,7 @@ mod tests {
         set_winsize(master.as_raw_fd(), size).expect("set winsize");
 
         let mut winsize = MaybeUninit::<libc::winsize>::uninit();
-        check_libc_result(unsafe {
+        check_libc_zero(unsafe {
             libc::ioctl(
                 master.as_raw_fd(),
                 libc::TIOCGWINSZ as _,
