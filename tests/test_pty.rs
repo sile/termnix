@@ -50,8 +50,10 @@ fn master_reads_child_output() {
         "output={:?}",
         String::from_utf8_lossy(&output)
     );
-    let status = pty.close().expect("close");
-    assert!(status.success());
+    // Wait before dropping the master. Closing the master while the child is
+    // still exiting can deliver SIGHUP and make a successful script look failed.
+    let status = pty.wait().expect("wait");
+    assert!(status.success(), "status={status:?}");
 }
 
 #[test]
@@ -71,8 +73,8 @@ fn child_reads_master_input() {
         "output={:?}",
         String::from_utf8_lossy(&output)
     );
-    let status = pty.close().expect("close");
-    assert!(status.success());
+    let status = pty.wait().expect("wait");
+    assert!(status.success(), "status={status:?}");
 }
 
 #[test]
@@ -89,8 +91,8 @@ fn stdio_are_connected_to_controlling_terminal() {
         "output={:?}",
         String::from_utf8_lossy(&output)
     );
-    let status = pty.close().expect("close");
-    assert!(status.success());
+    let status = pty.wait().expect("wait");
+    assert!(status.success(), "status={status:?}");
 }
 
 #[test]
@@ -105,8 +107,8 @@ fn resize_is_visible_to_child() {
         "output={:?}",
         String::from_utf8_lossy(&output)
     );
-    let status = pty.close().expect("close");
-    assert!(status.success());
+    let status = pty.wait().expect("wait");
+    assert!(status.success(), "status={status:?}");
 }
 
 #[test]
