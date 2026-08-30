@@ -15,8 +15,8 @@
 //! the usual sequences and stores modes separately from I/O.
 //!
 //! Mouse report byte sequences are out of scope here; only [`MouseButton`]
-//! is defined so later pane routing can share button identity. Grid coordinates
-//! reuse [`crate::Position`].
+//! is defined so application-side routing can share button identity. Grid
+//! coordinates reuse [`crate::Position`].
 
 use crate::terminal_types::TerminalModes;
 
@@ -132,7 +132,7 @@ impl KeyEvent {
 
 /// Mouse button identity for later report encoding.
 ///
-/// Report coordinates use [`crate::Position`] (pane-local, zero-based cells).
+/// Report coordinates use [`crate::Position`] (grid-local, zero-based cells).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     /// Left button.
@@ -149,8 +149,9 @@ pub enum MouseButton {
 
 /// Encodes a logical key for the given terminal modes.
 ///
-/// Modes must be passed explicitly (typically from the destination pane's
-/// [`TerminalState::modes`](crate::TerminalState::modes)). Nothing global is read.
+/// Modes must be passed explicitly (typically from the destination terminal
+/// state's [`TerminalState::modes`](crate::TerminalState::modes)). Nothing
+/// global is read.
 pub fn encode_key(event: KeyEvent, modes: TerminalModes) -> Vec<u8> {
     let mut out = Vec::new();
     if event.modifiers.alt {

@@ -2,9 +2,9 @@
 
 Unix-only foundation for building terminal multiplexers in Rust.
 
-`muxnix` owns PTY process lifecycle, an I/O-free terminal emulator, and a
-process-local window/pane model. Layout geometry and the event-loop driver come
-next. Host terminal raw mode and final frame rendering stay with the caller.
+`muxnix` owns PTY process lifecycle and an I/O-free terminal emulator. Window,
+pane, and layout concepts belong to the calling application. Host terminal raw
+mode and final frame rendering stay with the caller.
 
 ## Terminal emulator coverage
 
@@ -31,15 +31,13 @@ Explicitly out of scope: Sixel, Kitty graphics, iTerm2 images, and DCS payloads
 
 `encode_key` and `encode_paste` turn logical input into PTY bytes. Modes come
 from an explicit `TerminalModes` argument (for example from the destination
-pane); host focus is never implied. Plain text and raw bytes are written by the
-caller. Mouse report bytes are not encoded yet—only `MouseButton` is defined for
-later pane routing (coordinates reuse `Position`).
+terminal state); host focus is never implied. Plain text and raw bytes are
+written by the caller. Mouse report bytes are not encoded yet—only
+`MouseButton` is defined for application-side routing (coordinates reuse
+`Position`).
 
-## Windows and panes
+## Roadmap
 
-`Multiplexer` starts empty. Each window keeps its own focus pane, so switching
-the active window restores per-window focus. Pane and window identifiers are
-stable within an instance and are never reused. Removing the last pane closes
-its window; removing the last window leaves an empty multiplexer. Layout and
-PTY resize from geometry are a later milestone.
-
+A multi-session driver that integrates PTY readiness, bounded I/O, and process
+lifecycle for use from an external event loop is planned but not yet
+implemented.
