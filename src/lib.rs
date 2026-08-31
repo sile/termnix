@@ -10,14 +10,18 @@
 mod input;
 mod pty;
 mod size;
+mod snapshot;
 mod terminal;
 mod terminal_buffer;
 mod terminal_emu;
+mod terminal_scrollback;
 mod terminal_types;
 
 pub use input::{KeyCode, KeyEvent, Modifiers, MouseButton, encode_key, encode_paste};
 pub use pty::PtyProcess;
 pub use size::Size;
+pub use snapshot::{ActiveScreen, TerminalLine, TerminalSnapshot};
 pub use terminal::{
     Cell, Color, MouseReporting, Position, Style, TerminalAction, TerminalModes, TerminalState,
 };
+pub use terminal_scrollback::ScrollbackLimits;

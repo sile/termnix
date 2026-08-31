@@ -155,10 +155,7 @@ impl TerminalState {
     fn line_feed(&mut self) {
         self.wrap_pending = false;
         if self.cursor.row == self.scroll_bottom {
-            let style = self.pen;
-            let top = self.scroll_top;
-            let bottom = self.scroll_bottom;
-            self.active_mut().scroll_up(1, top, bottom, style);
+            self.scroll_up_screen(1);
         } else if self.cursor.row + 1 < self.size.rows {
             self.cursor.row += 1;
         }
@@ -211,6 +208,11 @@ impl TerminalState {
         self.title.clear();
         self.scroll_top = 0;
         self.scroll_bottom = size.rows.saturating_sub(1);
+        // RIS — DEC terminal documentation:
+        // https://vt100.net/docs/vt510-rm/RIS.html
+        // A hard reset restores the terminal, including saved lines; the
+        // reference may change.
+        self.scrollback.clear();
     }
 
     fn handle_csi(&mut self, params: &vte::Params, intermediates: &[u8], action: char) {
@@ -277,13 +279,7 @@ impl TerminalState {
                 self.active_mut()
                     .erase_cells(row, col, col.saturating_add(count), style);
             }
-            'S' => {
-                let count = param_or(params, 0, 1);
-                let style = self.pen;
-                let top = self.scroll_top;
-                let bottom = self.scroll_bottom;
-                self.active_mut().scroll_up(count, top, bottom, style);
-            }
+            'S' => self.scroll_up_screen(param_or(params, 0, 1)),
             'T' => {
                 let count = param_or(params, 0, 1);
                 let style = self.pen;
@@ -392,7 +388,14 @@ impl TerminalState {
                 self.active_mut()
                     .erase_cells(row, 0, col.saturating_add(1), style);
             }
-            2 | 3 => self.active_mut().erase_rows(0, rows, style),
+            2 => self.active_mut().erase_rows(0, rows, style),
+            3 => {
+                // xterm Control Sequences: ED parameter 3 ("Erase Saved
+                // Lines"). https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+                // The sequence name and reference may change as the host
+                // terminal evolves.
+                self.scrollback.clear();
+            }
             _ => {}
         }
     }

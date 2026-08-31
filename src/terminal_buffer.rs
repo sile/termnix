@@ -21,6 +21,10 @@ impl Screen {
         Some(self.cells[self.index(at)?])
     }
 
+    pub(crate) fn cells(&self) -> &[Cell] {
+        &self.cells
+    }
+
     pub(crate) fn clear_all(&mut self, style: Style) {
         let blank = Cell::blank(style);
         self.cells.fill(blank);
@@ -186,28 +190,41 @@ impl Screen {
         self.cells[bottom - count * cols..bottom].fill(blank);
     }
 
+    /// Scrolls the region up by `count` rows and returns the displaced rows
+    /// (the rows that left the region) in top-to-bottom order, each as a full
+    /// left-to-right row of cells.
+    ///
+    /// The caller decides whether the displaced rows become scrollback; a
+    /// partial region scroll must discard them.
     pub(crate) fn scroll_up(
         &mut self,
         count: u16,
         scroll_top: u16,
         scroll_bottom: u16,
         style: Style,
-    ) {
+    ) -> Vec<Vec<Cell>> {
         if count == 0 || scroll_top > scroll_bottom {
-            return;
+            return Vec::new();
         }
         let cols = self.size.cols as usize;
         let region_rows = (scroll_bottom - scroll_top + 1) as usize;
         let count = count as usize;
+        let displaced_count = count.min(region_rows);
+        let mut displaced = Vec::with_capacity(displaced_count);
+        for i in 0..displaced_count {
+            let start = (scroll_top as usize + i) * cols;
+            displaced.push(self.cells[start..start + cols].to_vec());
+        }
         if count >= region_rows {
             self.erase_rows(scroll_top, scroll_bottom + 1, style);
-            return;
+            return displaced;
         }
         let top = scroll_top as usize * cols;
         let bottom = (scroll_bottom as usize + 1) * cols;
         self.cells[top..bottom].rotate_left(count * cols);
         let blank = Cell::blank(style);
         self.cells[bottom - count * cols..bottom].fill(blank);
+        displaced
     }
 
     pub(crate) fn scroll_down(
