@@ -13,7 +13,7 @@
 
 use std::cell::Cell;
 
-use muxnix::{ActiveScreen, Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
+use muxnix::{Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
 
 const MAX_ROWS: u16 = 8;
 const MAX_COLS: u16 = 12;
@@ -284,10 +284,9 @@ fn compare_snapshot_to_reference(
     desc: &str,
 ) {
     assert_eq!(snap.size(), Size { rows, cols }, "{desc}; size mismatch");
-    assert_eq!(
-        snap.active_screen(),
-        ActiveScreen::Primary,
-        "{desc}; active screen mismatch"
+    assert!(
+        !snap.is_on_alternate_screen(),
+        "{desc}; alternate screen mismatch"
     );
     assert_eq!(
         snap.cursor(),

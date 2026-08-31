@@ -296,10 +296,10 @@ fn alternate_screen_1049_restores_primary() {
     t.feed(b"keep");
     t.feed(b"\x1b[?1049h");
     t.feed(b"temp");
-    assert!(t.on_alternate_screen());
+    assert!(t.is_on_alternate_screen());
     assert_eq!(text_at(&t, 0), "temp");
     t.feed(b"\x1b[?1049l");
-    assert!(!t.on_alternate_screen());
+    assert!(!t.is_on_alternate_screen());
     assert_eq!(text_at(&t, 0), "keep");
 }
 

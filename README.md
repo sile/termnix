@@ -39,7 +39,7 @@ written by the caller. Mouse report bytes are not encoded yet—only
 ## Snapshots and scrollback
 
 `TerminalState::snapshot` returns an owned `TerminalSnapshot` (visible screen,
-cursor, modes, style, title, active screen, and primary-derived scrollback)
+cursor, modes, style, title, alternate-screen flag, and primary-derived scrollback)
 without I/O, so a consumer can render or retain the data while the session
 keeps running. `TerminalState::with_scrollback` enables bounded scrollback:
 the primary screen's full-screen scrolls (LF/VT/FF, IND, NEL, autowrap, CSI SU)

@@ -1,21 +1,12 @@
 //! Owned, I/O-free snapshots of the terminal state.
 //!
 //! A [`TerminalSnapshot`] copies the visible screen, cursor, modes, current
-//! style, title, active screen, and primary-derived scrollback out of a
-//! [`TerminalState`] so the caller can keep the data while the session keeps
-//! running. It never borrows from the emulator.
+//! style, title, whether the alternate screen is active, and primary-derived
+//! scrollback out of a [`TerminalState`] so the caller can keep the data while
+//! the session keeps running. It never borrows from the emulator.
 
 use crate::size::Size;
 use crate::terminal_types::{Cell, Position, Style, TerminalModes};
-
-/// Which screen buffer a snapshot captured.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ActiveScreen {
-    /// Primary (main) screen buffer.
-    Primary,
-    /// Alternate screen buffer (DECSET 1049 and friends).
-    Alternate,
-}
 
 /// One physical row saved into scrollback, oldest-first.
 ///
@@ -50,10 +41,11 @@ impl TerminalLine {
 /// Owned copy of the terminal state at snapshot time.
 ///
 /// Construction copies the visible screen, cursor, modes, current style,
-/// title, active screen, and primary-derived scrollback. Time and allocation
-/// scale with the number of visible cells, retained scrollback cells, and
-/// title bytes. Snapshot payloads never include session or pane identity,
-/// child process status, file descriptors, parser state, or undrained
+/// title, whether the alternate screen was active, and primary-derived
+/// scrollback. Time and allocation scale with the number of visible cells,
+/// retained scrollback cells, and title bytes. Snapshot payloads never
+/// include session or pane identity, child process status, file descriptors,
+/// parser state, or undrained
 /// [`TerminalAction`](crate::terminal_types::TerminalAction)s.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSnapshot {
@@ -63,12 +55,12 @@ pub struct TerminalSnapshot {
     modes: TerminalModes,
     style: Style,
     title: String,
-    active: ActiveScreen,
+    on_alternate: bool,
     scrollback: Vec<TerminalLine>,
 }
 
 impl TerminalSnapshot {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         size: Size,
         cells: Vec<Cell>,
@@ -76,7 +68,7 @@ impl TerminalSnapshot {
         modes: TerminalModes,
         style: Style,
         title: String,
-        active: ActiveScreen,
+        on_alternate: bool,
         scrollback: Vec<TerminalLine>,
     ) -> Self {
         Self {
@@ -86,7 +78,7 @@ impl TerminalSnapshot {
             modes,
             style,
             title,
-            active,
+            on_alternate,
             scrollback,
         }
     }
@@ -132,9 +124,9 @@ impl TerminalSnapshot {
         &self.title
     }
 
-    /// Returns which screen buffer was active at capture time.
-    pub fn active_screen(&self) -> ActiveScreen {
-        self.active
+    /// Returns whether the alternate screen buffer was active at capture time.
+    pub fn is_on_alternate_screen(&self) -> bool {
+        self.on_alternate
     }
 
     /// Returns the captured primary-derived scrollback, oldest-first.

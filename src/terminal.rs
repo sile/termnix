@@ -39,7 +39,7 @@ pub use crate::terminal_types::{
 };
 
 use crate::size::Size;
-use crate::snapshot::{ActiveScreen, TerminalLine, TerminalSnapshot};
+use crate::snapshot::{TerminalLine, TerminalSnapshot};
 use crate::terminal_buffer::Screen;
 use crate::terminal_scrollback::ScrollbackLimits;
 use crate::terminal_types::SavedCursor;
@@ -186,7 +186,7 @@ impl TerminalState {
     }
 
     /// Returns whether the alternate screen buffer is active.
-    pub fn on_alternate_screen(&self) -> bool {
+    pub fn is_on_alternate_screen(&self) -> bool {
         self.on_alternate
     }
 
@@ -203,18 +203,14 @@ impl TerminalState {
     /// Returns an owned copy of the visible state and primary scrollback.
     ///
     /// No I/O is performed. The payload copies the active screen's cells,
-    /// cursor, modes, current style, title, active screen, and primary-derived
-    /// scrollback. Time and allocation scale with the number of visible cells,
-    /// retained scrollback cells, and title bytes. Session identity, child
-    /// status, file descriptors, parser state, and undrained actions are never
-    /// included; retaining several snapshots long-term is the caller's concern.
+    /// cursor, modes, current style, title, whether the alternate screen is
+    /// active, and primary-derived scrollback. Time and allocation scale with
+    /// the number of visible cells, retained scrollback cells, and title
+    /// bytes. Session identity, child status, file descriptors, parser state,
+    /// and undrained actions are never included; retaining several snapshots
+    /// long-term is the caller's concern.
     pub fn snapshot(&self) -> TerminalSnapshot {
         let active = self.active();
-        let active_screen = if self.on_alternate {
-            ActiveScreen::Alternate
-        } else {
-            ActiveScreen::Primary
-        };
         TerminalSnapshot::new(
             self.size,
             active.cells().to_vec(),
@@ -222,7 +218,7 @@ impl TerminalState {
             self.modes,
             self.pen,
             self.title.clone(),
-            active_screen,
+            self.on_alternate,
             self.scrollback.clone(),
         )
     }

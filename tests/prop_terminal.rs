@@ -138,8 +138,8 @@ fn drain_and_compare(
     }
     assert_eq!(a.modes(), b.modes(), "{where_}: modes mismatch");
     assert_eq!(
-        a.on_alternate_screen(),
-        b.on_alternate_screen(),
+        a.is_on_alternate_screen(),
+        b.is_on_alternate_screen(),
         "{where_}: alternate screen mismatch"
     );
     assert_eq!(a.title(), b.title(), "{where_}: title mismatch");

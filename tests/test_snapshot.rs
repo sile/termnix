@@ -2,7 +2,7 @@
 //!
 //! Only the public API of `TerminalState` and the snapshot types is used.
 
-use muxnix::{ActiveScreen, Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
+use muxnix::{Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
 
 fn term(rows: u16, cols: u16) -> TerminalState {
     TerminalState::new(Size { rows, cols })
@@ -69,7 +69,7 @@ fn snapshot_owns_size_cells_cursor_modes_style_title_and_active() {
     assert_eq!(snap.current_style(), t.current_style());
     assert_eq!(snap.title(), t.title());
     assert_eq!(snap.title(), "snap-title");
-    assert_eq!(snap.active_screen(), ActiveScreen::Primary);
+    assert!(!snap.is_on_alternate_screen());
     assert!(snap.scrollback().is_empty());
 }
 
@@ -164,14 +164,14 @@ fn alternate_screen_scrolls_into_visible_not_history() {
     t.feed(b"\x1b[?1049h");
     t.feed(b"xy\r\nzz\r\n");
     let snap = t.snapshot();
-    assert_eq!(snap.active_screen(), ActiveScreen::Alternate);
+    assert!(snap.is_on_alternate_screen());
     assert_eq!(text_at(&snap, 0), "xy");
     assert_eq!(snap.scrollback().len(), 1);
     assert_eq!(line_text(&snap.scrollback()[0]), "aaaa");
     // Leaving the alternate screen does not move its rows into history.
     t.feed(b"\x1b[?1049l");
     let snap = t.snapshot();
-    assert_eq!(snap.active_screen(), ActiveScreen::Primary);
+    assert!(!snap.is_on_alternate_screen());
     assert_eq!(snap.scrollback().len(), 1);
 }
 
@@ -213,7 +213,7 @@ fn ris_clears_screen_and_scrollback() {
     assert_eq!(text_at(&snap, 1), "");
     assert_eq!(snap.title(), "");
     assert!(snap.cursor_visible());
-    assert_eq!(snap.active_screen(), ActiveScreen::Primary);
+    assert!(!snap.is_on_alternate_screen());
 }
 
 #[test]

@@ -20,7 +20,7 @@ mod terminal_types;
 pub use input::{KeyCode, KeyEvent, Modifiers, MouseButton, encode_key, encode_paste};
 pub use pty::PtyProcess;
 pub use size::Size;
-pub use snapshot::{ActiveScreen, TerminalLine, TerminalSnapshot};
+pub use snapshot::{TerminalLine, TerminalSnapshot};
 pub use terminal::{
     Cell, Color, MouseReporting, Position, Style, TerminalAction, TerminalModes, TerminalState,
 };
