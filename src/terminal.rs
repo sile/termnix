@@ -190,7 +190,7 @@ impl TerminalState {
     }
 
     /// Returns the current drawing style (SGR pen).
-    pub fn current_style(&self) -> Style {
+    pub fn style(&self) -> Style {
         self.pen
     }
 

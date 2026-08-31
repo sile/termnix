@@ -139,8 +139,8 @@ fn drain_and_compare(
     );
     assert_eq!(a.title(), b.title(), "{where_}: title mismatch");
     assert_eq!(
-        a.current_style(),
-        b.current_style(),
+        a.style(),
+        b.style(),
         "{where_}: style mismatch"
     );
     let actions_a = a.drain_actions();
