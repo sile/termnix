@@ -125,11 +125,6 @@ fn drain_and_compare(
     let size = a.size();
     assert_eq!(size, b.size(), "{where_}: size mismatch");
     assert_eq!(a.cursor(), b.cursor(), "{where_}: cursor mismatch");
-    assert_eq!(
-        a.cursor_visible(),
-        b.cursor_visible(),
-        "{where_}: cursor visibility mismatch"
-    );
     for row in 0..size.rows {
         for col in 0..size.cols {
             let at = Position { row, col };
@@ -790,7 +785,7 @@ fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult
         }
         if let Some(expected) = case.expect_cursor_visible {
             assert_eq!(
-                whole.cursor_visible(),
+                whole.modes().cursor_visible,
                 expected,
                 "{case_desc}: cursor visibility mismatch after mode completion"
             );

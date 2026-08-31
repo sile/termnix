@@ -101,14 +101,6 @@ impl TerminalSnapshot {
         self.cursor
     }
 
-    /// Returns whether the cursor was visible at capture time.
-    ///
-    /// Mirrors [`TerminalModes::cursor_visible`]; it is not an independent
-    /// flag.
-    pub fn cursor_visible(&self) -> bool {
-        self.modes.cursor_visible
-    }
-
     /// Returns the captured terminal modes.
     pub fn modes(&self) -> TerminalModes {
         self.modes

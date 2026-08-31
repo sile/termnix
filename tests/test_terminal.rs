@@ -313,7 +313,6 @@ fn private_modes_are_retained() {
     assert!(modes.bracketed_paste);
     assert_eq!(modes.mouse, muxnix::MouseReporting::Normal);
     assert!(modes.mouse_sgr);
-    assert!(!t.cursor_visible());
 }
 
 #[test]

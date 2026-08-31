@@ -170,11 +170,6 @@ impl TerminalState {
         self.cursor
     }
 
-    /// Returns whether the cursor should be drawn.
-    pub fn cursor_visible(&self) -> bool {
-        self.modes.cursor_visible
-    }
-
     /// Returns the cell at `at` on the active screen, if in range.
     pub fn cell(&self, at: Position) -> Option<Cell> {
         self.active().get(at)

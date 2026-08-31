@@ -64,8 +64,7 @@ fn snapshot_owns_size_cells_cursor_modes_style_title_and_active() {
 
     assert_eq!(snap.cursor(), t.cursor());
     assert_eq!(snap.modes(), t.modes());
-    assert_eq!(snap.cursor_visible(), t.cursor_visible());
-    assert!(!snap.cursor_visible());
+    assert!(!snap.modes().cursor_visible);
     assert_eq!(snap.current_style(), t.current_style());
     assert_eq!(snap.title(), t.title());
     assert_eq!(snap.title(), "snap-title");
@@ -212,7 +211,7 @@ fn ris_clears_screen_and_scrollback() {
     assert_eq!(text_at(&snap, 0), "");
     assert_eq!(text_at(&snap, 1), "");
     assert_eq!(snap.title(), "");
-    assert!(snap.cursor_visible());
+    assert!(snap.modes().cursor_visible);
     assert!(!snap.is_on_alternate_screen());
 }
 
