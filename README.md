@@ -43,8 +43,8 @@ cursor, modes, style, title, alternate-screen flag, and primary-derived scrollba
 without I/O, so a consumer can render or retain the data while the session
 keeps running. `TerminalState::with_scrollback` enables bounded scrollback:
 the primary screen's full-screen scrolls (LF/VT/FF, IND, NEL, autowrap, CSI SU)
-retain displaced rows up to `ScrollbackLimits` (line and cell bounds), evicting
-the oldest complete lines first. Partial scroll regions, line edits,
+retain displaced rows up to `ScrollbackLimits` (line and cell bounds; either
+bound at zero disables history), evicting the oldest complete lines first. Partial scroll regions, line edits,
 scroll-downs, the alternate screen, and resize never enter history. CSI ED 2
 clears the visible screen, CSI ED 3 clears only the scrollback, and RIS clears
 both.

@@ -135,11 +135,10 @@ impl TerminalState {
         }
     }
 
-    /// Creates a blank primary-screen state of `size` with scrollback enabled
-    /// under `limits`.
+    /// Creates a blank primary-screen state of `size` with scrollback under
+    /// `limits`.
     ///
-    /// `limits` is valid by construction: [`ScrollbackLimits`] cannot be
-    /// created in a partially zero state.
+    /// If either bound in `limits` is zero, scrollback stays disabled.
     pub fn with_scrollback(size: Size, limits: ScrollbackLimits) -> Self {
         let mut state = Self::new(size);
         state.scrollback_limits = limits;

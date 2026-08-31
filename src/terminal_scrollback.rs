@@ -4,13 +4,15 @@ use crate::snapshot::TerminalLine;
 
 /// Limits that bound the primary-screen scrollback.
 ///
-/// Both bounds must be positive together, or both zero for disabled
-/// scrollback. A partially zero setting is invalid and cannot be constructed
-/// through [`ScrollbackLimits::new`].
+/// If either bound is zero, scrollback is disabled and no history is retained.
+/// Both bounds positive means history is kept until either limit is hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ScrollbackLimits {
-    max_lines: usize,
-    max_cells: usize,
+    /// Maximum number of retained lines.
+    pub max_lines: usize,
+    /// Maximum number of retained cells, including blank cells and
+    /// wide-character continuation cells.
+    pub max_cells: usize,
 }
 
 impl ScrollbackLimits {
@@ -20,37 +22,9 @@ impl ScrollbackLimits {
         max_cells: 0,
     };
 
-    /// Returns limits with both bounds positive, or `None` when exactly one
-    /// bound is zero (an invalid combination).
-    ///
-    /// Both bounds at zero is valid and means scrollback is disabled.
-    pub fn new(max_lines: usize, max_cells: usize) -> Option<Self> {
-        let both_zero = max_lines == 0 && max_cells == 0;
-        let both_positive = max_lines > 0 && max_cells > 0;
-        if both_zero || both_positive {
-            Some(Self {
-                max_lines,
-                max_cells,
-            })
-        } else {
-            None
-        }
-    }
-
-    /// Returns the maximum number of retained lines.
-    pub fn max_lines(&self) -> usize {
-        self.max_lines
-    }
-
-    /// Returns the maximum number of retained cells, including blank cells
-    /// and wide-character continuation cells.
-    pub fn max_cells(&self) -> usize {
-        self.max_cells
-    }
-
-    /// Returns whether scrollback is disabled (no history retained).
-    pub fn is_disabled(&self) -> bool {
-        self.max_lines == 0 && self.max_cells == 0
+    /// Returns whether scrollback is disabled (either bound is zero).
+    pub const fn is_disabled(self) -> bool {
+        self.max_lines == 0 || self.max_cells == 0
     }
 }
 
@@ -72,11 +46,10 @@ pub(crate) fn append_line(
     limits: ScrollbackLimits,
     line: TerminalLine,
 ) {
-    let max_lines = limits.max_lines();
-    let max_cells = limits.max_cells();
-    if max_lines == 0 || max_cells == 0 {
+    if limits.is_disabled() {
         return;
     }
+    let max_cells = limits.max_cells;
     let new_cells = line.len();
     if new_cells > max_cells {
         return;
@@ -104,11 +77,11 @@ fn fits(
     limits: ScrollbackLimits,
     new_cells: usize,
 ) -> bool {
-    let max_lines = limits.max_lines();
-    let max_cells = limits.max_cells();
-    if max_lines == 0 || max_cells == 0 {
+    if limits.is_disabled() {
         return false;
     }
+    let max_lines = limits.max_lines;
+    let max_cells = limits.max_cells;
     retained_lines < max_lines
         && retained_cells <= max_cells
         && new_cells <= max_cells - retained_cells
@@ -131,16 +104,19 @@ mod tests {
     }
 
     fn limits(max_lines: usize, max_cells: usize) -> ScrollbackLimits {
-        ScrollbackLimits::new(max_lines, max_cells).expect("valid limits")
+        ScrollbackLimits {
+            max_lines,
+            max_cells,
+        }
     }
 
     #[test]
-    fn constructor_rejects_partially_zero_limits() {
-        assert!(ScrollbackLimits::new(0, 0).is_some());
-        assert_eq!(ScrollbackLimits::new(0, 5), None);
-        assert_eq!(ScrollbackLimits::new(5, 0), None);
-        assert!(ScrollbackLimits::new(5, 5).is_some());
+    fn either_zero_bound_disables_scrollback() {
         assert!(ScrollbackLimits::DISABLED.is_disabled());
+        assert!(limits(0, 5).is_disabled());
+        assert!(limits(5, 0).is_disabled());
+        assert!(limits(0, 0).is_disabled());
+        assert!(!limits(5, 5).is_disabled());
         assert_eq!(ScrollbackLimits::default(), ScrollbackLimits::DISABLED);
     }
 
@@ -156,6 +132,8 @@ mod tests {
         assert!(!fits(10, 0, limits(10, 100), 1));
         // Disabled limits never admit.
         assert!(!fits(0, 0, ScrollbackLimits::DISABLED, 1));
+        assert!(!fits(0, 0, limits(0, 5), 1));
+        assert!(!fits(0, 0, limits(5, 0), 1));
         // A single line larger than max_cells never fits, even when empty.
         assert!(!fits(0, 0, limits(10, 5), 6));
         // Retained cells above max_cells never admit (defensive guard).
@@ -198,6 +176,10 @@ mod tests {
     fn disabled_append_never_retains() {
         let mut scrollback = Vec::new();
         append_line(&mut scrollback, ScrollbackLimits::DISABLED, line(4, 'a'));
+        assert!(scrollback.is_empty());
+        append_line(&mut scrollback, limits(0, 100), line(4, 'a'));
+        assert!(scrollback.is_empty());
+        append_line(&mut scrollback, limits(100, 0), line(4, 'a'));
         assert!(scrollback.is_empty());
     }
 }

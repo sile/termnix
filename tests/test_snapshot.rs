@@ -9,8 +9,13 @@ fn term(rows: u16, cols: u16) -> TerminalState {
 }
 
 fn term_with_scrollback(rows: u16, cols: u16, max_lines: usize, max_cells: usize) -> TerminalState {
-    let limits = ScrollbackLimits::new(max_lines, max_cells).expect("valid limits");
-    TerminalState::with_scrollback(Size { rows, cols }, limits)
+    TerminalState::with_scrollback(
+        Size { rows, cols },
+        ScrollbackLimits {
+            max_lines,
+            max_cells,
+        },
+    )
 }
 
 fn text_at(snap: &TerminalSnapshot, row: u16) -> String {
@@ -251,14 +256,37 @@ fn default_terminal_state_has_disabled_scrollback() {
 }
 
 #[test]
-fn partially_zero_limits_are_invalid() {
-    assert_eq!(ScrollbackLimits::new(0, 5), None);
-    assert_eq!(ScrollbackLimits::new(5, 0), None);
-    assert_eq!(
-        ScrollbackLimits::new(0, 0),
-        Some(ScrollbackLimits::DISABLED)
+fn either_zero_bound_disables_scrollback() {
+    assert!(ScrollbackLimits {
+        max_lines: 0,
+        max_cells: 5
+    }
+    .is_disabled());
+    assert!(ScrollbackLimits {
+        max_lines: 5,
+        max_cells: 0
+    }
+    .is_disabled());
+    assert!(ScrollbackLimits {
+        max_lines: 0,
+        max_cells: 0
+    }
+    .is_disabled());
+    assert!(!ScrollbackLimits {
+        max_lines: 5,
+        max_cells: 50
+    }
+    .is_disabled());
+
+    let mut t = TerminalState::with_scrollback(
+        Size { rows: 2, cols: 4 },
+        ScrollbackLimits {
+            max_lines: 0,
+            max_cells: 100,
+        },
     );
-    assert!(ScrollbackLimits::new(5, 50).is_some());
+    t.feed(b"aaaa\r\nbbbb\r\ncccc");
+    assert!(t.snapshot().scrollback().is_empty());
 }
 
 #[test]

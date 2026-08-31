@@ -69,8 +69,8 @@ impl RefTerm {
             wrap_pending: false,
             grid: vec![vec![RefCell { ch: ' ', width: 1 }; cols]; rows],
             scrollback: Vec::new(),
-            max_lines: limits.max_lines(),
-            max_cells: limits.max_cells(),
+            max_lines: limits.max_lines,
+            max_cells: limits.max_cells,
             scrolls: 0,
             evicted: 0,
             dropped: 0,
@@ -215,16 +215,25 @@ fn sample_limits(ctx: &mut noprop::TestCaseContext, cols: u16) -> ScrollbackLimi
         0 => ScrollbackLimits::DISABLED,
         1 => {
             let lines = noprop::sample_usize_in(ctx, 2..=8);
-            ScrollbackLimits::new(lines, lines * cols as usize * 2).expect("valid")
+            ScrollbackLimits {
+                max_lines: lines,
+                max_cells: lines * cols as usize * 2,
+            }
         }
         2 => {
             let lines = noprop::sample_usize_in(ctx, 1..=3);
-            ScrollbackLimits::new(lines, 10_000).expect("valid")
+            ScrollbackLimits {
+                max_lines: lines,
+                max_cells: 10_000,
+            }
         }
         3 => {
             let lines = noprop::sample_usize_in(ctx, 1..=8);
             let cells = noprop::sample_usize_in(ctx, 1..=cols as usize * 2);
-            ScrollbackLimits::new(lines, cells).expect("valid")
+            ScrollbackLimits {
+                max_lines: lines,
+                max_cells: cells,
+            }
         }
         _ => {
             // max_cells below one full row, so every scrolled-out line is
@@ -235,7 +244,10 @@ fn sample_limits(ctx: &mut noprop::TestCaseContext, cols: u16) -> ScrollbackLimi
             } else {
                 1
             };
-            ScrollbackLimits::new(4, cells).expect("valid")
+            ScrollbackLimits {
+                max_lines: 4,
+                max_cells: cells,
+            }
         }
     }
 }
@@ -340,14 +352,14 @@ fn assert_within_limits(snap: &TerminalSnapshot, limits: ScrollbackLimits, desc:
         assert_eq!(lines, 0, "{desc}; disabled scrollback is not empty");
     } else {
         assert!(
-            lines <= limits.max_lines(),
+            lines <= limits.max_lines,
             "{desc}; retained lines {lines} exceed max {}",
-            limits.max_lines()
+            limits.max_lines
         );
         assert!(
-            cells <= limits.max_cells(),
+            cells <= limits.max_cells,
             "{desc}; retained cells {cells} exceed max {}",
-            limits.max_cells()
+            limits.max_cells
         );
     }
 }
@@ -380,8 +392,8 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
 
         let desc = format!(
             "size={rows}x{cols} limits=(lines {}, cells {}) input=[{}] budget={CASE_BUDGET}",
-            limits.max_lines(),
-            limits.max_cells(),
+            limits.max_lines,
+            limits.max_cells,
             hex(&input),
         );
 
