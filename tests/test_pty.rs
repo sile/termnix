@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use muxnix::{ClosingPtyProcess, ObservedExit, PtyProcess, SignalOutcome, Size};
+use termnix::{ClosingPtyProcess, ObservedExit, PtyProcess, SignalOutcome, Size};
 
 fn spawn_shell(script: &str, size: Size) -> PtyProcess {
     let mut command = Command::new("/bin/sh");
@@ -176,7 +176,7 @@ fn nonblocking_read_returns_would_block() {
 fn spawn_failure_does_not_leave_usable_process() {
     let before = count_open_fds();
     for _ in 0..64 {
-        let mut command = Command::new("/path/that/does/not/exist/muxnix-pty");
+        let mut command = Command::new("/path/that/does/not/exist/termnix-pty");
         let err = PtyProcess::spawn(&mut command, Size { rows: 24, cols: 80 })
             .expect_err("spawn should fail");
         assert_eq!(err.kind(), ErrorKind::NotFound);

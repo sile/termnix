@@ -14,7 +14,7 @@ pub struct Position {
 /// Indexed values use the usual ANSI/xterm numbering: 0–15 are the system
 /// palette, 16–255 are the 256-color cube and grayscale ramp. SGR color forms
 /// follow ECMA-48 / ITU T.416 practice (`38;5`, `38;2`, …) and may gain new
-/// encodings in host terminals; muxnix stores the decoded color.
+/// encodings in host terminals; termnix stores the decoded color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Color {
     /// Terminal default foreground or background.
@@ -99,7 +99,7 @@ impl Cell {
 /// Mouse reporting mode retained for input encoding and snapshots.
 ///
 /// Mode numbers follow common xterm DEC private modes and may change with
-/// host terminal practice; muxnix only stores which reporting style is active.
+/// host terminal practice; termnix only stores which reporting style is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum MouseReporting {
     /// Mouse reports disabled.

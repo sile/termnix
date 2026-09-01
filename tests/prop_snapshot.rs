@@ -13,7 +13,7 @@
 
 use std::cell::Cell;
 
-use muxnix::{Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
+use termnix::{Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
 
 const MAX_ROWS: u16 = 8;
 const MAX_COLS: u16 = 12;

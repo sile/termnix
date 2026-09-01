@@ -40,7 +40,7 @@ impl Perform for Emulator<'_> {
         // OSC 0 / 2 store the window title. Other OSC numbers are ignored so
         // their payloads never appear as printable text.
         // xterm OSC catalogue: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-        // (OSC identifiers evolve; muxnix only retains title text.)
+        // (OSC identifiers evolve; termnix only retains title text.)
         if params.is_empty() {
             return;
         }

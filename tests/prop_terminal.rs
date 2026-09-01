@@ -13,7 +13,7 @@
 
 use std::cell::Cell;
 
-use muxnix::{Position, Size, TerminalAction, TerminalState};
+use termnix::{Position, Size, TerminalAction, TerminalState};
 
 const MAX_ROWS: u16 = 8;
 const MAX_COLS: u16 = 16;
@@ -582,10 +582,10 @@ fn chunk_boundaries_do_not_change_terminal_state() -> noprop::TestResult {
             saw_split.set(true);
         }
 
-        let mut whole = muxnix::TerminalState::new(Size { rows, cols });
+        let mut whole = termnix::TerminalState::new(Size { rows, cols });
         whole.feed(&input);
 
-        let mut split = muxnix::TerminalState::new(Size { rows, cols });
+        let mut split = termnix::TerminalState::new(Size { rows, cols });
         feed_with_cuts(&mut split, &input, &cuts);
 
         assert_eq!(whole, split);

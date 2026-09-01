@@ -2,7 +2,7 @@
 //!
 //! Only the public API of `TerminalState` and the snapshot types is used.
 
-use muxnix::{Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
+use termnix::{Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
 
 fn term(rows: u16, cols: u16) -> TerminalState {
     TerminalState::new(Size { rows, cols })
@@ -31,7 +31,7 @@ fn text_at(snap: &TerminalSnapshot, row: u16) -> String {
     out.trim_end().to_string()
 }
 
-fn line_text(line: &muxnix::TerminalLine) -> String {
+fn line_text(line: &termnix::TerminalLine) -> String {
     let mut out = String::new();
     for cell in line.cells() {
         if cell.width == 0 {
@@ -104,7 +104,7 @@ fn wide_character_lead_and_continuation_survive_in_snapshot() {
     assert_eq!(line.cells()[0].width, 2);
     assert_eq!(line.cells()[1].ch, ' ');
     assert_eq!(line.cells()[1].width, 0);
-    assert_eq!(line.cells()[2], muxnix::Cell::EMPTY);
+    assert_eq!(line.cells()[2], termnix::Cell::EMPTY);
 }
 
 #[test]

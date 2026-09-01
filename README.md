@@ -1,10 +1,12 @@
-# muxnix
+# termnix
 
-Unix-only foundation for building terminal multiplexers in Rust.
+Unix-only terminal session engine for Rust.
 
-`muxnix` owns PTY process lifecycle and an I/O-free terminal emulator. Window,
-pane, and layout concepts belong to the calling application. Host terminal raw
-mode and final frame rendering stay with the caller.
+`termnix` provides PTY process lifecycle and an I/O-free terminal emulator for
+building terminal sessions. Each session represents one PTY-backed child
+process. Owning and scheduling multiple sessions, as well as window, pane, and
+layout concepts, belong to the calling application. Host terminal raw mode and
+final frame rendering stay with the caller.
 
 ## Terminal emulator coverage
 
@@ -51,6 +53,6 @@ both.
 
 ## Roadmap
 
-A multi-session driver that integrates PTY readiness, bounded I/O, and process
-lifecycle for use from an external event loop is planned but not yet
+A public single-session API that integrates PTY readiness, bounded I/O, and
+process lifecycle for use from an external event loop is planned but not yet
 implemented.

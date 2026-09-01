@@ -11,7 +11,7 @@
 //!
 //! Cursor and keypad forms follow common xterm / VT practice (DECCKM, DECNKM /
 //! application keypad). Bracketed paste uses the xterm markers `CSI 200~` /
-//! `CSI 201~`. These identifiers may evolve with host terminals; muxnix encodes
+//! `CSI 201~`. These identifiers may evolve with host terminals; termnix encodes
 //! the usual sequences and stores modes separately from I/O.
 //!
 //! Mouse report byte sequences are out of scope here; only [`MouseButton`]

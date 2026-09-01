@@ -1,6 +1,6 @@
 //! A Unix-only foundation for building terminal multiplexers.
 //!
-//! `muxnix` provides PTY process lifecycle, an I/O-free terminal emulator,
+//! `termnix` provides PTY process lifecycle, an I/O-free terminal emulator,
 //! logical input encoding, and a [`SessionDriver`] that owns several
 //! PTY-backed terminal sessions and is driven from an external event loop,
 //! without depending on an async runtime. Window, pane, and layout concepts

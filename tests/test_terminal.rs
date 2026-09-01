@@ -1,13 +1,13 @@
-fn term(rows: u16, cols: u16) -> muxnix::TerminalState {
-    muxnix::TerminalState::new(muxnix::Size { rows, cols })
+fn term(rows: u16, cols: u16) -> termnix::TerminalState {
+    termnix::TerminalState::new(termnix::Size { rows, cols })
 }
 
-fn text_at(term: &muxnix::TerminalState, row: u16) -> String {
+fn text_at(term: &termnix::TerminalState, row: u16) -> String {
     let cols = term.size().cols;
     let mut out = String::new();
     for col in 0..cols {
         let cell = term
-            .cell(muxnix::Position { row, col })
+            .cell(termnix::Position { row, col })
             .expect("cell in range");
         if cell.width == 0 {
             continue;
@@ -22,7 +22,7 @@ fn printable_ascii_advances_cursor() {
     let mut t = term(2, 8);
     t.feed(b"hi");
     assert_eq!(text_at(&t, 0), "hi");
-    assert_eq!(t.cursor(), muxnix::Position { row: 0, col: 2 });
+    assert_eq!(t.cursor(), termnix::Position { row: 0, col: 2 });
 }
 
 #[test]
@@ -31,7 +31,7 @@ fn carriage_return_and_line_feed() {
     t.feed(b"ab\r\ncd");
     assert_eq!(text_at(&t, 0), "ab");
     assert_eq!(text_at(&t, 1), "cd");
-    assert_eq!(t.cursor(), muxnix::Position { row: 1, col: 2 });
+    assert_eq!(t.cursor(), termnix::Position { row: 1, col: 2 });
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn line_feed_alone_keeps_column() {
     t.feed(b"ab\ncd");
     assert_eq!(text_at(&t, 0), "ab");
     assert_eq!(text_at(&t, 1), "  cd");
-    assert_eq!(t.cursor(), muxnix::Position { row: 1, col: 4 });
+    assert_eq!(t.cursor(), termnix::Position { row: 1, col: 4 });
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn backspace_moves_left_without_erasing() {
     let mut t = term(1, 8);
     t.feed(b"ab\x08c");
     assert_eq!(text_at(&t, 0), "ac");
-    assert_eq!(t.cursor(), muxnix::Position { row: 0, col: 2 });
+    assert_eq!(t.cursor(), termnix::Position { row: 0, col: 2 });
 }
 
 #[test]
@@ -56,22 +56,22 @@ fn horizontal_tab_moves_to_next_stop() {
     let mut t = term(1, 16);
     t.feed(b"a\tb");
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 0 }),
-        Some(muxnix::Cell {
+        t.cell(termnix::Position { row: 0, col: 0 }),
+        Some(termnix::Cell {
             ch: 'a',
             width: 1,
-            style: muxnix::Style::default()
+            style: termnix::Style::default()
         })
     );
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 8 }),
-        Some(muxnix::Cell {
+        t.cell(termnix::Position { row: 0, col: 8 }),
+        Some(termnix::Cell {
             ch: 'b',
             width: 1,
-            style: muxnix::Style::default()
+            style: termnix::Style::default()
         })
     );
-    assert_eq!(t.cursor(), muxnix::Position { row: 0, col: 9 });
+    assert_eq!(t.cursor(), termnix::Position { row: 0, col: 9 });
 }
 
 #[test]
@@ -87,7 +87,7 @@ fn wrap_at_end_of_line() {
     t.feed(b"abcd");
     assert_eq!(text_at(&t, 0), "abc");
     assert_eq!(text_at(&t, 1), "d");
-    assert_eq!(t.cursor(), muxnix::Position { row: 1, col: 1 });
+    assert_eq!(t.cursor(), termnix::Position { row: 1, col: 1 });
 }
 
 #[test]
@@ -103,18 +103,18 @@ fn wide_character_occupies_two_cells() {
     let mut t = term(1, 4);
     t.feed("あ".as_bytes());
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 0 }),
-        Some(muxnix::Cell {
+        t.cell(termnix::Position { row: 0, col: 0 }),
+        Some(termnix::Cell {
             ch: 'あ',
             width: 2,
-            style: muxnix::Style::default()
+            style: termnix::Style::default()
         })
     );
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 1 }),
-        Some(muxnix::Cell::CONTINUATION)
+        t.cell(termnix::Position { row: 0, col: 1 }),
+        Some(termnix::Cell::CONTINUATION)
     );
-    assert_eq!(t.cursor(), muxnix::Position { row: 0, col: 2 });
+    assert_eq!(t.cursor(), termnix::Position { row: 0, col: 2 });
 }
 
 #[test]
@@ -123,16 +123,16 @@ fn overwriting_wide_character_clears_both_cells() {
     t.feed("あ".as_bytes());
     t.feed(b"\rx");
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 0 }),
-        Some(muxnix::Cell {
+        t.cell(termnix::Position { row: 0, col: 0 }),
+        Some(termnix::Cell {
             ch: 'x',
             width: 1,
-            style: muxnix::Style::default()
+            style: termnix::Style::default()
         })
     );
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 1 }),
-        Some(muxnix::Cell::EMPTY)
+        t.cell(termnix::Position { row: 0, col: 1 }),
+        Some(termnix::Cell::EMPTY)
     );
 }
 
@@ -142,15 +142,15 @@ fn overwriting_continuation_clears_lead() {
     t.feed("あ".as_bytes());
     t.feed(b"\x08y");
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 0 }),
-        Some(muxnix::Cell::EMPTY)
+        t.cell(termnix::Position { row: 0, col: 0 }),
+        Some(termnix::Cell::EMPTY)
     );
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 1 }),
-        Some(muxnix::Cell {
+        t.cell(termnix::Position { row: 0, col: 1 }),
+        Some(termnix::Cell {
             ch: 'y',
             width: 1,
-            style: muxnix::Style::default()
+            style: termnix::Style::default()
         })
     );
 }
@@ -162,16 +162,16 @@ fn wide_character_wraps_when_one_column_remains() {
     t.feed("あ".as_bytes());
     assert_eq!(text_at(&t, 0), "ab");
     assert_eq!(
-        t.cell(muxnix::Position { row: 1, col: 0 }),
-        Some(muxnix::Cell {
+        t.cell(termnix::Position { row: 1, col: 0 }),
+        Some(termnix::Cell {
             ch: 'あ',
             width: 2,
-            style: muxnix::Style::default()
+            style: termnix::Style::default()
         })
     );
     assert_eq!(
-        t.cell(muxnix::Position { row: 1, col: 1 }),
-        Some(muxnix::Cell::CONTINUATION)
+        t.cell(termnix::Position { row: 1, col: 1 }),
+        Some(termnix::Cell::CONTINUATION)
     );
 }
 
@@ -180,20 +180,20 @@ fn resize_preserves_overlap_and_clamps_cursor() {
     let mut t = term(2, 4);
     t.feed(b"abcd");
     t.feed(b"xy");
-    t.resize(muxnix::Size { rows: 1, cols: 2 });
-    assert_eq!(t.size(), muxnix::Size { rows: 1, cols: 2 });
+    t.resize(termnix::Size { rows: 1, cols: 2 });
+    assert_eq!(t.size(), termnix::Size { rows: 1, cols: 2 });
     assert_eq!(text_at(&t, 0), "ab");
-    assert_eq!(t.cursor(), muxnix::Position { row: 0, col: 1 });
+    assert_eq!(t.cursor(), termnix::Position { row: 0, col: 1 });
 }
 
 #[test]
 fn resize_clears_clipped_wide_character() {
     let mut t = term(1, 4);
     t.feed("あ".as_bytes());
-    t.resize(muxnix::Size { rows: 1, cols: 1 });
+    t.resize(termnix::Size { rows: 1, cols: 1 });
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 0 }),
-        Some(muxnix::Cell::EMPTY)
+        t.cell(termnix::Position { row: 0, col: 0 }),
+        Some(termnix::Cell::EMPTY)
     );
 }
 
@@ -205,11 +205,11 @@ fn incomplete_utf8_is_completed_across_feed_calls() {
     assert_eq!(text_at(&t, 0), "");
     t.feed(&bytes[1..]);
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 0 }),
-        Some(muxnix::Cell {
+        t.cell(termnix::Position { row: 0, col: 0 }),
+        Some(termnix::Cell {
             ch: 'あ',
             width: 2,
-            style: muxnix::Style::default()
+            style: termnix::Style::default()
         })
     );
 }
@@ -219,19 +219,19 @@ fn invalid_utf8_becomes_replacement_character() {
     let mut t = term(1, 4);
     t.feed(&[0xff, b'x']);
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 0 }),
-        Some(muxnix::Cell {
+        t.cell(termnix::Position { row: 0, col: 0 }),
+        Some(termnix::Cell {
             ch: '\u{FFFD}',
             width: 1,
-            style: muxnix::Style::default()
+            style: termnix::Style::default()
         })
     );
     assert_eq!(
-        t.cell(muxnix::Position { row: 0, col: 1 }),
-        Some(muxnix::Cell {
+        t.cell(termnix::Position { row: 0, col: 1 }),
+        Some(termnix::Cell {
             ch: 'x',
             width: 1,
-            style: muxnix::Style::default()
+            style: termnix::Style::default()
         })
     );
 }
@@ -241,7 +241,7 @@ fn combining_character_is_ignored() {
     let mut t = term(1, 4);
     t.feed("a\u{0301}".as_bytes());
     assert_eq!(text_at(&t, 0), "a");
-    assert_eq!(t.cursor(), muxnix::Position { row: 0, col: 1 });
+    assert_eq!(t.cursor(), termnix::Position { row: 0, col: 1 });
 }
 
 #[test]
@@ -267,27 +267,27 @@ fn cup_and_el_move_and_erase() {
     let mut t = term(3, 8);
     t.feed(b"abcdef\x1b[1;3H\x1b[KX");
     assert_eq!(text_at(&t, 0), "abX");
-    assert_eq!(t.cursor(), muxnix::Position { row: 0, col: 3 });
+    assert_eq!(t.cursor(), termnix::Position { row: 0, col: 3 });
 }
 
 #[test]
 fn sgr_bold_and_256_color_attach_to_cells() {
     let mut t = term(1, 8);
     t.feed(b"\x1b[1;38;5;196mZ");
-    let cell = t.cell(muxnix::Position { row: 0, col: 0 }).expect("cell");
+    let cell = t.cell(termnix::Position { row: 0, col: 0 }).expect("cell");
     assert_eq!(cell.ch, 'Z');
     assert!(cell.style.bold);
-    assert_eq!(cell.style.foreground, muxnix::Color::Indexed(196));
+    assert_eq!(cell.style.foreground, termnix::Color::Indexed(196));
 }
 
 #[test]
 fn sgr_truecolor_and_reset() {
     let mut t = term(1, 8);
     t.feed(b"\x1b[48;2;10;20;30mA\x1b[0mB");
-    let a = t.cell(muxnix::Position { row: 0, col: 0 }).expect("A");
-    let b = t.cell(muxnix::Position { row: 0, col: 1 }).expect("B");
-    assert_eq!(a.style.background, muxnix::Color::Rgb(10, 20, 30));
-    assert_eq!(b.style, muxnix::Style::default());
+    let a = t.cell(termnix::Position { row: 0, col: 0 }).expect("A");
+    let b = t.cell(termnix::Position { row: 0, col: 1 }).expect("B");
+    assert_eq!(a.style.background, termnix::Color::Rgb(10, 20, 30));
+    assert_eq!(b.style, termnix::Style::default());
 }
 
 #[test]
@@ -311,15 +311,15 @@ fn private_modes_are_retained() {
     assert!(modes.application_cursor);
     assert!(!modes.cursor_visible);
     assert!(modes.bracketed_paste);
-    assert_eq!(modes.mouse, muxnix::MouseReporting::Normal);
+    assert_eq!(modes.mouse, termnix::MouseReporting::Normal);
     assert!(modes.mouse_sgr);
 }
 
 #[test]
 fn osc_title_is_stored() {
     let mut t = term(1, 8);
-    t.feed(b"\x1b]2;muxnix-title\x07");
-    assert_eq!(t.title(), "muxnix-title");
+    t.feed(b"\x1b]2;termnix-title\x07");
+    assert_eq!(t.title(), "termnix-title");
 }
 
 #[test]
@@ -329,7 +329,7 @@ fn cursor_position_report_is_an_action() {
     let actions = t.drain_actions();
     assert_eq!(
         actions,
-        vec![muxnix::TerminalAction::WritePty(b"\x1b[3;4R".to_vec())]
+        vec![termnix::TerminalAction::WritePty(b"\x1b[3;4R".to_vec())]
     );
 }
 

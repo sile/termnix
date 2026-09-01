@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use muxnix::{
+use termnix::{
     DriverConfig, DriverError, DriverEvent, KeyCode, KeyEvent, Position, Readiness,
     ScrollbackLimits, SessionConfig, SessionDriver, SessionId, SessionStatus, SignalOutcome, Size,
 };

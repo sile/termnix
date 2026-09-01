@@ -21,7 +21,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "muxnix"
+name = "noprop"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73026775e276cb339c67cdf71b2a8c067991fbe1cfbf25e17c7420afe6f829f7"
+
+[[package]]
+name = "termnix"
 version = "0.0.1"
 dependencies = [
  "libc",
@@ -29,12 +35,6 @@ dependencies = [
  "unicode-width",
  "vte",
 ]
-
-[[package]]
-name = "noprop"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73026775e276cb339c67cdf71b2a8c067991fbe1cfbf25e17c7420afe6f829f7"
 
 [[package]]
 name = "unicode-width"
