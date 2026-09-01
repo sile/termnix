@@ -138,11 +138,7 @@ fn drain_and_compare(
         "{where_}: alternate screen mismatch"
     );
     assert_eq!(a.title(), b.title(), "{where_}: title mismatch");
-    assert_eq!(
-        a.style(),
-        b.style(),
-        "{where_}: style mismatch"
-    );
+    assert_eq!(a.style(), b.style(), "{where_}: style mismatch");
     let actions_a = a.drain_actions();
     let actions_b = b.drain_actions();
     assert_eq!(actions_a, actions_b, "{where_}: action mismatch");

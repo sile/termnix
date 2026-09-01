@@ -257,26 +257,34 @@ fn default_terminal_state_has_disabled_scrollback() {
 
 #[test]
 fn either_zero_bound_disables_scrollback() {
-    assert!(ScrollbackLimits {
-        max_lines: 0,
-        max_cells: 5
-    }
-    .is_disabled());
-    assert!(ScrollbackLimits {
-        max_lines: 5,
-        max_cells: 0
-    }
-    .is_disabled());
-    assert!(ScrollbackLimits {
-        max_lines: 0,
-        max_cells: 0
-    }
-    .is_disabled());
-    assert!(!ScrollbackLimits {
-        max_lines: 5,
-        max_cells: 50
-    }
-    .is_disabled());
+    assert!(
+        ScrollbackLimits {
+            max_lines: 0,
+            max_cells: 5
+        }
+        .is_disabled()
+    );
+    assert!(
+        ScrollbackLimits {
+            max_lines: 5,
+            max_cells: 0
+        }
+        .is_disabled()
+    );
+    assert!(
+        ScrollbackLimits {
+            max_lines: 0,
+            max_cells: 0
+        }
+        .is_disabled()
+    );
+    assert!(
+        !ScrollbackLimits {
+            max_lines: 5,
+            max_cells: 50
+        }
+        .is_disabled()
+    );
 
     let mut t = TerminalState::with_scrollback(
         Size { rows: 2, cols: 4 },
