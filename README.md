@@ -51,8 +51,18 @@ scroll-downs, the alternate screen, and resize never enter history. CSI ED 2
 clears the visible screen, CSI ED 3 clears only the scrollback, and RIS clears
 both.
 
+## Terminal session API
+
+`Session` owns one PTY-backed terminal session and is driven from an external
+event loop without an async runtime. The caller registers the session's fd
+(`Session::poll_source`), feeds readiness back (`Session::drive` with a
+per-drive `DriveBudget`), and reads lifecycle events and the poll source
+changes from the result. Owning, identifying, and scheduling several sessions
+is the caller's responsibility; bounded read/write, terminal replies,
+mode-aware input encoding, resize, and the child-process lifecycle stay inside
+the session.
+
 ## Roadmap
 
-A public single-session API that integrates PTY readiness, bounded I/O, and
-process lifecycle for use from an external event loop is planned but not yet
-implemented.
+A public API for updating scrollback limits while a session is running is
+planned but not yet implemented.

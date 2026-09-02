@@ -41,7 +41,10 @@ fn arrow_keys_differ_between_normal_and_application_cursor() {
     );
 
     let left = key(termnix::KeyCode::Left);
-    assert_eq!(termnix::encode_key(left, modes_normal()), b"\x1b[D".to_vec());
+    assert_eq!(
+        termnix::encode_key(left, modes_normal()),
+        b"\x1b[D".to_vec()
+    );
     assert_eq!(
         termnix::encode_key(left, modes_app_cursor()),
         b"\x1bOD".to_vec()
@@ -60,11 +63,20 @@ fn keypad_digit_differs_between_normal_and_application_keypad() {
 
 #[test]
 fn ctrl_and_alt_modifiers_apply_to_characters() {
-    let ctrl_a = key_mods(termnix::KeyCode::Char('a'), termnix::Modifiers::new().ctrl());
-    assert_eq!(termnix::encode_key(ctrl_a, modes_normal()), b"\x01".to_vec());
+    let ctrl_a = key_mods(
+        termnix::KeyCode::Char('a'),
+        termnix::Modifiers::new().ctrl(),
+    );
+    assert_eq!(
+        termnix::encode_key(ctrl_a, modes_normal()),
+        b"\x01".to_vec()
+    );
 
     let alt_x = key_mods(termnix::KeyCode::Char('x'), termnix::Modifiers::new().alt());
-    assert_eq!(termnix::encode_key(alt_x, modes_normal()), b"\x1bx".to_vec());
+    assert_eq!(
+        termnix::encode_key(alt_x, modes_normal()),
+        b"\x1bx".to_vec()
+    );
 
     let ctrl_alt_c = key_mods(
         termnix::KeyCode::Char('c'),
