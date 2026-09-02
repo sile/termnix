@@ -294,6 +294,12 @@ fn metrics_reflect_pending_and_cumulative_state() {
     assert!(after.pty_bytes_written >= 6, "bytes not written");
     assert_eq!(after.pending_write_bytes, 0);
     assert!(!session.interests().writable, "stale writable interest");
+    // With nothing queued and the fd drained to WouldBlock, no immediate
+    // re-pump is requested.
+    assert!(
+        !session.needs_pump(),
+        "no work should remain after a full drain"
+    );
 }
 
 #[test]
