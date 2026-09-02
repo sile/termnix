@@ -124,19 +124,6 @@ impl PtyProcess {
         Ok(status)
     }
 
-    /// Observes whether the direct child has exited without reaping it.
-    ///
-    /// Uses `waitid(P_PID, ..., WEXITED | WNOHANG | WNOWAIT)` so the caller can
-    /// detect an exit while retaining ownership. If the child was already
-    /// reaped through [`Self::try_wait`] or [`Self::wait`], the cached status
-    /// is returned instead.
-    pub(crate) fn observe_exit(&self) -> io::Result<Option<ObservedExit>> {
-        if let Some(status) = self.reaped_status {
-            return Ok(Some(ObservedExit::from_exit_status(status)));
-        }
-        poll_exit_waitid(self.child.id() as libc::pid_t)
-    }
-
     /// Sends `signal` to the original process group (`kill(-pgid, signal)`).
     ///
     /// The child is a session leader created with `setsid`, so its PID equals
@@ -452,19 +439,6 @@ impl ClosingPtyProcess {
 
 fn clone_io_error(err: &io::Error) -> io::Error {
     io::Error::new(err.kind(), err.to_string())
-}
-
-#[cfg(test)]
-impl PtyProcess {
-    /// Builds a `PtyProcess` from parts for state-transition tests that never
-    /// perform I/O on the master.
-    pub(crate) fn from_parts(master: File, child: Child) -> Self {
-        Self {
-            master,
-            child,
-            reaped_status: None,
-        }
-    }
 }
 
 /// Classifies a `waitid` result without performing a syscall.

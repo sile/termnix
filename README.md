@@ -2,11 +2,12 @@
 
 Unix-only terminal session engine for Rust.
 
-`termnix` provides PTY process lifecycle and an I/O-free terminal emulator for
-building terminal sessions. Each session represents one PTY-backed child
-process. Owning and scheduling multiple sessions, as well as window, pane, and
-layout concepts, belong to the calling application. Host terminal raw mode and
-final frame rendering stay with the caller.
+`termnix` provides PTY process lifecycle, an I/O-free terminal emulator,
+logical input encoding, and one `Session` per PTY-backed child process,
+driven from an external event loop without an async runtime. Owning and
+scheduling multiple sessions, as well as window, pane, and layout concepts,
+belong to the calling application. Host terminal raw mode and final frame
+rendering stay with the caller.
 
 ## Terminal emulator coverage
 
@@ -33,8 +34,8 @@ Explicitly out of scope: Sixel, Kitty graphics, iTerm2 images, and DCS payloads
 
 `encode_key` and `encode_paste` turn logical input into PTY bytes. Modes come
 from an explicit `TerminalModes` argument (for example from the destination
-terminal state); host focus is never implied. Plain text and raw bytes are
-written by the caller. Mouse report bytes are not encoded yet—only
+terminal state); host focus is never implied. The encoded bytes are handed to
+`Session::enqueue_input`. Mouse report bytes are not encoded yet—only
 `MouseButton` is defined for application-side routing (coordinates reuse
 `Position`).
 
@@ -43,26 +44,43 @@ written by the caller. Mouse report bytes are not encoded yet—only
 `TerminalState::snapshot` returns an owned `TerminalSnapshot` (visible screen,
 cursor, modes, style, title, alternate-screen flag, and primary-derived scrollback)
 without I/O, so a consumer can render or retain the data while the session
-keeps running. `TerminalState::with_scrollback` enables bounded scrollback:
-the primary screen's full-screen scrolls (LF/VT/FF, IND, NEL, autowrap, CSI SU)
-retain displaced rows up to `ScrollbackLimits` (line and cell bounds; either
-bound at zero disables history), evicting the oldest complete lines first. Partial scroll regions, line edits,
+keeps running. The primary screen's full-screen scrolls (LF/VT/FF, IND, NEL,
+autowrap, CSI SU) retain displaced rows with no built-in cap; `trim_scrollback`
+removes the oldest whole lines to caller-chosen line and cell bounds (either
+bound at zero clears the history). Partial scroll regions, line edits,
 scroll-downs, the alternate screen, and resize never enter history. CSI ED 2
 clears the visible screen, CSI ED 3 clears only the scrollback, and RIS clears
 both.
 
 ## Terminal session API
 
-`Session` owns one PTY-backed terminal session and is driven from an external
-event loop without an async runtime. The caller registers the session's fd
-(`Session::poll_source`), feeds readiness back (`Session::drive` with a
-per-drive `DriveBudget`), and reads lifecycle events and the poll source
-changes from the result. Owning, identifying, and scheduling several sessions
-is the caller's responsibility; bounded read/write, terminal replies,
-mode-aware input encoding, resize, and the child-process lifecycle stay inside
-the session.
+`Session` owns one PTY-backed terminal session. The caller registers
+`Session::fd` with the interests from `Session::interests`, calls
+`Session::pump_io` whenever the fd is ready (and after any state change), and
+repeats while `Session::needs_pump` reports more internal work before waiting
+in the poll loop. The fd is non-blocking, so no readiness flags are passed to
+the session; `pump_io` learns what is possible from its own `WouldBlock`
+results, which keeps edge-triggered loops correct.
+
+```rust
+session.pump_io()?;
+while session.needs_pump() {
+    session.pump_io()?;
+}
+reregister(session.fd(), session.interests());
+```
+
+Application input (`Session::enqueue_input`) and terminal replies share one
+FIFO write queue: a reply is appended in chronological order behind already
+accepted input, and decoding pauses until that reply is fully written, so at
+most one bounded reply is ever pending. The session applies no backpressure
+policy to application input; compare the encoded length against
+`Session::metrics().pending_write_bytes` to decide whether to enqueue, hold,
+or drop. The child-process lifecycle is `try_wait` / `wait` (status cached),
+with `close`, `terminate`, `force_terminate`, and `shutdown` for teardown.
+`SessionMetrics` exposes cumulative counters plus current and maximum values
+for the read buffer, write queue, and scrollback.
 
 ## Roadmap
 
-A public API for updating scrollback limits while a session is running is
-planned but not yet implemented.
+No planned work is currently tracked.

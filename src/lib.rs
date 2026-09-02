@@ -22,10 +22,7 @@ mod terminal_types;
 
 pub use input::{KeyCode, KeyEvent, Modifiers, MouseButton, encode_key, encode_paste};
 pub use pty::{ClosingPtyProcess, ObservedExit, PtyProcess, SignalOutcome};
-pub use session::{
-    DriveBudget, DriveResult, Interests, PollSourceEntry, Readiness, RegistrationToken, Session,
-    SessionConfig, SessionError, SessionEvent, SessionStatus,
-};
+pub use session::{Interests, Session, SessionMetrics, SessionStatus};
 pub use size::Size;
 pub use snapshot::{TerminalLine, TerminalSnapshot};
 pub use terminal::{

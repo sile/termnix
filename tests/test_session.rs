@@ -6,35 +6,39 @@ use std::{
 };
 
 use termnix::{
-    DriveBudget, KeyCode, KeyEvent, Position, Readiness, Session, SessionConfig, SessionError,
-    SessionEvent, SessionStatus, SignalOutcome, Size,
+    KeyCode, KeyEvent, Session, SessionStatus, SignalOutcome, Size, encode_key, encode_paste,
 };
 
 const DEADLINE: Duration = Duration::from_secs(15);
 
-fn session_config() -> SessionConfig {
-    SessionConfig::default()
-}
-
 fn spawn_session(script: &str) -> Session {
-    spawn_session_with(script, session_config())
-}
-
-fn spawn_session_with(script: &str, config: SessionConfig) -> Session {
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(script);
-    Session::new(&mut command, config).expect("create session")
+    Session::new(&mut command, Size::new(24, 80).expect("default size")).expect("create session")
 }
 
-/// Renders the snapshot's visible cells as rows, dropping wide-character
-/// continuation cells and trailing blanks.
+/// Renders the snapshot's scrollback and visible cells as rows, dropping
+/// wide-character continuation cells and trailing blanks.
 fn visible_text(session: &Session) -> String {
-    let snapshot = session.snapshot().expect("snapshot");
+    let snapshot = session.snapshot();
     let mut out = String::new();
+    for line in snapshot.scrollback() {
+        let mut row = String::new();
+        for cell in line.cells() {
+            if cell.width == 0 {
+                continue;
+            }
+            row.push(cell.ch);
+        }
+        out.push_str(row.trim_end());
+        out.push('\n');
+    }
     for row in 0..snapshot.size().rows.get() {
         let mut line = String::new();
         for col in 0..snapshot.size().cols.get() {
-            let cell = snapshot.cell(Position { row, col }).expect("cell in range");
+            let cell = snapshot
+                .cell(termnix::Position { row, col })
+                .expect("cell in range");
             if cell.width == 0 {
                 continue;
             }
@@ -46,40 +50,46 @@ fn visible_text(session: &Session) -> String {
     out
 }
 
-/// Polls every session's registered fd, drives each session with its own
-/// readiness, and polls child exits until `cond` holds or the deadline
-/// expires. `cond` receives the sessions and every lifecycle event collected
-/// so far (events are never consumed by the helper).
-fn drive_until<F>(sessions: &mut [Session], mut cond: F)
+/// Pumps every session once and drains each `needs_pump` loop.
+fn pump_all(sessions: &mut [Session]) {
+    for session in sessions.iter_mut() {
+        session.pump_io().expect("pump");
+        while session.needs_pump() {
+            session.pump_io().expect("pump");
+        }
+    }
+}
+
+/// Pumps every session and polls their registered fds until `cond` holds or
+/// the deadline expires. `cond` receives the sessions mutably so tests can
+/// reap or enqueue from inside it.
+fn pump_until<F>(sessions: &mut [Session], mut cond: F)
 where
-    F: FnMut(&[Session], &[SessionEvent]) -> bool,
+    F: FnMut(&mut [Session]) -> bool,
 {
     let deadline = Instant::now() + DEADLINE;
-    let mut seen_events: Vec<SessionEvent> = Vec::new();
     while Instant::now() < deadline {
+        pump_all(sessions);
+        if cond(sessions) {
+            return;
+        }
         let mut pollfds = Vec::new();
-        let mut tokens = Vec::new();
-        for session in sessions.iter_mut() {
-            if let Some(entry) = session.poll_source() {
+        for session in sessions.iter() {
+            if let Some(fd) = session.fd() {
+                let interests = session.interests();
                 let mut events = 0;
-                if entry.interests.readable {
+                if interests.readable {
                     events |= libc::POLLIN;
                 }
-                if entry.interests.writable {
+                if interests.writable {
                     events |= libc::POLLOUT;
                 }
                 pollfds.push(libc::pollfd {
-                    fd: entry.fd,
+                    fd,
                     events,
                     revents: 0,
                 });
-                tokens.push(entry.token);
             }
-        }
-        let new_events = poll_processes(sessions).expect("poll processes");
-        seen_events.extend(new_events);
-        if cond(sessions, &seen_events) {
-            return;
         }
         if pollfds.is_empty() {
             std::thread::sleep(Duration::from_millis(10));
@@ -93,62 +103,20 @@ where
             }
             panic!("poll failed: {err}");
         }
-        let mut readiness = Vec::new();
-        for (token, pollfd) in tokens.iter().zip(pollfds.iter()) {
-            let mut r = Readiness::default();
-            if pollfd.revents & libc::POLLIN != 0 {
-                r.readable = true;
-            }
-            if pollfd.revents & libc::POLLOUT != 0 {
-                r.writable = true;
-            }
-            if pollfd.revents & libc::POLLHUP != 0 {
-                r.hangup = true;
-            }
-            if pollfd.revents & libc::POLLERR != 0 {
-                r.error = true;
-            }
-            if r != Readiness::default() {
-                readiness.push((*token, r));
-            }
-        }
-        // Drive each session with the readiness observed on its own fd. A
-        // session with no observed edge still gets a drive so buffered work
-        // can progress.
-        for session in sessions.iter_mut() {
-            let token = session.poll_source().map(|entry| entry.token);
-            let r = token.and_then(|token| {
-                readiness
-                    .iter()
-                    .find(|(t, _)| *t == token)
-                    .map(|(_, r)| (token, *r))
-            });
-            let _ = session.drive(r, DriveBudget::default()).expect("drive");
-        }
     }
     panic!("timed out waiting for condition");
 }
 
-/// Observes child exits on every session, collecting at-most-once events.
-fn poll_processes(sessions: &mut [Session]) -> Result<Vec<SessionEvent>, SessionError> {
-    let mut events = Vec::new();
-    for session in sessions.iter_mut() {
-        if let Some(event) = session.poll_process()? {
-            events.push(event);
-        }
-    }
-    Ok(events)
-}
-
-/// Waits for the once-per-session exit event.
-fn wait_exit(session: &mut Session) -> SessionEvent {
+/// Pumps until the session's child has exited and returns its status.
+fn wait_exit(session: &mut Session) -> std::process::ExitStatus {
     let deadline = Instant::now() + DEADLINE;
     loop {
-        if let Some(event) = session.poll_process().expect("poll processes") {
-            return event;
+        pump_all(std::slice::from_mut(session));
+        if let Some(status) = session.try_wait().expect("try_wait") {
+            return status;
         }
         if Instant::now() > deadline {
-            panic!("timed out waiting for exit event");
+            panic!("timed out waiting for exit");
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -157,10 +125,12 @@ fn wait_exit(session: &mut Session) -> SessionEvent {
 #[test]
 fn decodes_child_output_into_terminal_state() {
     let mut session = spawn_session("printf 'hello-session\\n'");
-    drive_until(std::slice::from_mut(&mut session), |sessions, _| {
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("hello-session")
             && sessions[0].session_status() == SessionStatus::Eof
     });
+    let status = wait_exit(&mut session);
+    assert!(status.success(), "status={status:?}");
 }
 
 #[test]
@@ -170,15 +140,11 @@ fn input_routes_to_the_target_session_only() {
     let mut b =
         spawn_session("stty -echo; while IFS= read -r line; do printf 'B:%s\\n' \"$line\"; done");
 
-    a.enqueue_text("hello-a").expect("enqueue a");
-    b.enqueue_text("hello-b").expect("enqueue b");
-    a.enqueue_key(KeyEvent::new(KeyCode::Enter))
-        .expect("enter a");
-    b.enqueue_key(KeyEvent::new(KeyCode::Enter))
-        .expect("enter b");
+    a.enqueue_input(b"hello-a\n").expect("enqueue a");
+    b.enqueue_input(b"hello-b\n").expect("enqueue b");
 
     let mut sessions = [a, b];
-    drive_until(&mut sessions, |sessions, _| {
+    pump_until(&mut sessions, |sessions| {
         let text_a = visible_text(&sessions[0]);
         let text_b = visible_text(&sessions[1]);
         text_a.contains("A:hello-a")
@@ -190,23 +156,26 @@ fn input_routes_to_the_target_session_only() {
 
 #[test]
 fn key_text_paste_and_raw_reach_the_child() {
-    // Capture raw bytes received by the child so all four enqueue paths are
+    // Capture raw bytes received by the child so all enqueue paths are
     // observable. The child switches to raw mode and signals readiness before
     // we enqueue, so no line-discipline translation (CR->LF) applies.
     let mut session = spawn_session(
         "stty raw -echo; printf 'READY\\n'; r=$(dd bs=1 count=9 2>/dev/null | od -An -v -tu1); printf 'GOT:%s\\n' \"$r\"",
     );
-    drive_until(std::slice::from_mut(&mut session), |sessions, _| {
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("READY")
     });
-    session.enqueue_text("AB").expect("text");
+    let modes = session.terminal_state().modes();
+    session.enqueue_input(b"AB").expect("text");
     session
-        .enqueue_key(KeyEvent::new(KeyCode::Enter))
+        .enqueue_input(&encode_key(KeyEvent::new(KeyCode::Enter), modes))
         .expect("enter");
-    session.enqueue_paste("CD").expect("paste");
-    session.enqueue_raw(b"EFGH").expect("raw");
+    session
+        .enqueue_input(&encode_paste("CD", modes))
+        .expect("paste");
+    session.enqueue_input(b"EFGH").expect("raw");
 
-    drive_until(std::slice::from_mut(&mut session), |sessions, _| {
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("GOT:")
     });
     let text = visible_text(&session);
@@ -226,7 +195,7 @@ fn query_reply_returns_to_the_querying_session() {
     let mut session = spawn_session(
         "stty -echo -icanon min 1 time 0; printf '\\033[c'; r=$(dd bs=1 count=5 2>/dev/null | od -An -tu1); printf 'REPLY:%s\\n' \"$r\"",
     );
-    drive_until(std::slice::from_mut(&mut session), |sessions, _| {
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("REPLY:")
     });
     let text = visible_text(&session);
@@ -240,40 +209,91 @@ fn query_reply_returns_to_the_querying_session() {
 }
 
 #[test]
-fn held_reply_resumes_without_a_new_os_edge() {
-    // Fill the outbound queue so a terminal reply cannot be admitted, then
-    // verify the reply is re-admitted and written once the queue drains, all
-    // from drive calls that observe no new OS edge.
-    let config = SessionConfig {
-        write_queue_limit: 40,
-        pending_reply_limit: 40,
-        ..session_config()
-    };
-    // 36 filler bytes leave 4 free bytes, less than the 5-byte reply. The
-    // child reads 36 + 5 = 41 bytes total.
-    let mut session = spawn_session_with(
-        "stty raw -echo; printf '\\033[c'; r=$(dd bs=1 count=41 2>/dev/null | od -An -v -tu1); printf 'REPLY:%s\\n' \"$r\"",
-        config,
+fn input_and_reply_keep_fifo_order() {
+    // Enqueue "ABT": the child's trigger read consumes "A", so "BT" is the
+    // A-part accepted before the reply. R = the 5-byte DA reply. B = "CD"
+    // accepted after. The child emits the query only after reading the
+    // trigger and prints Q_SENT after the query, so R is generated strictly
+    // after A is accepted and the child observes A -> R -> B on the wire:
+    // 66 84 27 91 63 54 99 67 68.
+    let mut session = spawn_session(
+        "stty raw -echo; printf 'READY\\n'; dd bs=1 count=1 >/dev/null 2>&1; printf '\\033[c'; printf 'Q_SENT\\n'; r=$(dd bs=1 count=9 2>/dev/null | od -An -v -tu1); printf 'GOT:%s\\n' \"$r\"",
     );
-    session.enqueue_raw(&b"F".repeat(36)).expect("fill queue");
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        visible_text(&sessions[0]).contains("READY")
+    });
+    session.enqueue_input(b"ABT").expect("accept before reply");
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        // The query has been written and decoded, so the reply is generated
+        // strictly after A. Enqueue B only now.
+        visible_text(&sessions[0]).contains("Q_SENT")
+    });
+    session.enqueue_input(b"CD").expect("accept after reply");
 
-    drive_until(std::slice::from_mut(&mut session), |sessions, _| {
-        visible_text(&sessions[0]).contains("REPLY:")
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        visible_text(&sessions[0]).contains("GOT:")
     });
     let text = visible_text(&session);
     let normalized: String = text.split_whitespace().collect();
-    // 36 x 'F' (70) followed by the 5-byte reply (27 91 63 54 99).
-    let reply_index = normalized.find("REPLY:").expect("REPLY marker");
-    let digits = &normalized[reply_index + "REPLY:".len()..];
-    assert_eq!(
-        digits.matches("70").count(),
-        36,
-        "filler bytes mismatch, text={text:?}"
-    );
     assert!(
-        digits.ends_with("2791635499"),
-        "reply after queue drain mismatch, text={text:?}"
+        normalized.contains("GOT:668427916354996768"),
+        "fifo order mismatch, text={text:?}"
     );
+}
+
+#[test]
+fn reply_flood_is_bounded_and_nothing_is_dropped() {
+    // 50 DA queries produce 50 replies (250 bytes). Decoding pauses after
+    // each reply until it is written, so the pending reply never exceeds the
+    // 14-byte bound even while the child never drains.
+    let mut session = spawn_session(
+        "stty raw -echo; for i in $(seq 1 50); do printf '\\033[c'; done; r=$(dd bs=1 count=250 2>/dev/null | od -An -v -tu1); printf 'GOT:%s\\n' \"$r\"",
+    );
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        let session = &sessions[0];
+        assert!(
+            session.metrics().pending_reply_bytes <= 14,
+            "pending reply exceeded the internal bound: {}",
+            session.metrics().pending_reply_bytes
+        );
+        visible_text(session).contains("GOT:")
+    });
+    assert_eq!(
+        session.metrics().terminal_reply_bytes_generated,
+        250,
+        "a reply was dropped"
+    );
+    let text = visible_text(&session);
+    let normalized: String = text.split_whitespace().collect();
+    // 50 x "2791635499" concatenated, preceded by GOT:.
+    let expected = format!("GOT:{}", "2791635499".repeat(50));
+    assert!(
+        normalized.contains(&expected),
+        "reply flood mismatch, text={text:?}"
+    );
+}
+
+#[test]
+fn metrics_reflect_pending_and_cumulative_state() {
+    let mut session =
+        spawn_session("stty -echo; while IFS= read -r line; do printf 'X:%s\\n' \"$line\"; done");
+    session.enqueue_input(b"hello\n").expect("enqueue");
+
+    let before = session.metrics();
+    assert_eq!(before.input_bytes_enqueued, 6);
+    assert_eq!(before.pending_write_bytes, 6);
+    assert_eq!(before.pending_input_bytes, 6);
+    assert_eq!(before.pending_reply_bytes, 0);
+    assert!(session.interests().writable, "writable interest missing");
+    assert!(session.needs_pump(), "queued input should need a pump");
+
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        visible_text(&sessions[0]).contains("X:hello")
+    });
+    let after = session.metrics();
+    assert!(after.pty_bytes_written >= 6, "bytes not written");
+    assert_eq!(after.pending_write_bytes, 0);
+    assert!(!session.interests().writable, "stale writable interest");
 }
 
 #[test]
@@ -281,83 +301,36 @@ fn resize_updates_child_and_terminal_state() {
     let mut session = spawn_session(
         "stty -echo; while IFS= read -r line; do case \"$line\" in SIZE) stty size;; esac; done",
     );
-    session.resize(Size::new(33, 121).unwrap()).expect("resize");
-    assert_eq!(
-        session.terminal_state().expect("terminal state").size(),
-        Size::new(33, 121).unwrap()
-    );
-    session.enqueue_text("SIZE\n").expect("enqueue size");
-    drive_until(std::slice::from_mut(&mut session), |sessions, _| {
+    session
+        .resize(Size::new(33, 121).expect("size"))
+        .expect("resize");
+    assert_eq!(session.terminal_state().size(), Size::new(33, 121).unwrap());
+    session.enqueue_input(b"SIZE\n").expect("enqueue size");
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("33 121")
     });
 }
 
 #[test]
-fn observes_exit_and_reaps() {
-    let mut session = spawn_session("printf 'bye\\n'; exit 0");
-    let mut exit_count = 0;
-    drive_until(std::slice::from_mut(&mut session), |sessions, events| {
-        exit_count = events
-            .iter()
-            .filter(|event| matches!(event, SessionEvent::SessionExited { .. }))
-            .count();
-        sessions[0].session_status() == SessionStatus::Eof && exit_count >= 1
+fn try_wait_reaps_and_keeps_state_readable() {
+    let mut session = spawn_session("printf 'bye\\n'; exit 7");
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        sessions[0].session_status() == SessionStatus::Eof
     });
-    // The exit event is emitted exactly once.
-    assert_eq!(exit_count, 1);
 
-    // The final state and snapshot stay readable until the reap.
-    session.snapshot().expect("snapshot before reap");
-    let status = session.reap().expect("reap");
-    assert!(status.success(), "status={status:?}");
+    // The final state stays readable until the reap.
+    assert!(visible_text(&session).contains("bye"));
 
+    let status = wait_exit(&mut session);
+    assert_eq!(status.code(), Some(7), "status={status:?}");
     assert_eq!(session.session_status(), SessionStatus::Reaped);
-    assert!(matches!(session.snapshot(), Err(SessionError::Reaped)));
-    assert!(matches!(session.reap(), Err(SessionError::Reaped)));
-}
 
-#[test]
-fn stale_token_does_not_drive_a_new_session() {
-    // A token issued for one session must never be accepted by a different
-    // session, even though the OS may reuse the same fd number.
-    let mut a = spawn_session("stty -echo; IFS= read -r line; printf 'A:%s\\n' \"$line\"");
-    let token_a = a.poll_source().expect("a source").token;
-    a.close().expect("close a");
-    wait_exit(&mut a);
-    a.reap().expect("reap a");
-
-    // B produces nothing until input arrives, so a stale readiness cannot
-    // accidentally be attributed to it.
-    let mut b = spawn_session("stty -echo; IFS= read -r line; printf 'B:%s\\n' \"$line\"");
-    assert!(!visible_text(&b).contains("B:"), "B produced output");
-
-    let result = b
-        .drive(
-            Some((
-                token_a,
-                Readiness {
-                    readable: true,
-                    writable: false,
-                    hangup: false,
-                    error: false,
-                },
-            )),
-            DriveBudget::default(),
-        )
-        .expect("drive");
-    assert!(
-        result.stale_tokens.contains(&token_a),
-        "stale token should be reported"
-    );
-    assert!(!visible_text(&b).contains("B:"), "B must not change");
-
-    // A valid token for B still makes progress.
-    b.enqueue_text("hi").expect("enqueue b");
-    b.enqueue_key(KeyEvent::new(KeyCode::Enter))
-        .expect("enter b");
-    drive_until(std::slice::from_mut(&mut b), |sessions, _| {
-        visible_text(&sessions[0]).contains("B:hi")
-    });
+    // After the reap the state, snapshot, and metrics remain accessible.
+    assert!(session.terminal_state().size().rows.get() > 0);
+    assert!(visible_text(&session).contains("bye"));
+    let metrics = session.metrics();
+    assert!(metrics.pty_bytes_read > 0);
+    assert!(session.fd().is_none(), "fd should be gone after reap");
 }
 
 #[test]
@@ -365,14 +338,15 @@ fn close_then_force_terminate_reaps_a_stubborn_process_group() {
     let mut session = spawn_session("trap '' TERM HUP; while :; do sleep 30; done");
     std::thread::sleep(Duration::from_millis(200));
 
-    session.close().expect("close session");
+    session.close();
     assert_eq!(session.session_status(), SessionStatus::Closing);
+    assert!(session.fd().is_none(), "fd should be gone after close");
 
     // Graceful termination is ignored by the process group.
     assert_eq!(session.terminate().expect("terminate"), SignalOutcome::Sent);
     std::thread::sleep(Duration::from_millis(100));
     assert!(
-        session.poll_process().expect("poll").is_none(),
+        session.try_wait().expect("try_wait").is_none(),
         "SIGTERM should be ignored"
     );
 
@@ -380,8 +354,7 @@ fn close_then_force_terminate_reaps_a_stubborn_process_group() {
         session.force_terminate().expect("force terminate"),
         SignalOutcome::Sent
     );
-    wait_exit(&mut session);
-    let status = session.reap().expect("reap");
+    let status = wait_exit(&mut session);
     assert_eq!(status.signal(), Some(libc::SIGKILL));
 }
 
@@ -401,27 +374,22 @@ fn shutdown_reaps_every_session() {
 }
 
 #[test]
-fn enqueue_is_all_or_nothing_under_backpressure() {
-    let config = SessionConfig {
-        write_queue_limit: 64,
-        ..session_config()
-    };
-    let mut session = spawn_session_with(
-        "stty -echo; while IFS= read -r line; do printf 'X:%s\\n' \"$line\"; done",
-        config,
-    );
+fn closed_session_rejects_input_and_resize() {
+    let mut session = spawn_session("while :; do sleep 30; done");
+    std::thread::sleep(Duration::from_millis(200));
 
-    session.enqueue_text("hello\n").expect("fits");
-    let oversized = "x".repeat(100);
-    assert!(matches!(
-        session.enqueue_text(&oversized),
-        Err(SessionError::Backpressure)
-    ));
-    // The oversized input was not partially admitted.
-    drive_until(std::slice::from_mut(&mut session), |sessions, _| {
-        let text = visible_text(&sessions[0]);
-        text.contains("X:hello") && !text.contains("X:xxxxx")
-    });
+    // Open session accepts all bytes.
+    session.enqueue_input(b"hello").expect("accept while open");
+    session.close();
+    // pump_io after close is a successful no-op.
+    session.pump_io().expect("pump after close");
+
+    let err = session.enqueue_input(b"x").expect_err("closed rejects");
+    assert_eq!(err.kind(), ErrorKind::BrokenPipe);
+    let err = session
+        .resize(Size::new(40, 40).expect("size"))
+        .expect_err("closed rejects");
+    assert_eq!(err.kind(), ErrorKind::BrokenPipe);
 }
 
 #[test]
@@ -429,7 +397,7 @@ fn multiple_sessions_are_driven_independently() {
     let a = spawn_session("printf 'A_READY\\n'; sleep 30");
     let b = spawn_session("printf 'B_READY\\n'; sleep 30");
     let mut sessions = [a, b];
-    drive_until(&mut sessions, |sessions, _| {
+    pump_until(&mut sessions, |sessions| {
         visible_text(&sessions[0]).contains("A_READY")
             && visible_text(&sessions[1]).contains("B_READY")
     });
@@ -443,4 +411,27 @@ fn multiple_sessions_are_driven_independently() {
         !text_b.contains("A_READY"),
         "B mixed in A output: {text_b:?}"
     );
+}
+
+#[test]
+fn trim_scrollback_via_session_matches_terminal_state() {
+    let mut session =
+        spawn_session("for i in $(seq 1 40); do printf 'line-%02d\\n' \"$i\"; done; sleep 0.2");
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        sessions[0].metrics().scrollback_lines >= 10
+    });
+    let before = session.metrics();
+    assert!(before.scrollback_lines > 0);
+    assert_eq!(before.scrollback_lines, before.max_scrollback_lines);
+    assert!(before.scrollback_cells > 0);
+
+    session.trim_scrollback(5, usize::MAX);
+    let after = session.metrics();
+    assert_eq!(after.scrollback_lines, 5);
+    // Each retained row keeps its full 80-cell width.
+    assert_eq!(after.scrollback_cells, 5 * 80);
+
+    session.trim_scrollback(usize::MAX, 0);
+    assert_eq!(session.metrics().scrollback_lines, 0);
+    assert_eq!(session.metrics().scrollback_cells, 0);
 }
