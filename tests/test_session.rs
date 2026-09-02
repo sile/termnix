@@ -127,7 +127,7 @@ fn decodes_child_output_into_terminal_state() {
     let mut session = spawn_session("printf 'hello-session\\n'");
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("hello-session")
-            && sessions[0].session_status() == SessionStatus::Eof
+            && sessions[0].status() == SessionStatus::Eof
     });
     let status = wait_exit(&mut session);
     assert!(status.success(), "status={status:?}");
@@ -321,7 +321,7 @@ fn resize_updates_child_and_terminal_state() {
 fn try_wait_reaps_and_keeps_state_readable() {
     let mut session = spawn_session("printf 'bye\\n'; exit 7");
     pump_until(std::slice::from_mut(&mut session), |sessions| {
-        sessions[0].session_status() == SessionStatus::Eof
+        sessions[0].status() == SessionStatus::Eof
     });
 
     // The final state stays readable until the reap.
@@ -329,7 +329,7 @@ fn try_wait_reaps_and_keeps_state_readable() {
 
     let status = wait_exit(&mut session);
     assert_eq!(status.code(), Some(7), "status={status:?}");
-    assert_eq!(session.session_status(), SessionStatus::Reaped);
+    assert_eq!(session.status(), SessionStatus::Reaped);
 
     // After the reap the state, snapshot, and metrics remain accessible.
     assert!(session.terminal_state().size().rows.get() > 0);
@@ -345,7 +345,7 @@ fn close_then_force_terminate_reaps_a_stubborn_process_group() {
     std::thread::sleep(Duration::from_millis(200));
 
     session.close();
-    assert_eq!(session.session_status(), SessionStatus::Closing);
+    assert_eq!(session.status(), SessionStatus::Closing);
     assert!(session.fd().is_none(), "fd should be gone after close");
 
     // Graceful termination is ignored by the process group.

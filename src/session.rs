@@ -537,7 +537,7 @@ impl Session {
     }
 
     /// Returns the observable lifecycle phase of the session.
-    pub fn session_status(&self) -> SessionStatus {
+    pub fn status(&self) -> SessionStatus {
         match self.phase {
             Phase::Live => SessionStatus::Live,
             Phase::Eof => SessionStatus::Eof,
