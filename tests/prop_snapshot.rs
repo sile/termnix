@@ -1,19 +1,20 @@
-//! Property tests for terminal snapshot and bounded scrollback.
+//! Property tests for terminal snapshot and scrollback trimming.
 //!
 //! The oracle is a reference model that reproduces the emulator's behavior
 //! for plain text, wide characters, CR, and LF only (autowrap on, default
 //! full-screen scroll region, no cursor editing). The property compares the
-//! real visible screen and scrollback against the reference, checks the
-//! retained quantities against the limits, verifies that whole and chunked
-//! feeding produce identical snapshots, and verifies that a snapshot taken
-//! before further updates stays unchanged.
+//! real visible screen and scrollback against the reference before and after
+//! `trim_scrollback`, checks the trimmed quantities against the requested
+//! bounds, verifies that whole and chunked feeding produce identical
+//! snapshots, and verifies that a snapshot taken before further updates stays
+//! unchanged.
 //!
 //! Reproduction:
 //! `MUXNIX_PROPTEST_SEED=<seed> cargo test --test prop_snapshot <name> -- --exact --nocapture`
 
 use std::cell::Cell;
 
-use termnix::{Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
+use termnix::{Position, Size, TerminalSnapshot, TerminalState};
 
 const MAX_ROWS: u16 = 8;
 const MAX_COLS: u16 = 12;
@@ -51,16 +52,12 @@ struct RefTerm {
     wrap_pending: bool,
     grid: Vec<Vec<RefCell>>,
     scrollback: Vec<Vec<RefCell>>,
-    max_lines: usize,
-    max_cells: usize,
     scrolls: usize,
-    evicted: usize,
-    dropped: usize,
     wraps: usize,
 }
 
 impl RefTerm {
-    fn new(rows: usize, cols: usize, limits: ScrollbackLimits) -> Self {
+    fn new(rows: usize, cols: usize) -> Self {
         Self {
             rows,
             cols,
@@ -69,11 +66,7 @@ impl RefTerm {
             wrap_pending: false,
             grid: vec![vec![RefCell { ch: ' ', width: 1 }; cols]; rows],
             scrollback: Vec::new(),
-            max_lines: limits.max_lines,
-            max_cells: limits.max_cells,
             scrolls: 0,
-            evicted: 0,
-            dropped: 0,
             wraps: 0,
         }
     }
@@ -110,31 +103,8 @@ fn ref_lf(t: &mut RefTerm) {
 fn ref_scroll(t: &mut RefTerm) {
     t.scrolls += 1;
     let line = t.grid.remove(0);
-    ref_append_line(t, line);
-    t.grid.push(vec![RefCell { ch: ' ', width: 1 }; t.cols]);
-}
-
-fn ref_append_line(t: &mut RefTerm, line: Vec<RefCell>) {
-    let max_lines = t.max_lines;
-    let max_cells = t.max_cells;
-    if max_lines == 0 || max_cells == 0 {
-        return;
-    }
-    let new_cells = line.len();
-    if new_cells > max_cells {
-        t.dropped += 1;
-        return;
-    }
-    while !t.scrollback.is_empty() {
-        let retained_lines = t.scrollback.len();
-        let retained_cells: usize = t.scrollback.iter().map(Vec::len).sum();
-        if retained_lines < max_lines && new_cells <= max_cells - retained_cells {
-            break;
-        }
-        t.scrollback.remove(0);
-        t.evicted += 1;
-    }
     t.scrollback.push(line);
+    t.grid.push(vec![RefCell { ch: ' ', width: 1 }; t.cols]);
 }
 
 fn ref_print(t: &mut RefTerm, ch: char, width: u8) {
@@ -179,6 +149,19 @@ fn apply_token(t: &mut RefTerm, tok: Token) {
     }
 }
 
+/// Mirrors `TerminalState::trim_scrollback` on the reference model so the
+/// trimmed histories can be compared cell for cell.
+fn ref_trim_scrollback(t: &mut RefTerm, max_lines: usize, max_cells: usize) {
+    if max_lines == 0 || max_cells == 0 {
+        t.scrollback.clear();
+        return;
+    }
+    let cells = |t: &RefTerm| -> usize { t.scrollback.iter().map(Vec::len).sum() };
+    while !t.scrollback.is_empty() && (t.scrollback.len() > max_lines || cells(t) > max_cells) {
+        t.scrollback.remove(0);
+    }
+}
+
 /// Draws a row/column count with 1, 2, and the maximum as first-class
 /// boundaries; values below 1 are never generated.
 fn sample_dimension(ctx: &mut noprop::TestCaseContext, max: u16) -> u16 {
@@ -206,48 +189,35 @@ fn sample_token(ctx: &mut noprop::TestCaseContext) -> Token {
     }
 }
 
-/// Draws scrollback limits across disabled, generous, line-bound,
-/// cell-bound, and single-line-overflow settings so every eviction and drop
-/// path stays reachable.
-fn sample_limits(ctx: &mut noprop::TestCaseContext, cols: u16) -> ScrollbackLimits {
+/// Draws trim bounds across clear-all, generous, line-bound, cell-bound, and
+/// tight settings so every trim path stays reachable.
+fn sample_trim(ctx: &mut noprop::TestCaseContext, cols: u16) -> (usize, usize) {
     const WEIGHTS: [u32; 5] = [1, 2, 3, 3, 2];
     match noprop::sample_weighted_index(ctx, &WEIGHTS) {
-        0 => ScrollbackLimits::DISABLED,
+        0 => (0, usize::MAX),
         1 => {
             let lines = noprop::sample_usize_in(ctx, 2..=8);
-            ScrollbackLimits {
-                max_lines: lines,
-                max_cells: lines * cols as usize * 2,
-            }
+            (lines, lines * cols as usize * 2)
         }
         2 => {
             let lines = noprop::sample_usize_in(ctx, 1..=3);
-            ScrollbackLimits {
-                max_lines: lines,
-                max_cells: 10_000,
-            }
+            (lines, usize::MAX)
         }
         3 => {
             let lines = noprop::sample_usize_in(ctx, 1..=8);
             let cells = noprop::sample_usize_in(ctx, 1..=cols as usize * 2);
-            ScrollbackLimits {
-                max_lines: lines,
-                max_cells: cells,
-            }
+            (lines, cells)
         }
         _ => {
-            // max_cells below one full row, so every scrolled-out line is
-            // dropped entirely.
+            // max_cells below one full row, so at most a partial history can
+            // survive the trim.
             let cols = cols as usize;
             let cells = if cols > 1 {
                 noprop::sample_usize_in(ctx, 1..cols)
             } else {
                 1
             };
-            ScrollbackLimits {
-                max_lines: 4,
-                max_cells: cells,
-            }
+            (4, cells)
         }
     }
 }
@@ -349,21 +319,19 @@ fn compare_snapshot_to_reference(
     }
 }
 
-fn assert_within_limits(snap: &TerminalSnapshot, limits: ScrollbackLimits, desc: &str) {
+fn assert_within_bounds(snap: &TerminalSnapshot, max_lines: usize, max_cells: usize, desc: &str) {
     let lines = snap.scrollback().len();
     let cells: usize = snap.scrollback().iter().map(|l| l.cells().len()).sum();
-    if limits.is_disabled() {
-        assert_eq!(lines, 0, "{desc}; disabled scrollback is not empty");
+    if max_lines == 0 || max_cells == 0 {
+        assert_eq!(lines, 0, "{desc}; zero bound did not clear scrollback");
     } else {
         assert!(
-            lines <= limits.max_lines,
-            "{desc}; retained lines {lines} exceed max {}",
-            limits.max_lines
+            lines <= max_lines,
+            "{desc}; retained lines {lines} exceed max {max_lines}"
         );
         assert!(
-            cells <= limits.max_cells,
-            "{desc}; retained cells {cells} exceed max {}",
-            limits.max_cells
+            cells <= max_cells,
+            "{desc}; retained cells {cells} exceed max {max_cells}"
         );
     }
 }
@@ -372,41 +340,35 @@ fn assert_within_limits(snap: &TerminalSnapshot, limits: ScrollbackLimits, desc:
 fn snapshot_matches_reference_model() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
     let saw_scroll = Cell::new(false);
-    let saw_eviction = Cell::new(false);
-    let saw_drop = Cell::new(false);
-    let saw_disabled = Cell::new(false);
     let saw_wrap = Cell::new(false);
+    let saw_trim = Cell::new(false);
+    let saw_clear = Cell::new(false);
     let mut runner = noprop::Runner::new(seed);
 
     runner.run(CASE_BUDGET, |ctx| {
         let rows = sample_dimension(ctx, MAX_ROWS);
         let cols = sample_dimension(ctx, MAX_COLS);
-        let limits = sample_limits(ctx, cols);
-        if limits.is_disabled() {
-            saw_disabled.set(true);
-        }
         let tokens = sample_token_count(ctx);
         let mut input = Vec::new();
-        let mut reference = RefTerm::new(rows as usize, cols as usize, limits);
+        let mut reference = RefTerm::new(rows as usize, cols as usize);
         for _ in 0..tokens {
             let tok = sample_token(ctx);
             input.extend_from_slice(&token_bytes(&tok));
             apply_token(&mut reference, tok);
         }
 
+        let (max_lines, max_cells) = sample_trim(ctx, cols);
         let desc = format!(
-            "size={rows}x{cols} limits=(lines {}, cells {}) input=[{}] budget={CASE_BUDGET}",
-            limits.max_lines,
-            limits.max_cells,
+            "size={rows}x{cols} trim=(lines {max_lines}, cells {max_cells}) input=[{}] budget={CASE_BUDGET}",
             hex(&input),
         );
 
         let size = Size::new(rows, cols).unwrap();
-        let mut whole = TerminalState::with_scrollback(size, limits);
+        let mut whole = TerminalState::new(size);
         whole.feed(&input);
 
         let cuts = sample_cuts(ctx, input.len());
-        let mut split = TerminalState::with_scrollback(size, limits);
+        let mut split = TerminalState::new(size);
         feed_with_cuts(&mut split, &input, &cuts);
         let snap_whole = whole.snapshot();
         let snap_split = split.snapshot();
@@ -416,17 +378,40 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
         );
 
         compare_snapshot_to_reference(&snap_whole, &reference, rows, cols, &desc);
-        assert_within_limits(&snap_whole, limits, &desc);
+
+        // Trimming must match the reference model and satisfy the bounds.
+        let pre_trim_len = whole.scrollback_len();
+        whole.trim_scrollback(max_lines, max_cells);
+        ref_trim_scrollback(&mut reference, max_lines, max_cells);
+        let snap_trimmed = whole.snapshot();
+        compare_snapshot_to_reference(&snap_trimmed, &reference, rows, cols, &desc);
+        assert_within_bounds(&snap_trimmed, max_lines, max_cells, &desc);
+        // The cell counter stays consistent with the retained lines.
+        let cells: usize = snap_trimmed
+            .scrollback()
+            .iter()
+            .map(|l| l.cells().len())
+            .sum();
+        assert_eq!(
+            whole.scrollback_cells(),
+            cells,
+            "{desc}; scrollback_cells mismatch"
+        );
+        assert_eq!(
+            whole.scrollback_len(),
+            snap_trimmed.scrollback().len(),
+            "{desc}; scrollback_len mismatch"
+        );
 
         // A snapshot taken after a prefix is not changed by feeding the
         // suffix to the same state: it still equals a fresh prefix-only state.
         let cut = noprop::sample_usize_in(ctx, 0..=input.len());
         let (prefix, suffix) = input.split_at(cut);
-        let mut prefix_term = TerminalState::with_scrollback(size, limits);
+        let mut prefix_term = TerminalState::new(size);
         prefix_term.feed(prefix);
         let snap_prefix = prefix_term.snapshot();
         prefix_term.feed(suffix);
-        let mut fresh = TerminalState::with_scrollback(size, limits);
+        let mut fresh = TerminalState::new(size);
         fresh.feed(prefix);
         assert_eq!(
             snap_prefix,
@@ -435,9 +420,9 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
         );
 
         saw_scroll.set(saw_scroll.get() || reference.scrolls > 0);
-        saw_eviction.set(saw_eviction.get() || reference.evicted > 0);
-        saw_drop.set(saw_drop.get() || reference.dropped > 0);
         saw_wrap.set(saw_wrap.get() || reference.wraps > 0);
+        saw_trim.set(saw_trim.get() || whole.scrollback_len() < pre_trim_len);
+        saw_clear.set(saw_clear.get() || max_lines == 0 || max_cells == 0);
 
         Ok(())
     })?;
@@ -451,20 +436,16 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
         "never scrolled a row into scrollback; seed=0x{seed:016x}\n{runner}"
     );
     assert!(
-        saw_eviction.get(),
-        "never evicted an oldest line; seed=0x{seed:016x}\n{runner}"
-    );
-    assert!(
-        saw_drop.get(),
-        "never dropped a line exceeding a limit; seed=0x{seed:016x}\n{runner}"
-    );
-    assert!(
-        saw_disabled.get(),
-        "never used disabled scrollback; seed=0x{seed:016x}\n{runner}"
-    );
-    assert!(
         saw_wrap.get(),
         "never wrapped a line; seed=0x{seed:016x}\n{runner}"
+    );
+    assert!(
+        saw_trim.get(),
+        "never removed a line with trim_scrollback; seed=0x{seed:016x}\n{runner}"
+    );
+    assert!(
+        saw_clear.get(),
+        "never used a zero trim bound; seed=0x{seed:016x}\n{runner}"
     );
     Ok(())
 }

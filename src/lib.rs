@@ -31,4 +31,3 @@ pub use snapshot::{TerminalLine, TerminalSnapshot};
 pub use terminal::{
     Cell, Color, MouseReporting, Position, Style, TerminalAction, TerminalModes, TerminalState,
 };
-pub use terminal_scrollback::ScrollbackLimits;

@@ -213,6 +213,7 @@ impl TerminalState {
         // A hard reset restores the terminal, including saved lines; the
         // reference may change.
         self.scrollback.clear();
+        self.scrollback_cells = 0;
     }
 
     fn handle_csi(&mut self, params: &vte::Params, intermediates: &[u8], action: char) {
@@ -395,6 +396,7 @@ impl TerminalState {
                 // The sequence name and reference may change as the host
                 // terminal evolves.
                 self.scrollback.clear();
+                self.scrollback_cells = 0;
             }
             _ => {}
         }

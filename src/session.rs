@@ -25,7 +25,6 @@ use crate::{
     size::Size,
     snapshot::TerminalSnapshot,
     terminal::{TerminalAction, TerminalState},
-    terminal_scrollback::ScrollbackLimits,
 };
 
 /// Maximum size of a single terminal reply the emulator can produce.
@@ -101,8 +100,6 @@ pub struct PollSourceEntry {
 pub struct SessionConfig {
     /// Initial terminal size. Rows and columns must both be at least 1.
     pub size: Size,
-    /// Scrollback bounds for the session's emulator.
-    pub scrollback_limits: ScrollbackLimits,
     /// Maximum bytes held in the outbound write queue.
     pub write_queue_limit: usize,
     /// Maximum unprocessed raw bytes held before decoding.
@@ -161,8 +158,7 @@ impl Default for SessionConfig {
     /// limits to bound memory.
     fn default() -> Self {
         Self {
-            size: Size::new(24, 80).unwrap(),
-            scrollback_limits: ScrollbackLimits::DISABLED,
+            size: Size::new(24, 80).expect("default size is non-zero"),
             write_queue_limit: 65536,
             read_buffer_limit: 65536,
             pending_reply_limit: 65536,
@@ -412,7 +408,7 @@ impl Session {
             let _ = closing.wait_and_reap();
             return Err(SessionError::Io(err));
         }
-        let term = TerminalState::with_scrollback(config.size, config.scrollback_limits);
+        let term = TerminalState::new(config.size);
         Ok(Self {
             instance: next_instance(),
             generation: 0,

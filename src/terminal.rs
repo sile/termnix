@@ -38,10 +38,11 @@ pub use crate::terminal_types::{
     Cell, Color, MouseReporting, Position, Style, TerminalAction, TerminalModes,
 };
 
+use std::collections::VecDeque;
+
 use crate::size::Size;
 use crate::snapshot::{TerminalLine, TerminalSnapshot};
 use crate::terminal_buffer::Screen;
-use crate::terminal_scrollback::ScrollbackLimits;
 use crate::terminal_types::SavedCursor;
 
 /// Primary terminal emulator state (no I/O).
@@ -60,8 +61,8 @@ pub struct TerminalState {
     pub(crate) scroll_top: u16,
     pub(crate) scroll_bottom: u16,
     pub(crate) actions: Vec<TerminalAction>,
-    pub(crate) scrollback: Vec<TerminalLine>,
-    pub(crate) scrollback_limits: ScrollbackLimits,
+    pub(crate) scrollback: VecDeque<TerminalLine>,
+    pub(crate) scrollback_cells: usize,
 }
 
 impl PartialEq for TerminalState {
@@ -80,7 +81,7 @@ impl PartialEq for TerminalState {
             && self.scroll_bottom == other.scroll_bottom
             && self.actions == other.actions
             && self.scrollback == other.scrollback
-            && self.scrollback_limits == other.scrollback_limits
+            && self.scrollback_cells == other.scrollback_cells
     }
 }
 
@@ -103,7 +104,7 @@ impl std::fmt::Debug for TerminalState {
             .field("scroll_bottom", &self.scroll_bottom)
             .field("actions", &self.actions)
             .field("scrollback", &self.scrollback)
-            .field("scrollback_limits", &self.scrollback_limits)
+            .field("scrollback_cells", &self.scrollback_cells)
             .finish_non_exhaustive()
     }
 }
@@ -128,19 +129,9 @@ impl TerminalState {
             scroll_top: 0,
             scroll_bottom: size.rows.get().saturating_sub(1),
             actions: Vec::new(),
-            scrollback: Vec::new(),
-            scrollback_limits: ScrollbackLimits::DISABLED,
+            scrollback: VecDeque::new(),
+            scrollback_cells: 0,
         }
-    }
-
-    /// Creates a blank primary-screen state of `size` with scrollback under
-    /// `limits`.
-    ///
-    /// If either bound in `limits` is zero, scrollback stays disabled.
-    pub fn with_scrollback(size: Size, limits: ScrollbackLimits) -> Self {
-        let mut state = Self::new(size);
-        state.scrollback_limits = limits;
-        state
     }
 
     /// Feeds output bytes into the emulator.
@@ -211,8 +202,34 @@ impl TerminalState {
             self.pen,
             self.title.clone(),
             self.on_alternate,
-            self.scrollback.clone(),
+            self.scrollback.iter().cloned().collect(),
         )
+    }
+
+    /// Removes the oldest scrollback lines until both limits hold.
+    ///
+    /// Lines are removed whole, oldest first; the newest content is kept.
+    /// If either limit is zero the entire history is cleared. The specified
+    /// amounts are not a hard cap: history grows past them until this is
+    /// called.
+    pub fn trim_scrollback(&mut self, max_lines: usize, max_cells: usize) {
+        crate::terminal_scrollback::trim_scrollback(
+            &mut self.scrollback,
+            &mut self.scrollback_cells,
+            max_lines,
+            max_cells,
+        );
+    }
+
+    /// Returns the number of retained scrollback lines.
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// Returns the number of retained scrollback cells, including blank and
+    /// wide-character continuation cells.
+    pub fn scrollback_cells(&self) -> usize {
+        self.scrollback_cells
     }
 
     /// Resizes both primary and alternate screens.
@@ -255,7 +272,8 @@ impl TerminalState {
     ///
     /// A full-screen scroll on the primary screen pushes the displaced rows
     /// into scrollback (top-to-bottom); partial regions, scroll-downs, line
-    /// edits, and the alternate screen never do.
+    /// edits, and the alternate screen never do. History grows without a
+    /// built-in bound; the caller trims it with [`Self::trim_scrollback`].
     pub(crate) fn scroll_up_screen(&mut self, count: u16) {
         let top = self.scroll_top;
         let bottom = self.scroll_bottom;
@@ -264,11 +282,9 @@ impl TerminalState {
         let displaced = self.active_mut().scroll_up(count, top, bottom, style);
         if full_screen && !self.on_alternate {
             for row in displaced {
-                crate::terminal_scrollback::append_line(
-                    &mut self.scrollback,
-                    self.scrollback_limits,
-                    TerminalLine::new(row),
-                );
+                let line = TerminalLine::new(row);
+                self.scrollback_cells = self.scrollback_cells.saturating_add(line.len());
+                self.scrollback.push_back(line);
             }
         }
     }
