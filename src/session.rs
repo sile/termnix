@@ -132,7 +132,7 @@ impl SessionConfig {
         non_zero("write_queue_limit", self.write_queue_limit)?;
         non_zero("read_buffer_limit", self.read_buffer_limit)?;
         non_zero("pending_reply_limit", self.pending_reply_limit)?;
-        if self.size.rows == 0 || self.size.cols == 0 {
+        if self.size.rows.get() == 0 || self.size.cols.get() == 0 {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 "size rows and cols must both be at least 1",
@@ -161,7 +161,7 @@ impl Default for SessionConfig {
     /// limits to bound memory.
     fn default() -> Self {
         Self {
-            size: Size { rows: 24, cols: 80 },
+            size: Size::new(24, 80).unwrap(),
             scrollback_limits: ScrollbackLimits::DISABLED,
             write_queue_limit: 65536,
             read_buffer_limit: 65536,
@@ -590,7 +590,7 @@ impl Session {
     /// without a syscall. The ioctl runs first; the emulator size is only
     /// updated when the ioctl succeeds.
     pub fn resize(&mut self, size: Size) -> Result<(), SessionError> {
-        if size.rows == 0 || size.cols == 0 {
+        if size.rows.get() == 0 || size.cols.get() == 0 {
             return Err(SessionError::InvalidSize(size));
         }
         if self.phase != Phase::Live && self.phase != Phase::Eof {
@@ -1125,7 +1125,7 @@ mod tests {
             instance: 0,
             generation: 0,
             pty: Some(Pty::Live(dummy_pty())),
-            term: TerminalState::new(Size { rows: 1, cols: 1 }),
+            term: TerminalState::new(Size::new(1, 1).unwrap()),
             phase: Phase::Live,
             read_buffer: Vec::new(),
             outbound: Vec::new(),
@@ -1185,16 +1185,6 @@ mod tests {
             );
             let _ = value;
         }
-    }
-
-    #[test]
-    fn config_rejects_zero_size() {
-        let mut config = SessionConfig::default();
-        config.size.rows = 0;
-        assert!(config.validate().is_err());
-        let mut config = SessionConfig::default();
-        config.size.cols = 0;
-        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -1371,7 +1361,7 @@ mod tests {
             Err(SessionError::SessionClosed)
         ));
         assert!(matches!(
-            sess.resize(Size { rows: 2, cols: 2 }),
+            sess.resize(Size::new(2, 2).unwrap()),
             Err(SessionError::SessionClosed)
         ));
     }

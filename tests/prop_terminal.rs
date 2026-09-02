@@ -125,8 +125,8 @@ fn drain_and_compare(
     let size = a.size();
     assert_eq!(size, b.size(), "{where_}: size mismatch");
     assert_eq!(a.cursor(), b.cursor(), "{where_}: cursor mismatch");
-    for row in 0..size.rows {
-        for col in 0..size.cols {
+    for row in 0..size.rows.get() {
+        for col in 0..size.cols.get() {
             let at = Position { row, col };
             assert_eq!(a.cell(at), b.cell(at), "{where_}: cell mismatch at {at:?}");
         }
@@ -148,8 +148,8 @@ fn drain_and_compare(
 
 fn sentinel_visible(term: &TerminalState) -> bool {
     let size = term.size();
-    for row in 0..size.rows {
-        for col in 0..size.cols {
+    for row in 0..size.rows.get() {
+        for col in 0..size.cols.get() {
             if let Some(cell) = term.cell(Position { row, col })
                 && cell.ch == '#'
             {
@@ -162,8 +162,8 @@ fn sentinel_visible(term: &TerminalState) -> bool {
 
 fn glyph_visible(term: &TerminalState, glyph: char) -> bool {
     let size = term.size();
-    for row in 0..size.rows {
-        for col in 0..size.cols {
+    for row in 0..size.rows.get() {
+        for col in 0..size.cols.get() {
             if let Some(cell) = term.cell(Position { row, col })
                 && cell.ch == glyph
             {
@@ -582,10 +582,10 @@ fn chunk_boundaries_do_not_change_terminal_state() -> noprop::TestResult {
             saw_split.set(true);
         }
 
-        let mut whole = termnix::TerminalState::new(Size { rows, cols });
+        let mut whole = termnix::TerminalState::new(Size::new(rows, cols).unwrap());
         whole.feed(&input);
 
-        let mut split = termnix::TerminalState::new(Size { rows, cols });
+        let mut split = termnix::TerminalState::new(Size::new(rows, cols).unwrap());
         feed_with_cuts(&mut split, &input, &cuts);
 
         assert_eq!(whole, split);
@@ -681,7 +681,7 @@ fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult
     runner.run(CASE_BUDGET, |ctx| {
         let rows = sample_dimension(ctx, MAX_ROWS);
         let cols = sample_dimension(ctx, MAX_COLS);
-        let size = Size { rows, cols };
+        let size = Size::new(rows, cols).unwrap();
         let case = generate_case(ctx);
 
         // The guaranteed strict cut inside the completed target, plus optional

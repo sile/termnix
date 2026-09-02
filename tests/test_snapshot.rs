@@ -5,12 +5,12 @@
 use termnix::{Position, ScrollbackLimits, Size, TerminalSnapshot, TerminalState};
 
 fn term(rows: u16, cols: u16) -> TerminalState {
-    TerminalState::new(Size { rows, cols })
+    TerminalState::new(Size::new(rows, cols).unwrap())
 }
 
 fn term_with_scrollback(rows: u16, cols: u16, max_lines: usize, max_cells: usize) -> TerminalState {
     TerminalState::with_scrollback(
-        Size { rows, cols },
+        Size::new(rows, cols).unwrap(),
         ScrollbackLimits {
             max_lines,
             max_cells,
@@ -19,7 +19,7 @@ fn term_with_scrollback(rows: u16, cols: u16, max_lines: usize, max_cells: usize
 }
 
 fn text_at(snap: &TerminalSnapshot, row: u16) -> String {
-    let cols = snap.size().cols;
+    let cols = snap.size().cols.get();
     let mut out = String::new();
     for col in 0..cols {
         let cell = snap.cell(Position { row, col }).expect("cell in range");
@@ -49,7 +49,7 @@ fn snapshot_owns_size_cells_cursor_modes_style_title_and_active() {
     t.feed(b"\x1b[2;1H\x1b]2;snap-title\x07\x1b[?25l");
     let snap = t.snapshot();
 
-    assert_eq!(snap.size(), Size { rows: 2, cols: 4 });
+    assert_eq!(snap.size(), Size::new(2, 4).unwrap());
     assert_eq!(snap.size(), t.size());
     // Row-major cells: rows * cols count.
     assert_eq!(
@@ -152,7 +152,7 @@ fn resize_does_not_add_or_reflow_history() {
     // After the fourth line the top row "aaaa" scrolled out.
     let before = t.snapshot().scrollback().len();
     assert_eq!(before, 1);
-    t.resize(Size { rows: 2, cols: 4 });
+    t.resize(Size::new(2, 4).unwrap());
     let snap = t.snapshot();
     assert_eq!(snap.scrollback().len(), 1);
     assert_eq!(line_text(&snap.scrollback()[0]), "aaaa");
@@ -287,7 +287,7 @@ fn either_zero_bound_disables_scrollback() {
     );
 
     let mut t = TerminalState::with_scrollback(
-        Size { rows: 2, cols: 4 },
+        Size::new(2, 4).unwrap(),
         ScrollbackLimits {
             max_lines: 0,
             max_cells: 100,

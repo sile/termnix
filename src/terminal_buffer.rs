@@ -35,17 +35,17 @@ impl Screen {
             return;
         }
         let mut cells = vec![Cell::EMPTY; cell_count(size)];
-        let copy_rows = self.size.rows.min(size.rows);
-        let copy_cols = self.size.cols.min(size.cols);
+        let copy_rows = self.size.rows.get().min(size.rows.get());
+        let copy_cols = self.size.cols.get().min(size.cols.get());
         for row in 0..copy_rows {
             for col in 0..copy_cols {
-                let src = row as usize * self.size.cols as usize + col as usize;
-                let dst = row as usize * size.cols as usize + col as usize;
+                let src = row as usize * self.size.cols.get() as usize + col as usize;
+                let dst = row as usize * size.cols.get() as usize + col as usize;
                 cells[dst] = self.cells[src];
             }
             if copy_cols > 0 {
                 let edge = copy_cols - 1;
-                let dst = row as usize * size.cols as usize + edge as usize;
+                let dst = row as usize * size.cols.get() as usize + edge as usize;
                 if cells[dst].width == 2 {
                     cells[dst] = Cell::EMPTY;
                 }
@@ -99,7 +99,7 @@ impl Screen {
     }
 
     pub(crate) fn erase_cells(&mut self, row: u16, col_start: u16, col_end: u16, style: Style) {
-        let cols = self.size.cols;
+        let cols = self.size.cols.get();
         let start = col_start.min(cols);
         let end = col_end.min(cols);
         let blank = Cell::blank(style);
@@ -112,17 +112,17 @@ impl Screen {
     }
 
     pub(crate) fn erase_rows(&mut self, row_start: u16, row_end: u16, style: Style) {
-        let rows = self.size.rows;
+        let rows = self.size.rows.get();
         let start = row_start.min(rows);
         let end = row_end.min(rows);
         for row in start..end {
-            self.erase_cells(row, 0, self.size.cols, style);
+            self.erase_cells(row, 0, self.size.cols.get(), style);
         }
     }
 
     pub(crate) fn insert_columns(&mut self, row: u16, col: u16, count: u16, style: Style) {
-        let cols = self.size.cols;
-        if row >= self.size.rows || col >= cols || count == 0 {
+        let cols = self.size.cols.get();
+        if row >= self.size.rows.get() || col >= cols || count == 0 {
             return;
         }
         let count = count.min(cols - col) as usize;
@@ -136,8 +136,8 @@ impl Screen {
     }
 
     pub(crate) fn delete_columns(&mut self, row: u16, col: u16, count: u16, style: Style) {
-        let cols = self.size.cols;
-        if row >= self.size.rows || col >= cols || count == 0 {
+        let cols = self.size.cols.get();
+        if row >= self.size.rows.get() || col >= cols || count == 0 {
             return;
         }
         let count = count.min(cols - col) as usize;
@@ -161,7 +161,7 @@ impl Screen {
         if count == 0 || row < scroll_top || row > scroll_bottom {
             return;
         }
-        let cols = self.size.cols as usize;
+        let cols = self.size.cols.get() as usize;
         let count = count.min(scroll_bottom - row + 1) as usize;
         let top = row as usize * cols;
         let bottom = (scroll_bottom as usize + 1) * cols;
@@ -181,7 +181,7 @@ impl Screen {
         if count == 0 || row < scroll_top || row > scroll_bottom {
             return;
         }
-        let cols = self.size.cols as usize;
+        let cols = self.size.cols.get() as usize;
         let count = count.min(scroll_bottom - row + 1) as usize;
         let top = row as usize * cols;
         let bottom = (scroll_bottom as usize + 1) * cols;
@@ -206,7 +206,7 @@ impl Screen {
         if count == 0 || scroll_top > scroll_bottom {
             return Vec::new();
         }
-        let cols = self.size.cols as usize;
+        let cols = self.size.cols.get() as usize;
         let region_rows = (scroll_bottom - scroll_top + 1) as usize;
         let count = count as usize;
         let displaced_count = count.min(region_rows);
@@ -237,7 +237,7 @@ impl Screen {
         if count == 0 || scroll_top > scroll_bottom {
             return;
         }
-        let cols = self.size.cols as usize;
+        let cols = self.size.cols.get() as usize;
         let region_rows = (scroll_bottom - scroll_top + 1) as usize;
         let count = count as usize;
         if count >= region_rows {
@@ -252,7 +252,7 @@ impl Screen {
     }
 
     fn fix_row_edge(&mut self, row: u16) {
-        let cols = self.size.cols;
+        let cols = self.size.cols.get();
         if cols == 0 {
             return;
         }
@@ -265,13 +265,13 @@ impl Screen {
     }
 
     fn index(&self, at: Position) -> Option<usize> {
-        if at.row >= self.size.rows || at.col >= self.size.cols {
+        if at.row >= self.size.rows.get() || at.col >= self.size.cols.get() {
             return None;
         }
-        Some(at.row as usize * self.size.cols as usize + at.col as usize)
+        Some(at.row as usize * self.size.cols.get() as usize + at.col as usize)
     }
 }
 
 fn cell_count(size: Size) -> usize {
-    size.rows as usize * size.cols as usize
+    size.rows.get() as usize * size.cols.get() as usize
 }

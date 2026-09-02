@@ -31,9 +31,9 @@ fn spawn_session_with(script: &str, config: SessionConfig) -> Session {
 fn visible_text(session: &Session) -> String {
     let snapshot = session.snapshot().expect("snapshot");
     let mut out = String::new();
-    for row in 0..snapshot.size().rows {
+    for row in 0..snapshot.size().rows.get() {
         let mut line = String::new();
-        for col in 0..snapshot.size().cols {
+        for col in 0..snapshot.size().cols.get() {
             let cell = snapshot.cell(Position { row, col }).expect("cell in range");
             if cell.width == 0 {
                 continue;
@@ -281,18 +281,10 @@ fn resize_updates_child_and_terminal_state() {
     let mut session = spawn_session(
         "stty -echo; while IFS= read -r line; do case \"$line\" in SIZE) stty size;; esac; done",
     );
-    session
-        .resize(Size {
-            rows: 33,
-            cols: 121,
-        })
-        .expect("resize");
+    session.resize(Size::new(33, 121).unwrap()).expect("resize");
     assert_eq!(
         session.terminal_state().expect("terminal state").size(),
-        Size {
-            rows: 33,
-            cols: 121
-        }
+        Size::new(33, 121).unwrap()
     );
     session.enqueue_text("SIZE\n").expect("enqueue size");
     drive_until(std::slice::from_mut(&mut session), |sessions, _| {

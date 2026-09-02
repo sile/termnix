@@ -111,10 +111,8 @@ impl std::fmt::Debug for TerminalState {
 impl TerminalState {
     /// Creates a blank primary-screen state of `size`.
     ///
-    /// A zero row or column count is clamped to `1` so the screen always has
-    /// at least one addressable cell.
+    /// Rows and columns are non-zero by construction of [`Size`].
     pub fn new(size: Size) -> Self {
-        let size = clamp_size(size);
         Self {
             parser: vte::Parser::new(),
             size,
@@ -128,7 +126,7 @@ impl TerminalState {
             modes: TerminalModes::default(),
             title: String::new(),
             scroll_top: 0,
-            scroll_bottom: size.rows.saturating_sub(1),
+            scroll_bottom: size.rows.get().saturating_sub(1),
             actions: Vec::new(),
             scrollback: Vec::new(),
             scrollback_limits: ScrollbackLimits::DISABLED,
@@ -223,7 +221,6 @@ impl TerminalState {
     /// characters at the new right edge are cleared. The cursor and scroll
     /// region are clamped into the new bounds.
     pub fn resize(&mut self, size: Size) {
-        let size = clamp_size(size);
         if size == self.size {
             return;
         }
@@ -231,9 +228,9 @@ impl TerminalState {
         self.alternate.resize(size);
         self.size = size;
         self.scroll_top = 0;
-        self.scroll_bottom = size.rows.saturating_sub(1);
-        self.cursor.row = self.cursor.row.min(size.rows - 1);
-        self.cursor.col = self.cursor.col.min(size.cols - 1);
+        self.scroll_bottom = size.rows.get().saturating_sub(1);
+        self.cursor.row = self.cursor.row.min(size.rows.get() - 1);
+        self.cursor.col = self.cursor.col.min(size.cols.get() - 1);
         self.wrap_pending = false;
         self.repair_cursor_cell();
     }
@@ -262,7 +259,7 @@ impl TerminalState {
     pub(crate) fn scroll_up_screen(&mut self, count: u16) {
         let top = self.scroll_top;
         let bottom = self.scroll_bottom;
-        let full_screen = top == 0 && bottom + 1 == self.size.rows;
+        let full_screen = top == 0 && bottom + 1 == self.size.rows.get();
         let style = self.pen;
         let displaced = self.active_mut().scroll_up(count, top, bottom, style);
         if full_screen && !self.on_alternate {
@@ -294,11 +291,4 @@ fn feed_bytes(term: &mut TerminalState, bytes: &[u8]) {
         parser.advance(&mut emu, bytes);
     }
     term.parser = parser;
-}
-
-fn clamp_size(size: Size) -> Size {
-    Size {
-        rows: size.rows.max(1),
-        cols: size.cols.max(1),
-    }
 }

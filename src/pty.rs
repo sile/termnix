@@ -591,8 +591,8 @@ fn setup_child_session(master_fd: RawFd, slave_fd: RawFd) -> io::Result<()> {
 
 fn set_winsize(fd: RawFd, size: Size) -> io::Result<()> {
     let winsize = libc::winsize {
-        ws_row: size.rows,
-        ws_col: size.cols,
+        ws_row: size.rows.get(),
+        ws_col: size.cols.get(),
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn set_winsize_round_trips_on_master() {
         let (master, _slave) = open_pty_pair().expect("open pty");
-        let size = Size { rows: 31, cols: 97 };
+        let size = Size::new(31, 97).unwrap();
         set_winsize(master.as_raw_fd(), size).expect("set winsize");
 
         let mut winsize = MaybeUninit::<libc::winsize>::uninit();

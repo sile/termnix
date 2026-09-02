@@ -104,16 +104,16 @@ impl TerminalState {
             }
         }
 
-        if self.cursor.col as usize + width > self.size.cols as usize {
+        if self.cursor.col as usize + width > self.size.cols.get() as usize {
             if self.modes.autowrap {
                 self.carriage_return();
                 self.line_feed();
-            } else if self.size.cols > 0 {
-                self.cursor.col = self.size.cols - 1;
+            } else {
+                self.cursor.col = self.size.cols.get() - 1;
             }
         }
 
-        if self.cursor.col as usize + width > self.size.cols as usize {
+        if self.cursor.col as usize + width > self.size.cols.get() as usize {
             return;
         }
 
@@ -132,8 +132,8 @@ impl TerminalState {
             .put_glyph(row, col, ch, width as u8, style);
 
         let next_col = col + width as u16;
-        if next_col >= self.size.cols {
-            self.cursor.col = self.size.cols - 1;
+        if next_col >= self.size.cols.get() {
+            self.cursor.col = self.size.cols.get() - 1;
             self.wrap_pending = self.modes.autowrap;
         } else {
             self.cursor.col = next_col;
@@ -149,14 +149,14 @@ impl TerminalState {
     fn horizontal_tab(&mut self) {
         self.wrap_pending = false;
         let next = (self.cursor.col / 8) * 8 + 8;
-        self.cursor.col = next.min(self.size.cols.saturating_sub(1));
+        self.cursor.col = next.min(self.size.cols.get().saturating_sub(1));
     }
 
     fn line_feed(&mut self) {
         self.wrap_pending = false;
         if self.cursor.row == self.scroll_bottom {
             self.scroll_up_screen(1);
-        } else if self.cursor.row + 1 < self.size.rows {
+        } else if self.cursor.row + 1 < self.size.rows.get() {
             self.cursor.row += 1;
         }
     }
@@ -207,7 +207,7 @@ impl TerminalState {
         self.modes = TerminalModes::default();
         self.title.clear();
         self.scroll_top = 0;
-        self.scroll_bottom = size.rows.saturating_sub(1);
+        self.scroll_bottom = size.rows.get().saturating_sub(1);
         // RIS — DEC terminal documentation:
         // https://vt100.net/docs/vt510-rm/RIS.html
         // A hard reset restores the terminal, including saved lines; the
@@ -314,7 +314,7 @@ impl TerminalState {
         let max_row = if self.modes.origin {
             self.scroll_bottom
         } else {
-            self.size.rows.saturating_sub(1)
+            self.size.rows.get().saturating_sub(1)
         };
         self.cursor.row = self.cursor.row.saturating_add(n).min(max_row);
     }
@@ -325,7 +325,7 @@ impl TerminalState {
             .cursor
             .col
             .saturating_add(n)
-            .min(self.size.cols.saturating_sub(1));
+            .min(self.size.cols.get().saturating_sub(1));
     }
 
     fn cursor_backward(&mut self, n: u16) {
@@ -337,7 +337,7 @@ impl TerminalState {
         self.wrap_pending = false;
         self.cursor.col = col_one_based
             .saturating_sub(1)
-            .min(self.size.cols.saturating_sub(1));
+            .min(self.size.cols.get().saturating_sub(1));
     }
 
     fn set_row(&mut self, row_one_based: u16) {
@@ -353,21 +353,21 @@ impl TerminalState {
         let row = row_one_based.saturating_sub(1) + if self.modes.origin { min_row } else { 0 };
         let col = col_one_based.saturating_sub(1);
         self.cursor.row = row.clamp(min_row, max_row);
-        self.cursor.col = col.min(self.size.cols.saturating_sub(1));
+        self.cursor.col = col.min(self.size.cols.get().saturating_sub(1));
     }
 
     fn origin_bounds(&self) -> (u16, u16) {
         if self.modes.origin {
             (self.scroll_top, self.scroll_bottom)
         } else {
-            (0, self.size.rows.saturating_sub(1))
+            (0, self.size.rows.get().saturating_sub(1))
         }
     }
 
     fn clamp_cursor(&mut self) {
         let (min_row, max_row) = self.origin_bounds();
         self.cursor.row = self.cursor.row.clamp(min_row, max_row);
-        self.cursor.col = self.cursor.col.min(self.size.cols.saturating_sub(1));
+        self.cursor.col = self.cursor.col.min(self.size.cols.get().saturating_sub(1));
         self.repair_cursor_cell();
     }
 
@@ -375,8 +375,8 @@ impl TerminalState {
         let style = self.pen;
         let row = self.cursor.row;
         let col = self.cursor.col;
-        let cols = self.size.cols;
-        let rows = self.size.rows;
+        let cols = self.size.cols.get();
+        let rows = self.size.rows.get();
         match mode {
             0 => {
                 self.active_mut().erase_cells(row, col, cols, style);
@@ -404,7 +404,7 @@ impl TerminalState {
         let style = self.pen;
         let row = self.cursor.row;
         let col = self.cursor.col;
-        let cols = self.size.cols;
+        let cols = self.size.cols.get();
         match mode {
             0 => self.active_mut().erase_cells(row, col, cols, style),
             1 => self
@@ -418,16 +418,16 @@ impl TerminalState {
     fn set_scroll_region(&mut self, params: &vte::Params) {
         let top = param_or(params, 0, 1).saturating_sub(1);
         let bottom = if params_len(params) >= 2 {
-            param_or(params, 1, self.size.rows).saturating_sub(1)
+            param_or(params, 1, self.size.rows.get()).saturating_sub(1)
         } else {
-            self.size.rows.saturating_sub(1)
+            self.size.rows.get().saturating_sub(1)
         };
-        if top < self.size.rows && bottom < self.size.rows && top < bottom {
+        if top < self.size.rows.get() && bottom < self.size.rows.get() && top < bottom {
             self.scroll_top = top;
             self.scroll_bottom = bottom;
         } else if params_len(params) == 0 {
             self.scroll_top = 0;
-            self.scroll_bottom = self.size.rows.saturating_sub(1);
+            self.scroll_bottom = self.size.rows.get().saturating_sub(1);
         }
         self.cursor = Position { row: 0, col: 0 };
         if self.modes.origin {
@@ -506,7 +506,7 @@ impl TerminalState {
                 self.cursor = Position { row: 0, col: 0 };
                 self.wrap_pending = false;
                 self.scroll_top = 0;
-                self.scroll_bottom = self.size.rows.saturating_sub(1);
+                self.scroll_bottom = self.size.rows.get().saturating_sub(1);
             }
         } else if self.on_alternate {
             self.on_alternate = false;

@@ -64,7 +64,7 @@ fn poll_until_exit(closing: &mut ClosingPtyProcess, deadline: Instant) -> Observ
 
 #[test]
 fn master_reads_child_output() {
-    let mut pty = spawn_shell("printf 'hello-pty'", Size { rows: 24, cols: 80 });
+    let mut pty = spawn_shell("printf 'hello-pty'", Size::new(24, 80).unwrap());
     let output = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(9).any(|w| w == b"hello-pty")
     });
@@ -83,7 +83,7 @@ fn master_reads_child_output() {
 fn child_reads_master_input() {
     let mut pty = spawn_shell(
         "stty -echo 2>/dev/null; IFS= read -r line; printf 'GOT:%s' \"$line\"",
-        Size { rows: 24, cols: 80 },
+        Size::new(24, 80).unwrap(),
     );
     pty.write_all(b"ping-input\n").expect("write");
     pty.flush().expect("flush");
@@ -104,7 +104,7 @@ fn child_reads_master_input() {
 fn stdio_are_connected_to_controlling_terminal() {
     let mut pty = spawn_shell(
         "test -t 0 && test -t 1 && test -t 2 && printf 'tty-ok'",
-        Size { rows: 24, cols: 80 },
+        Size::new(24, 80).unwrap(),
     );
     let output = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(6).any(|w| w == b"tty-ok")
@@ -120,7 +120,7 @@ fn stdio_are_connected_to_controlling_terminal() {
 
 #[test]
 fn resize_is_visible_to_child() {
-    let size = Size { rows: 37, cols: 91 };
+    let size = Size::new(37, 91).unwrap();
     let mut pty = spawn_shell("stty size", size);
     let output = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         String::from_utf8_lossy(buf).contains("37 91")
@@ -136,7 +136,7 @@ fn resize_is_visible_to_child() {
 
 #[test]
 fn exit_status_is_reaped() {
-    let mut pty = spawn_shell("exit 42", Size { rows: 24, cols: 80 });
+    let mut pty = spawn_shell("exit 42", Size::new(24, 80).unwrap());
     let status = pty.wait().expect("wait");
     assert_eq!(status.code(), Some(42));
 }
@@ -145,7 +145,7 @@ fn exit_status_is_reaped() {
 fn nonblocking_read_returns_would_block() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; sleep 30",
-        Size { rows: 24, cols: 80 },
+        Size::new(24, 80).unwrap(),
     );
     pty.set_nonblocking(true).expect("set nonblocking");
 
@@ -177,7 +177,7 @@ fn spawn_failure_does_not_leave_usable_process() {
     let before = count_open_fds();
     for _ in 0..64 {
         let mut command = Command::new("/path/that/does/not/exist/termnix-pty");
-        let err = PtyProcess::spawn(&mut command, Size { rows: 24, cols: 80 })
+        let err = PtyProcess::spawn(&mut command, Size::new(24, 80).unwrap())
             .expect_err("spawn should fail");
         assert_eq!(err.kind(), ErrorKind::NotFound);
     }
@@ -192,7 +192,7 @@ fn spawn_failure_does_not_leave_usable_process() {
 fn as_raw_fd_matches_master() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf x; sleep 30",
-        Size { rows: 24, cols: 80 },
+        Size::new(24, 80).unwrap(),
     );
     assert!(pty.as_raw_fd() >= 0);
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
@@ -206,7 +206,7 @@ fn as_raw_fd_matches_master() {
 fn into_closing_returns_without_waiting_for_running_child() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; while true; do sleep 1; done",
-        Size { rows: 24, cols: 80 },
+        Size::new(24, 80).unwrap(),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")
@@ -220,7 +220,7 @@ fn into_closing_returns_without_waiting_for_running_child() {
 fn poll_exit_sees_natural_exit_without_reaping() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; exit 17",
-        Size { rows: 24, cols: 80 },
+        Size::new(24, 80).unwrap(),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")
@@ -247,7 +247,7 @@ fn poll_exit_sees_natural_exit_without_reaping() {
 fn signal_terminate_reaches_process_group() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; sleep 60",
-        Size { rows: 24, cols: 80 },
+        Size::new(24, 80).unwrap(),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")
@@ -270,7 +270,7 @@ fn signal_terminate_reaches_process_group() {
 fn signal_kill_reaps_term_ignoring_child() {
     let mut pty = spawn_shell(
         "trap '' HUP TERM; printf READY; while true; do sleep 1; done",
-        Size { rows: 24, cols: 80 },
+        Size::new(24, 80).unwrap(),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")
@@ -298,7 +298,7 @@ fn signal_kill_reaps_term_ignoring_child() {
 
 #[test]
 fn try_wait_cache_moves_into_reaped_closing_state() {
-    let mut pty = spawn_shell("exit 9", Size { rows: 24, cols: 80 });
+    let mut pty = spawn_shell("exit 9", Size::new(24, 80).unwrap());
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
         if Instant::now() >= deadline {
@@ -328,7 +328,7 @@ fn try_wait_cache_moves_into_reaped_closing_state() {
 fn signal_race_with_natural_exit_keeps_ownership() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; exit 0",
-        Size { rows: 24, cols: 80 },
+        Size::new(24, 80).unwrap(),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")

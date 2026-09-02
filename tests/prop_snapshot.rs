@@ -295,7 +295,11 @@ fn compare_snapshot_to_reference(
     cols: u16,
     desc: &str,
 ) {
-    assert_eq!(snap.size(), Size { rows, cols }, "{desc}; size mismatch");
+    assert_eq!(
+        snap.size(),
+        Size::new(rows, cols).unwrap(),
+        "{desc}; size mismatch"
+    );
     assert!(
         !snap.is_on_alternate_screen(),
         "{desc}; alternate screen mismatch"
@@ -397,7 +401,7 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
             hex(&input),
         );
 
-        let size = Size { rows, cols };
+        let size = Size::new(rows, cols).unwrap();
         let mut whole = TerminalState::with_scrollback(size, limits);
         whole.feed(&input);
 

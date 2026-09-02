@@ -90,10 +90,10 @@ impl TerminalSnapshot {
 
     /// Returns the cell at `at` on the captured active screen, if in range.
     pub fn cell(&self, at: Position) -> Option<Cell> {
-        if at.row >= self.size.rows || at.col >= self.size.cols {
+        if at.row >= self.size.rows.get() || at.col >= self.size.cols.get() {
             return None;
         }
-        Some(self.cells[at.row as usize * self.size.cols as usize + at.col as usize])
+        Some(self.cells[at.row as usize * self.size.cols.get() as usize + at.col as usize])
     }
 
     /// Returns the captured cursor position.
