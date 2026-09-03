@@ -1,4 +1,4 @@
-//! VTE performer that mutates [`crate::terminal::TerminalState`].
+//! VTE performer that mutates [`TerminalState`](crate::terminal::TerminalState).
 
 use unicode_width::UnicodeWidthChar;
 use vte::Perform;

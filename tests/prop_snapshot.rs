@@ -12,10 +12,6 @@
 //! Reproduction:
 //! `MUXNIX_PROPTEST_SEED=<seed> cargo test --test prop_snapshot <name> -- --exact --nocapture`
 
-use std::cell::Cell;
-
-use termnix::{Position, Size, TerminalSnapshot, TerminalState};
-
 const MAX_ROWS: u16 = 8;
 const MAX_COLS: u16 = 12;
 const MAX_TOKENS: usize = 32;
@@ -149,7 +145,7 @@ fn apply_token(t: &mut RefTerm, tok: Token) {
     }
 }
 
-/// Mirrors `TerminalState::trim_scrollback` on the reference model so the
+/// Mirrors `termnix::TerminalState::trim_scrollback` on the reference model so the
 /// trimmed histories can be compared cell for cell.
 fn ref_trim_scrollback(t: &mut RefTerm, max_lines: usize, max_cells: usize) {
     if max_lines == 0 || max_cells == 0 {
@@ -236,7 +232,7 @@ fn sample_cuts(ctx: &mut noprop::TestCaseContext, len: usize) -> Vec<usize> {
     cuts
 }
 
-fn feed_with_cuts(term: &mut TerminalState, bytes: &[u8], cuts: &[usize]) {
+fn feed_with_cuts(term: &mut termnix::TerminalState, bytes: &[u8], cuts: &[usize]) {
     let mut start = 0;
     for &cut in cuts {
         if cut > start && cut < bytes.len() {
@@ -259,7 +255,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn compare_snapshot_to_reference(
-    snap: &TerminalSnapshot,
+    snap: &termnix::TerminalSnapshot,
     reference: &RefTerm,
     rows: u16,
     cols: u16,
@@ -267,7 +263,7 @@ fn compare_snapshot_to_reference(
 ) {
     assert_eq!(
         snap.size(),
-        Size::new(rows, cols).unwrap(),
+        termnix::Size::new(rows, cols).expect("nonzero size"),
         "{desc}; size mismatch"
     );
     assert!(
@@ -276,7 +272,7 @@ fn compare_snapshot_to_reference(
     );
     assert_eq!(
         snap.cursor(),
-        Position {
+        termnix::Position {
             row: reference.row as u16,
             col: reference.col as u16
         },
@@ -286,7 +282,7 @@ fn compare_snapshot_to_reference(
         for col in 0..cols as usize {
             let expected = reference.grid[row][col];
             let actual = snap
-                .cell(Position {
+                .cell(termnix::Position {
                     row: row as u16,
                     col: col as u16,
                 })
@@ -319,7 +315,12 @@ fn compare_snapshot_to_reference(
     }
 }
 
-fn assert_within_bounds(snap: &TerminalSnapshot, max_lines: usize, max_cells: usize, desc: &str) {
+fn assert_within_bounds(
+    snap: &termnix::TerminalSnapshot,
+    max_lines: usize,
+    max_cells: usize,
+    desc: &str,
+) {
     let lines = snap.scrollback().len();
     let cells: usize = snap.scrollback().iter().map(|l| l.cells().len()).sum();
     if max_lines == 0 || max_cells == 0 {
@@ -339,10 +340,10 @@ fn assert_within_bounds(snap: &TerminalSnapshot, max_lines: usize, max_cells: us
 #[test]
 fn snapshot_matches_reference_model() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
-    let saw_scroll = Cell::new(false);
-    let saw_wrap = Cell::new(false);
-    let saw_trim = Cell::new(false);
-    let saw_clear = Cell::new(false);
+    let saw_scroll = std::cell::Cell::new(false);
+    let saw_wrap = std::cell::Cell::new(false);
+    let saw_trim = std::cell::Cell::new(false);
+    let saw_clear = std::cell::Cell::new(false);
     let mut runner = noprop::Runner::new(seed);
 
     runner.run(CASE_BUDGET, |ctx| {
@@ -363,12 +364,12 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
             hex(&input),
         );
 
-        let size = Size::new(rows, cols).unwrap();
-        let mut whole = TerminalState::new(size);
+        let size = termnix::Size::new(rows, cols).expect("nonzero size");
+        let mut whole = termnix::TerminalState::new(size);
         whole.feed(&input);
 
         let cuts = sample_cuts(ctx, input.len());
-        let mut split = TerminalState::new(size);
+        let mut split = termnix::TerminalState::new(size);
         feed_with_cuts(&mut split, &input, &cuts);
         let snap_whole = whole.snapshot();
         let snap_split = split.snapshot();
@@ -407,11 +408,11 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
         // suffix to the same state: it still equals a fresh prefix-only state.
         let cut = noprop::sample_usize_in(ctx, 0..=input.len());
         let (prefix, suffix) = input.split_at(cut);
-        let mut prefix_term = TerminalState::new(size);
+        let mut prefix_term = termnix::TerminalState::new(size);
         prefix_term.feed(prefix);
         let snap_prefix = prefix_term.snapshot();
         prefix_term.feed(suffix);
-        let mut fresh = TerminalState::new(size);
+        let mut fresh = termnix::TerminalState::new(size);
         fresh.feed(prefix);
         assert_eq!(
             snap_prefix,

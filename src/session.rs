@@ -496,7 +496,7 @@ impl Session {
     /// Blocks until the child exits and returns its status.
     ///
     /// After a successful reap the status is cached and later calls return it.
-    /// As with [`Self::try_wait`], reaping alone does not disable PTY I/O.
+    /// As with [`Session::try_wait`], reaping alone does not disable PTY I/O.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         if let Some(status) = self.exit_status {
             return Ok(status);

@@ -16,7 +16,7 @@
 //!
 //! Mouse report byte sequences are out of scope here; only [`MouseButton`]
 //! is defined so application-side routing can share button identity. Grid
-//! coordinates reuse [`crate::Position`].
+//! coordinates reuse [`Position`](crate::Position).
 
 use crate::terminal_types::TerminalModes;
 
@@ -132,7 +132,7 @@ impl KeyEvent {
 
 /// Mouse button identity for later report encoding.
 ///
-/// Report coordinates use [`crate::Position`] (grid-local, zero-based cells).
+/// Report coordinates use [`Position`](crate::Position) (grid-local, zero-based cells).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseButton {
     /// Left button.

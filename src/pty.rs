@@ -153,8 +153,8 @@ impl PtyProcess {
     ///
     /// This does not wait for the child, does not send signals, and does not
     /// probe unreaped children with `try_wait` / `waitpid` / `waitid`. If the
-    /// child was already reaped through [`Self::try_wait`] or [`Self::wait`],
-    /// the closing value starts in the reaped state.
+    /// child was already reaped through [`PtyProcess::try_wait`] or
+    /// [`PtyProcess::wait`], the closing value starts in the reaped state.
     pub fn into_closing(self) -> ClosingPtyProcess {
         let Self {
             master,
@@ -261,8 +261,9 @@ pub enum SignalOutcome {
 /// Child ownership after the PTY master has been closed.
 ///
 /// Dropping this type drops owned handles only. It does **not** send signals
-/// or wait for the child. Call [`Self::wait_and_reap`] (and typically
-/// [`Self::signal_terminate`] / [`Self::signal_kill`] first) explicitly.
+/// or wait for the child. Call [`ClosingPtyProcess::wait_and_reap`] (and
+/// typically [`ClosingPtyProcess::signal_terminate`] /
+/// [`ClosingPtyProcess::signal_kill`] first) explicitly.
 #[derive(Debug)]
 pub struct ClosingPtyProcess {
     state: ClosingState,
@@ -289,8 +290,8 @@ impl ClosingPtyProcess {
     ///
     /// Uses `waitid(P_PID, ..., WEXITED | WNOHANG | WNOWAIT)`. Once an exit is
     /// observed it is cached and returned again on later calls. After a
-    /// successful [`Self::wait_and_reap`], returns the classification of the
-    /// cached [`ExitStatus`].
+    /// successful [`ClosingPtyProcess::wait_and_reap`], returns the
+    /// classification of the cached [`ExitStatus`].
     pub fn poll_exit(&mut self) -> io::Result<Option<ObservedExit>> {
         match &mut self.state {
             ClosingState::Reaped { status } => Ok(Some(ObservedExit::from_exit_status(*status))),
@@ -631,7 +632,7 @@ mod tests {
     #[test]
     fn set_winsize_round_trips_on_master() {
         let (master, _slave) = open_pty_pair().expect("open pty");
-        let size = Size::new(31, 97).unwrap();
+        let size = Size::new(31, 97).expect("nonzero size");
         set_winsize(master.as_raw_fd(), size).expect("set winsize");
 
         let mut winsize = MaybeUninit::<libc::winsize>::uninit();
@@ -650,24 +651,27 @@ mod tests {
 
     #[test]
     fn classify_waitid_no_event_when_si_pid_zero() {
-        assert_eq!(classify_waitid_event(0, libc::CLD_EXITED, 0).unwrap(), None);
+        assert_eq!(
+            classify_waitid_event(0, libc::CLD_EXITED, 0).expect("no event"),
+            None
+        );
     }
 
     #[test]
     fn classify_waitid_exited_killed_dumped() {
         assert_eq!(
-            classify_waitid_event(7, libc::CLD_EXITED, 42).unwrap(),
+            classify_waitid_event(7, libc::CLD_EXITED, 42).expect("exited"),
             Some(ObservedExit::Exited { code: 42 })
         );
         assert_eq!(
-            classify_waitid_event(7, libc::CLD_KILLED, libc::SIGTERM).unwrap(),
+            classify_waitid_event(7, libc::CLD_KILLED, libc::SIGTERM).expect("killed"),
             Some(ObservedExit::Signaled {
                 signal: libc::SIGTERM,
                 core_dumped: false
             })
         );
         assert_eq!(
-            classify_waitid_event(7, libc::CLD_DUMPED, libc::SIGABRT).unwrap(),
+            classify_waitid_event(7, libc::CLD_DUMPED, libc::SIGABRT).expect("dumped"),
             Some(ObservedExit::Signaled {
                 signal: libc::SIGABRT,
                 core_dumped: true
@@ -677,7 +681,7 @@ mod tests {
 
     #[test]
     fn classify_waitid_unknown_code_is_invalid_data() {
-        let err = classify_waitid_event(1, 999, 0).unwrap_err();
+        let err = classify_waitid_event(1, 999, 0).expect_err("unknown code");
         assert_eq!(err.kind(), ErrorKind::InvalidData);
     }
 }

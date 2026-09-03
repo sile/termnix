@@ -11,10 +11,6 @@
 //! Reproduction:
 //! `MUXNIX_PROPTEST_SEED=<seed> cargo test --test prop_terminal <name> -- --exact --nocapture`
 
-use std::cell::Cell;
-
-use termnix::{Position, Size, TerminalAction, TerminalState};
-
 const MAX_ROWS: u16 = 8;
 const MAX_COLS: u16 = 16;
 const MAX_EXTRA_CUTS: usize = 6;
@@ -102,7 +98,7 @@ fn sample_suffix_cuts(ctx: &mut noprop::TestCaseContext, len: usize) -> Vec<usiz
     }
 }
 
-fn feed_with_cuts(term: &mut TerminalState, bytes: &[u8], cuts: &[usize]) {
+fn feed_with_cuts(term: &mut termnix::TerminalState, bytes: &[u8], cuts: &[usize]) {
     let mut start = 0;
     for &cut in cuts {
         if cut > start && cut < bytes.len() {
@@ -118,16 +114,16 @@ fn feed_with_cuts(term: &mut TerminalState, bytes: &[u8], cuts: &[usize]) {
 /// via `PartialEq` (which covers saved cursor, wrap pending, scroll region,
 /// and the inactive screen, but not the parser's private continuation state).
 fn drain_and_compare(
-    a: &mut TerminalState,
-    b: &mut TerminalState,
+    a: &mut termnix::TerminalState,
+    b: &mut termnix::TerminalState,
     where_: &str,
-) -> Vec<TerminalAction> {
+) -> Vec<termnix::TerminalAction> {
     let size = a.size();
     assert_eq!(size, b.size(), "{where_}: size mismatch");
     assert_eq!(a.cursor(), b.cursor(), "{where_}: cursor mismatch");
     for row in 0..size.rows.get() {
         for col in 0..size.cols.get() {
-            let at = Position { row, col };
+            let at = termnix::Position { row, col };
             assert_eq!(a.cell(at), b.cell(at), "{where_}: cell mismatch at {at:?}");
         }
     }
@@ -146,11 +142,11 @@ fn drain_and_compare(
     actions_a
 }
 
-fn sentinel_visible(term: &TerminalState) -> bool {
+fn sentinel_visible(term: &termnix::TerminalState) -> bool {
     let size = term.size();
     for row in 0..size.rows.get() {
         for col in 0..size.cols.get() {
-            if let Some(cell) = term.cell(Position { row, col })
+            if let Some(cell) = term.cell(termnix::Position { row, col })
                 && cell.ch == '#'
             {
                 return true;
@@ -160,11 +156,11 @@ fn sentinel_visible(term: &TerminalState) -> bool {
     false
 }
 
-fn glyph_visible(term: &TerminalState, glyph: char) -> bool {
+fn glyph_visible(term: &termnix::TerminalState, glyph: char) -> bool {
     let size = term.size();
     for row in 0..size.rows.get() {
         for col in 0..size.cols.get() {
-            if let Some(cell) = term.cell(Position { row, col })
+            if let Some(cell) = term.cell(termnix::Position { row, col })
                 && cell.ch == glyph
             {
                 return true;
@@ -563,9 +559,9 @@ fn generate_case(ctx: &mut noprop::TestCaseContext) -> Case {
 #[test]
 fn chunk_boundaries_do_not_change_terminal_state() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
-    let saw_split = Cell::new(false);
-    let saw_nonempty = Cell::new(false);
-    let saw_escape = Cell::new(false);
+    let saw_split = std::cell::Cell::new(false);
+    let saw_nonempty = std::cell::Cell::new(false);
+    let saw_escape = std::cell::Cell::new(false);
 
     noprop::Runner::new(seed).run(CASE_BUDGET, |ctx| {
         let rows = noprop::sample_usize_in(ctx, 1..=MAX_ROWS as usize) as u16;
@@ -582,10 +578,12 @@ fn chunk_boundaries_do_not_change_terminal_state() -> noprop::TestResult {
             saw_split.set(true);
         }
 
-        let mut whole = termnix::TerminalState::new(Size::new(rows, cols).unwrap());
+        let mut whole =
+            termnix::TerminalState::new(termnix::Size::new(rows, cols).expect("nonzero size"));
         whole.feed(&input);
 
-        let mut split = termnix::TerminalState::new(Size::new(rows, cols).unwrap());
+        let mut split =
+            termnix::TerminalState::new(termnix::Size::new(rows, cols).expect("nonzero size"));
         feed_with_cuts(&mut split, &input, &cuts);
 
         assert_eq!(whole, split);
@@ -673,15 +671,15 @@ fn sample_legacy_cuts(ctx: &mut noprop::TestCaseContext, len: usize) -> Vec<usiz
 #[test]
 fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult {
     let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
-    let target_split = Cell::new(0usize);
-    let prefix_action = Cell::new(0usize);
-    let suffix_action = Cell::new(0usize);
+    let target_split = std::cell::Cell::new(0usize);
+    let prefix_action = std::cell::Cell::new(0usize);
+    let suffix_action = std::cell::Cell::new(0usize);
     let mut runner = noprop::Runner::new(seed);
 
     runner.run(CASE_BUDGET, |ctx| {
         let rows = sample_dimension(ctx, MAX_ROWS);
         let cols = sample_dimension(ctx, MAX_COLS);
-        let size = Size::new(rows, cols).unwrap();
+        let size = termnix::Size::new(rows, cols).expect("nonzero size");
         let case = generate_case(ctx);
 
         // The guaranteed strict cut inside the completed target, plus optional
@@ -703,10 +701,10 @@ fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult
         prefix_cuts.sort_unstable();
         prefix_cuts.dedup();
 
-        let mut whole = TerminalState::new(size);
+        let mut whole = termnix::TerminalState::new(size);
         whole.feed(&case.prefix);
 
-        let mut split = TerminalState::new(size);
+        let mut split = termnix::TerminalState::new(size);
         feed_with_cuts(&mut split, &case.prefix, &prefix_cuts);
 
         let case_desc = format!(

@@ -1,18 +1,18 @@
-//! Deterministic tests for `TerminalSnapshot` and scrollback trimming.
+//! Deterministic tests for `termnix::TerminalSnapshot` and scrollback trimming.
 //!
-//! Only the public API of `TerminalState` and the snapshot types is used.
+//! Only the public API of `termnix::TerminalState` and the snapshot types is used.
 
-use termnix::{Position, Size, TerminalSnapshot, TerminalState};
-
-fn term(rows: u16, cols: u16) -> TerminalState {
-    TerminalState::new(Size::new(rows, cols).unwrap())
+fn term(rows: u16, cols: u16) -> termnix::TerminalState {
+    termnix::TerminalState::new(termnix::Size::new(rows, cols).expect("nonzero size"))
 }
 
-fn text_at(snap: &TerminalSnapshot, row: u16) -> String {
+fn text_at(snap: &termnix::TerminalSnapshot, row: u16) -> String {
     let cols = snap.size().cols.get();
     let mut out = String::new();
     for col in 0..cols {
-        let cell = snap.cell(Position { row, col }).expect("cell in range");
+        let cell = snap
+            .cell(termnix::Position { row, col })
+            .expect("cell in range");
         if cell.width == 0 {
             continue;
         }
@@ -39,23 +39,23 @@ fn snapshot_owns_size_cells_cursor_modes_style_title_and_active() {
     t.feed(b"\x1b[2;1H\x1b]2;snap-title\x07\x1b[?25l");
     let snap = t.snapshot();
 
-    assert_eq!(snap.size(), Size::new(2, 4).unwrap());
+    assert_eq!(snap.size(), termnix::Size::new(2, 4).expect("nonzero size"));
     assert_eq!(snap.size(), t.size());
     // Row-major cells: rows * cols count.
     assert_eq!(
-        snap.cell(Position { row: 0, col: 0 }),
-        t.cell(Position { row: 0, col: 0 })
+        snap.cell(termnix::Position { row: 0, col: 0 }),
+        t.cell(termnix::Position { row: 0, col: 0 })
     );
     assert_eq!(
-        snap.cell(Position { row: 0, col: 1 }),
-        t.cell(Position { row: 0, col: 1 })
+        snap.cell(termnix::Position { row: 0, col: 1 }),
+        t.cell(termnix::Position { row: 0, col: 1 })
     );
     assert_eq!(
-        snap.cell(Position { row: 1, col: 3 }),
-        t.cell(Position { row: 1, col: 3 })
+        snap.cell(termnix::Position { row: 1, col: 3 }),
+        t.cell(termnix::Position { row: 1, col: 3 })
     );
-    assert_eq!(snap.cell(Position { row: 2, col: 0 }), None);
-    assert_eq!(snap.cell(Position { row: 0, col: 4 }), None);
+    assert_eq!(snap.cell(termnix::Position { row: 2, col: 0 }), None);
+    assert_eq!(snap.cell(termnix::Position { row: 0, col: 4 }), None);
 
     assert_eq!(snap.cursor(), t.cursor());
     assert_eq!(snap.modes(), t.modes());
@@ -142,7 +142,7 @@ fn resize_does_not_add_or_reflow_history() {
     // After the fourth line the top row "aaaa" scrolled out.
     let before = t.snapshot().scrollback().len();
     assert_eq!(before, 1);
-    t.resize(Size::new(2, 4).unwrap());
+    t.resize(termnix::Size::new(2, 4).expect("nonzero size"));
     let snap = t.snapshot();
     assert_eq!(snap.scrollback().len(), 1);
     assert_eq!(line_text(&snap.scrollback()[0]), "aaaa");

@@ -5,21 +5,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-use termnix::{
-    KeyCode, KeyEvent, Session, SessionStatus, SignalOutcome, Size, encode_key, encode_paste,
-};
-
 const DEADLINE: Duration = Duration::from_secs(15);
 
-fn spawn_session(script: &str) -> Session {
+fn spawn_session(script: &str) -> termnix::Session {
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(script);
-    Session::new(&mut command, Size::new(24, 80).expect("default size")).expect("create session")
+    termnix::Session::new(
+        &mut command,
+        termnix::Size::new(24, 80).expect("default size"),
+    )
+    .expect("create session")
 }
 
 /// Renders the snapshot's scrollback and visible cells as rows, dropping
 /// wide-character continuation cells and trailing blanks.
-fn visible_text(session: &Session) -> String {
+fn visible_text(session: &termnix::Session) -> String {
     let snapshot = session.snapshot();
     let mut out = String::new();
     for line in snapshot.scrollback() {
@@ -51,7 +51,7 @@ fn visible_text(session: &Session) -> String {
 }
 
 /// Pumps every session once and drains each `needs_pump` loop.
-fn pump_all(sessions: &mut [Session]) {
+fn pump_all(sessions: &mut [termnix::Session]) {
     for session in sessions.iter_mut() {
         session.pump_io().expect("pump");
         while session.needs_pump() {
@@ -63,9 +63,9 @@ fn pump_all(sessions: &mut [Session]) {
 /// Pumps every session and polls their registered fds until `cond` holds or
 /// the deadline expires. `cond` receives the sessions mutably so tests can
 /// reap or enqueue from inside it.
-fn pump_until<F>(sessions: &mut [Session], mut cond: F)
+fn pump_until<F>(sessions: &mut [termnix::Session], mut cond: F)
 where
-    F: FnMut(&mut [Session]) -> bool,
+    F: FnMut(&mut [termnix::Session]) -> bool,
 {
     let deadline = Instant::now() + DEADLINE;
     while Instant::now() < deadline {
@@ -108,7 +108,7 @@ where
 }
 
 /// Pumps until the session's child has exited and returns its status.
-fn wait_exit(session: &mut Session) -> std::process::ExitStatus {
+fn wait_exit(session: &mut termnix::Session) -> std::process::ExitStatus {
     let deadline = Instant::now() + DEADLINE;
     loop {
         pump_all(std::slice::from_mut(session));
@@ -127,7 +127,7 @@ fn decodes_child_output_into_terminal_state() {
     let mut session = spawn_session("printf 'hello-session\\n'");
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("hello-session")
-            && sessions[0].status() == SessionStatus::Eof
+            && sessions[0].status() == termnix::SessionStatus::Eof
     });
     let status = wait_exit(&mut session);
     assert!(status.success(), "status={status:?}");
@@ -168,10 +168,13 @@ fn key_text_paste_and_raw_reach_the_child() {
     let modes = session.terminal_state().modes();
     session.enqueue_input(b"AB").expect("text");
     session
-        .enqueue_input(&encode_key(KeyEvent::new(KeyCode::Enter), modes))
+        .enqueue_input(&termnix::encode_key(
+            termnix::KeyEvent::new(termnix::KeyCode::Enter),
+            modes,
+        ))
         .expect("enter");
     session
-        .enqueue_input(&encode_paste("CD", modes))
+        .enqueue_input(&termnix::encode_paste("CD", modes))
         .expect("paste");
     session.enqueue_input(b"EFGH").expect("raw");
 
@@ -314,9 +317,12 @@ fn resize_updates_child_and_terminal_state() {
         "stty -echo; while IFS= read -r line; do case \"$line\" in SIZE) stty size;; esac; done",
     );
     session
-        .resize(Size::new(33, 121).expect("size"))
+        .resize(termnix::Size::new(33, 121).expect("size"))
         .expect("resize");
-    assert_eq!(session.terminal_state().size(), Size::new(33, 121).unwrap());
+    assert_eq!(
+        session.terminal_state().size(),
+        termnix::Size::new(33, 121).expect("nonzero size")
+    );
     session.enqueue_input(b"SIZE\n").expect("enqueue size");
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("33 121")
@@ -327,7 +333,7 @@ fn resize_updates_child_and_terminal_state() {
 fn try_wait_reaps_and_keeps_state_readable() {
     let mut session = spawn_session("printf 'bye\\n'; exit 7");
     pump_until(std::slice::from_mut(&mut session), |sessions| {
-        sessions[0].status() == SessionStatus::Eof
+        sessions[0].status() == termnix::SessionStatus::Eof
     });
 
     // The final state stays readable until the reap.
@@ -335,7 +341,7 @@ fn try_wait_reaps_and_keeps_state_readable() {
 
     let status = wait_exit(&mut session);
     assert_eq!(status.code(), Some(7), "status={status:?}");
-    assert_eq!(session.status(), SessionStatus::Reaped);
+    assert_eq!(session.status(), termnix::SessionStatus::Reaped);
 
     // After the reap the state, snapshot, and metrics remain accessible.
     assert!(session.terminal_state().size().rows.get() > 0);
@@ -364,7 +370,7 @@ fn try_wait_before_eof_still_drains_output() {
         let finished = text.contains("200")
             && matches!(
                 session.status(),
-                SessionStatus::Eof | SessionStatus::Reaped
+                termnix::SessionStatus::Eof | termnix::SessionStatus::Reaped
             );
         if finished {
             break;
@@ -382,7 +388,7 @@ fn try_wait_before_eof_still_drains_output() {
     assert_eq!(status.code(), Some(3), "status={status:?}");
     // Drain/reap to the spent state.
     let _ = wait_exit(&mut session);
-    assert_eq!(session.status(), SessionStatus::Reaped);
+    assert_eq!(session.status(), termnix::SessionStatus::Reaped);
 }
 
 #[test]
@@ -391,11 +397,14 @@ fn close_then_force_terminate_reaps_a_stubborn_process_group() {
     std::thread::sleep(Duration::from_millis(200));
 
     session.close();
-    assert_eq!(session.status(), SessionStatus::Closing);
+    assert_eq!(session.status(), termnix::SessionStatus::Closing);
     assert!(session.fd().is_none(), "fd should be gone after close");
 
     // Graceful termination is ignored by the process group.
-    assert_eq!(session.terminate().expect("terminate"), SignalOutcome::Sent);
+    assert_eq!(
+        session.terminate().expect("terminate"),
+        termnix::SignalOutcome::Sent
+    );
     std::thread::sleep(Duration::from_millis(100));
     assert!(
         session.try_wait().expect("try_wait").is_none(),
@@ -404,7 +413,7 @@ fn close_then_force_terminate_reaps_a_stubborn_process_group() {
 
     assert_eq!(
         session.force_terminate().expect("force terminate"),
-        SignalOutcome::Sent
+        termnix::SignalOutcome::Sent
     );
     let status = wait_exit(&mut session);
     assert_eq!(status.signal(), Some(libc::SIGKILL));
@@ -439,7 +448,7 @@ fn closed_session_rejects_input_and_resize() {
     let err = session.enqueue_input(b"x").expect_err("closed rejects");
     assert_eq!(err.kind(), ErrorKind::BrokenPipe);
     let err = session
-        .resize(Size::new(40, 40).expect("size"))
+        .resize(termnix::Size::new(40, 40).expect("size"))
         .expect_err("closed rejects");
     assert_eq!(err.kind(), ErrorKind::BrokenPipe);
 }

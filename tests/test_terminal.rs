@@ -1,5 +1,5 @@
 fn term(rows: u16, cols: u16) -> termnix::TerminalState {
-    termnix::TerminalState::new(termnix::Size::new(rows, cols).unwrap())
+    termnix::TerminalState::new(termnix::Size::new(rows, cols).expect("nonzero size"))
 }
 
 fn text_at(term: &termnix::TerminalState, row: u16) -> String {
@@ -180,8 +180,8 @@ fn resize_preserves_overlap_and_clamps_cursor() {
     let mut t = term(2, 4);
     t.feed(b"abcd");
     t.feed(b"xy");
-    t.resize(termnix::Size::new(1, 2).unwrap());
-    assert_eq!(t.size(), termnix::Size::new(1, 2).unwrap());
+    t.resize(termnix::Size::new(1, 2).expect("nonzero size"));
+    assert_eq!(t.size(), termnix::Size::new(1, 2).expect("nonzero size"));
     assert_eq!(text_at(&t, 0), "ab");
     assert_eq!(t.cursor(), termnix::Position { row: 0, col: 1 });
 }
@@ -190,7 +190,7 @@ fn resize_preserves_overlap_and_clamps_cursor() {
 fn resize_clears_clipped_wide_character() {
     let mut t = term(1, 4);
     t.feed("あ".as_bytes());
-    t.resize(termnix::Size::new(1, 1).unwrap());
+    t.resize(termnix::Size::new(1, 1).expect("nonzero size"));
     assert_eq!(
         t.cell(termnix::Position { row: 0, col: 0 }),
         Some(termnix::Cell::EMPTY)

@@ -138,7 +138,7 @@ impl TerminalState {
     ///
     /// Bytes may end mid-sequence or mid-UTF-8 code unit; state is kept until
     /// a later `feed` completes the sequence. Query replies are appended to
-    /// the action queue; call [`Self::drain_actions`] to collect them.
+    /// the action queue; call [`TerminalState::drain_actions`] to collect them.
     pub fn feed(&mut self, bytes: &[u8]) {
         feed_bytes(self, bytes);
     }
