@@ -1,17 +1,84 @@
 use std::{
     io::{ErrorKind, Read, Write},
+    mem::MaybeUninit,
     os::{fd::AsRawFd, unix::process::ExitStatusExt},
     process::Command,
     time::{Duration, Instant},
 };
 
-fn spawn_shell(script: &str, size: termnix::Size) -> termnix::PtyProcess {
-    let mut command = Command::new("/bin/sh");
-    command.arg("-c").arg(script);
-    termnix::PtyProcess::spawn(&mut command, size).expect("spawn pty child")
+use super::*;
+
+#[test]
+fn open_pty_pair_returns_distinct_fds() {
+    let (master, slave) = open_pty_pair().expect("open pty");
+    assert_ne!(master.as_raw_fd(), slave.as_raw_fd());
+    assert!(master.as_raw_fd() >= 0);
+    assert!(slave.as_raw_fd() >= 0);
 }
 
-fn read_until<F>(pty: &mut termnix::PtyProcess, deadline: Instant, mut pred: F) -> Vec<u8>
+#[test]
+fn set_winsize_round_trips_on_master() {
+    let (master, _slave) = open_pty_pair().expect("open pty");
+    let size = Size::new(31, 97).expect("nonzero size");
+    set_winsize(master.as_raw_fd(), size).expect("set winsize");
+
+    let mut winsize = MaybeUninit::<libc::winsize>::uninit();
+    check_libc_zero(unsafe {
+        libc::ioctl(
+            master.as_raw_fd(),
+            libc::TIOCGWINSZ as _,
+            winsize.as_mut_ptr(),
+        )
+    })
+    .expect("get winsize");
+    let winsize = unsafe { winsize.assume_init() };
+    assert_eq!(winsize.ws_row, 31);
+    assert_eq!(winsize.ws_col, 97);
+}
+
+#[test]
+fn classify_waitid_no_event_when_si_pid_zero() {
+    assert_eq!(
+        classify_waitid_event(0, libc::CLD_EXITED, 0).expect("no event"),
+        None
+    );
+}
+
+#[test]
+fn classify_waitid_exited_killed_dumped() {
+    assert_eq!(
+        classify_waitid_event(7, libc::CLD_EXITED, 42).expect("exited"),
+        Some(ObservedExit::Exited { code: 42 })
+    );
+    assert_eq!(
+        classify_waitid_event(7, libc::CLD_KILLED, libc::SIGTERM).expect("killed"),
+        Some(ObservedExit::Signaled {
+            signal: libc::SIGTERM,
+            core_dumped: false
+        })
+    );
+    assert_eq!(
+        classify_waitid_event(7, libc::CLD_DUMPED, libc::SIGABRT).expect("dumped"),
+        Some(ObservedExit::Signaled {
+            signal: libc::SIGABRT,
+            core_dumped: true
+        })
+    );
+}
+
+#[test]
+fn classify_waitid_unknown_code_is_invalid_data() {
+    let err = classify_waitid_event(1, 999, 0).expect_err("unknown code");
+    assert_eq!(err.kind(), ErrorKind::InvalidData);
+}
+
+fn spawn_shell(script: &str, size: Size) -> PtyProcess {
+    let mut command = Command::new("/bin/sh");
+    command.arg("-c").arg(script);
+    PtyProcess::spawn(&mut command, size).expect("spawn pty child")
+}
+
+fn read_until<F>(pty: &mut PtyProcess, deadline: Instant, mut pred: F) -> Vec<u8>
 where
     F: FnMut(&[u8]) -> bool,
 {
@@ -39,7 +106,7 @@ where
     );
 }
 
-fn force_reap(closing: &mut termnix::ClosingPtyProcess) {
+fn force_reap(closing: &mut ClosingPtyProcess) {
     let _ = closing.signal_kill();
     let status = closing.wait_and_reap();
     assert!(
@@ -49,10 +116,7 @@ fn force_reap(closing: &mut termnix::ClosingPtyProcess) {
     );
 }
 
-fn poll_until_exit(
-    closing: &mut termnix::ClosingPtyProcess,
-    deadline: Instant,
-) -> termnix::ObservedExit {
+fn poll_until_exit(closing: &mut ClosingPtyProcess, deadline: Instant) -> ObservedExit {
     while Instant::now() < deadline {
         match closing.poll_exit() {
             Ok(Some(exit)) => return exit,
@@ -60,14 +124,14 @@ fn poll_until_exit(
             Err(err) => panic!("poll_exit failed: {err}"),
         }
     }
-    panic!("timed out waiting for termnix::ObservedExit");
+    panic!("timed out waiting for ObservedExit");
 }
 
 #[test]
 fn master_reads_child_output() {
     let mut pty = spawn_shell(
         "printf 'hello-pty'",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     let output = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(9).any(|w| w == b"hello-pty")
@@ -87,7 +151,7 @@ fn master_reads_child_output() {
 fn child_reads_master_input() {
     let mut pty = spawn_shell(
         "stty -echo 2>/dev/null; IFS= read -r line; printf 'GOT:%s' \"$line\"",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     pty.write_all(b"ping-input\n").expect("write");
     pty.flush().expect("flush");
@@ -108,7 +172,7 @@ fn child_reads_master_input() {
 fn stdio_are_connected_to_controlling_terminal() {
     let mut pty = spawn_shell(
         "test -t 0 && test -t 1 && test -t 2 && printf 'tty-ok'",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     let output = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(6).any(|w| w == b"tty-ok")
@@ -124,7 +188,7 @@ fn stdio_are_connected_to_controlling_terminal() {
 
 #[test]
 fn resize_is_visible_to_child() {
-    let size = termnix::Size::new(37, 91).expect("nonzero size");
+    let size = Size::new(37, 91).expect("nonzero size");
     let mut pty = spawn_shell("stty size", size);
     let output = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         String::from_utf8_lossy(buf).contains("37 91")
@@ -140,7 +204,7 @@ fn resize_is_visible_to_child() {
 
 #[test]
 fn exit_status_is_reaped() {
-    let mut pty = spawn_shell("exit 42", termnix::Size::new(24, 80).expect("nonzero size"));
+    let mut pty = spawn_shell("exit 42", Size::new(24, 80).expect("nonzero size"));
     let status = pty.wait().expect("wait");
     assert_eq!(status.code(), Some(42));
 }
@@ -149,7 +213,7 @@ fn exit_status_is_reaped() {
 fn nonblocking_read_returns_would_block() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; sleep 30",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     pty.set_nonblocking(true).expect("set nonblocking");
 
@@ -181,11 +245,8 @@ fn spawn_failure_does_not_leave_usable_process() {
     let before = count_open_fds();
     for _ in 0..64 {
         let mut command = Command::new("/path/that/does/not/exist/termnix-pty");
-        let err = termnix::PtyProcess::spawn(
-            &mut command,
-            termnix::Size::new(24, 80).expect("nonzero size"),
-        )
-        .expect_err("spawn should fail");
+        let err = PtyProcess::spawn(&mut command, Size::new(24, 80).expect("nonzero size"))
+            .expect_err("spawn should fail");
         assert_eq!(err.kind(), ErrorKind::NotFound);
     }
     let after = count_open_fds();
@@ -199,7 +260,7 @@ fn spawn_failure_does_not_leave_usable_process() {
 fn as_raw_fd_matches_master() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf x; sleep 30",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     assert!(pty.as_raw_fd() >= 0);
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
@@ -213,7 +274,7 @@ fn as_raw_fd_matches_master() {
 fn into_closing_returns_without_waiting_for_running_child() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; while true; do sleep 1; done",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")
@@ -227,24 +288,24 @@ fn into_closing_returns_without_waiting_for_running_child() {
 fn poll_exit_sees_natural_exit_without_reaping() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; exit 17",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")
     });
     let mut closing = pty.into_closing();
     let observed = poll_until_exit(&mut closing, Instant::now() + Duration::from_secs(5));
-    assert_eq!(observed, termnix::ObservedExit::Exited { code: 17 });
+    assert_eq!(observed, ObservedExit::Exited { code: 17 });
     // Repeated poll must not reap; wait_and_reap still works.
     assert_eq!(
         closing.poll_exit().expect("poll again"),
-        Some(termnix::ObservedExit::Exited { code: 17 })
+        Some(ObservedExit::Exited { code: 17 })
     );
     let status = closing.wait_and_reap().expect("reap");
     assert_eq!(status.code(), Some(17));
     assert_eq!(
         closing.poll_exit().expect("poll after reap"),
-        Some(termnix::ObservedExit::Exited { code: 17 })
+        Some(ObservedExit::Exited { code: 17 })
     );
     let status_again = closing.wait_and_reap().expect("cached reap");
     assert_eq!(status_again.code(), Some(17));
@@ -254,7 +315,7 @@ fn poll_exit_sees_natural_exit_without_reaping() {
 fn signal_terminate_reaches_process_group() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; sleep 60",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")
@@ -262,11 +323,11 @@ fn signal_terminate_reaches_process_group() {
     let mut closing = pty.into_closing();
     assert_eq!(
         closing.signal_terminate().expect("term"),
-        termnix::SignalOutcome::Sent
+        SignalOutcome::Sent
     );
     let observed = poll_until_exit(&mut closing, Instant::now() + Duration::from_secs(5));
     match observed {
-        termnix::ObservedExit::Signaled { signal, .. } => assert_eq!(signal, libc::SIGTERM),
+        ObservedExit::Signaled { signal, .. } => assert_eq!(signal, libc::SIGTERM),
         other => panic!("expected Signaled SIGTERM, got {other:?}"),
     }
     let status = closing.wait_and_reap().expect("reap");
@@ -277,7 +338,7 @@ fn signal_terminate_reaches_process_group() {
 fn signal_kill_reaps_term_ignoring_child() {
     let mut pty = spawn_shell(
         "trap '' HUP TERM; printf READY; while true; do sleep 1; done",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")
@@ -285,30 +346,27 @@ fn signal_kill_reaps_term_ignoring_child() {
     let mut closing = pty.into_closing();
     assert_eq!(
         closing.signal_terminate().expect("term"),
-        termnix::SignalOutcome::Sent
+        SignalOutcome::Sent
     );
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(closing.poll_exit().expect("still running"), None);
-    assert_eq!(
-        closing.signal_kill().expect("kill"),
-        termnix::SignalOutcome::Sent
-    );
+    assert_eq!(closing.signal_kill().expect("kill"), SignalOutcome::Sent);
     let observed = poll_until_exit(&mut closing, Instant::now() + Duration::from_secs(5));
     match observed {
-        termnix::ObservedExit::Signaled { signal, .. } => assert_eq!(signal, libc::SIGKILL),
+        ObservedExit::Signaled { signal, .. } => assert_eq!(signal, libc::SIGKILL),
         other => panic!("expected Signaled SIGKILL, got {other:?}"),
     }
     let status = closing.wait_and_reap().expect("reap");
     assert_eq!(status.signal(), Some(libc::SIGKILL));
     assert_eq!(
         closing.signal_kill().expect("after reap"),
-        termnix::SignalOutcome::AlreadyReaped
+        SignalOutcome::AlreadyReaped
     );
 }
 
 #[test]
 fn try_wait_cache_moves_into_reaped_closing_state() {
-    let mut pty = spawn_shell("exit 9", termnix::Size::new(24, 80).expect("nonzero size"));
+    let mut pty = spawn_shell("exit 9", Size::new(24, 80).expect("nonzero size"));
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
         if Instant::now() >= deadline {
@@ -325,11 +383,11 @@ fn try_wait_cache_moves_into_reaped_closing_state() {
     let mut closing = pty.into_closing();
     assert_eq!(
         closing.poll_exit().expect("poll"),
-        Some(termnix::ObservedExit::Exited { code: 9 })
+        Some(ObservedExit::Exited { code: 9 })
     );
     assert_eq!(
         closing.signal_terminate().expect("signal"),
-        termnix::SignalOutcome::AlreadyReaped
+        SignalOutcome::AlreadyReaped
     );
     assert_eq!(closing.wait_and_reap().expect("reap").code(), Some(9));
 }
@@ -338,7 +396,7 @@ fn try_wait_cache_moves_into_reaped_closing_state() {
 fn signal_race_with_natural_exit_keeps_ownership() {
     let mut pty = spawn_shell(
         "trap '' HUP; printf READY; exit 0",
-        termnix::Size::new(24, 80).expect("nonzero size"),
+        Size::new(24, 80).expect("nonzero size"),
     );
     let _ = read_until(&mut pty, Instant::now() + Duration::from_secs(5), |buf| {
         buf.windows(5).any(|w| w == b"READY")
@@ -347,7 +405,7 @@ fn signal_race_with_natural_exit_keeps_ownership() {
     // Race: signal may run before or after the child becomes a zombie.
     let outcome = closing.signal_terminate();
     match outcome {
-        Ok(termnix::SignalOutcome::Sent | termnix::SignalOutcome::GroupMissing) => {}
+        Ok(SignalOutcome::Sent | SignalOutcome::GroupMissing) => {}
         // macOS may return EPERM against a zombie process group.
         Err(err) if err.kind() == ErrorKind::PermissionDenied => {}
         other => panic!("unexpected signal outcome: {other:?}"),

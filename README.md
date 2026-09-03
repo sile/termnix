@@ -2,12 +2,12 @@
 
 Unix-only terminal session engine for Rust.
 
-`termnix` provides PTY process lifecycle, an I/O-free terminal emulator,
-logical input encoding, and one `Session` per PTY-backed child process,
-driven from an external event loop without an async runtime. Owning and
-scheduling multiple sessions, as well as window, pane, and layout concepts,
-belong to the calling application. Host terminal raw mode and final frame
-rendering stay with the caller.
+`termnix` provides an I/O-free terminal emulator, logical input encoding,
+and one `Session` per PTY-backed child process (including that child's
+lifecycle), driven from an external event loop without an async runtime.
+Owning and scheduling multiple sessions, as well as window, pane, and layout
+concepts, belong to the calling application. Host terminal raw mode and final
+frame rendering stay with the caller.
 
 ## Terminal emulator coverage
 

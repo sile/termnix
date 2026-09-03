@@ -1,11 +1,12 @@
 //! PTY pair creation and child process lifecycle.
 //!
-//! This module owns a PTY master/slave pair and the child process attached to
-//! the slave side. Callers can register the master file descriptor with an
-//! external event loop, resize the terminal, move into a closing state that
-//! keeps only the child handle, observe exit without reaping, signal the
-//! original process group, and reap the direct child without blocking in
-//! [`Drop`].
+//! This module is crate-internal. [`Session`](`crate::Session`) owns these
+//! types and exposes the lifecycle through its public API. The master file
+//! descriptor can be registered with an external event loop, the terminal can
+//! be resized, ownership can move into a closing state that keeps only the
+//! child handle, exit can be observed without reaping, the original process
+//! group can be signaled, and the direct child can be reaped without blocking
+//! in [`Drop`].
 
 use std::{
     fs::File,
@@ -36,7 +37,7 @@ use crate::size::Size;
 /// process-global `SIGCHLD` to `SIG_IGN` or `SA_NOCLDWAIT` while a
 /// [`PtyProcess`] or [`ClosingPtyProcess`] is live.
 #[derive(Debug)]
-pub struct PtyProcess {
+pub(crate) struct PtyProcess {
     master: File,
     child: Child,
     reaped_status: Option<ExitStatus>,
@@ -52,7 +53,7 @@ impl PtyProcess {
     ///
     /// On failure, opened PTY file descriptors are closed before the error is
     /// returned.
-    pub fn spawn(command: &mut Command, size: Size) -> io::Result<Self> {
+    pub(crate) fn spawn(command: &mut Command, size: Size) -> io::Result<Self> {
         let (master, slave) = open_pty_pair()?;
         set_cloexec(master.as_raw_fd())?;
         set_cloexec(slave.as_raw_fd())?;
@@ -85,12 +86,12 @@ impl PtyProcess {
     }
 
     /// Sets whether master I/O is non-blocking.
-    pub fn set_nonblocking(&mut self, nonblocking: bool) -> io::Result<()> {
+    pub(crate) fn set_nonblocking(&mut self, nonblocking: bool) -> io::Result<()> {
         set_nonblocking(self.master.as_raw_fd(), nonblocking)
     }
 
     /// Resizes the PTY and notifies the child via `TIOCSWINSZ`.
-    pub fn resize(&self, size: Size) -> io::Result<()> {
+    pub(crate) fn resize(&self, size: Size) -> io::Result<()> {
         set_winsize(self.master.as_raw_fd(), size)
     }
 
@@ -98,7 +99,7 @@ impl PtyProcess {
     ///
     /// A successful status is cached on this wrapper. Later calls return the
     /// cached value and do not wait on the OS again.
-    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+    pub(crate) fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         if let Some(status) = self.reaped_status {
             return Ok(Some(status));
         }
@@ -115,7 +116,7 @@ impl PtyProcess {
     ///
     /// A successful status is cached on this wrapper. Later calls return the
     /// cached value and do not wait on the OS again.
-    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+    pub(crate) fn wait(&mut self) -> io::Result<ExitStatus> {
         if let Some(status) = self.reaped_status {
             return Ok(status);
         }
@@ -155,7 +156,7 @@ impl PtyProcess {
     /// probe unreaped children with `try_wait` / `waitpid` / `waitid`. If the
     /// child was already reaped through [`PtyProcess::try_wait`] or
     /// [`PtyProcess::wait`], the closing value starts in the reaped state.
-    pub fn into_closing(self) -> ClosingPtyProcess {
+    pub(crate) fn into_closing(self) -> ClosingPtyProcess {
         let Self {
             master,
             child,
@@ -209,7 +210,7 @@ impl AsRawFd for PtyProcess {
 /// [`ExitStatus`] after a successful reap. They are not waitpid raw status
 /// words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ObservedExit {
+pub(crate) enum ObservedExit {
     /// The child exited with `code`.
     Exited {
         /// Process exit code.
@@ -265,7 +266,7 @@ pub enum SignalOutcome {
 /// typically [`ClosingPtyProcess::signal_terminate`] /
 /// [`ClosingPtyProcess::signal_kill`] first) explicitly.
 #[derive(Debug)]
-pub struct ClosingPtyProcess {
+pub(crate) struct ClosingPtyProcess {
     state: ClosingState,
 }
 
@@ -292,7 +293,7 @@ impl ClosingPtyProcess {
     /// observed it is cached and returned again on later calls. After a
     /// successful [`ClosingPtyProcess::wait_and_reap`], returns the
     /// classification of the cached [`ExitStatus`].
-    pub fn poll_exit(&mut self) -> io::Result<Option<ObservedExit>> {
+    pub(crate) fn poll_exit(&mut self) -> io::Result<Option<ObservedExit>> {
         match &mut self.state {
             ClosingState::Reaped { status } => Ok(Some(ObservedExit::from_exit_status(*status))),
             ClosingState::OwnershipLost { error } => Err(clone_io_error(error)),
@@ -337,7 +338,7 @@ impl ClosingPtyProcess {
     /// On error (other than ownership loss), unreaped ownership is kept so the
     /// caller can retry. Temporary errors such as `EINTR` leave ownership
     /// intact.
-    pub fn wait_and_reap(&mut self) -> io::Result<ExitStatus> {
+    pub(crate) fn wait_and_reap(&mut self) -> io::Result<ExitStatus> {
         match &self.state {
             ClosingState::Reaped { status } => return Ok(*status),
             ClosingState::OwnershipLost { error } => return Err(clone_io_error(error)),
@@ -405,12 +406,12 @@ impl ClosingPtyProcess {
     }
 
     /// Sends `SIGTERM` to the original process group (`kill(-pgid, SIGTERM)`).
-    pub fn signal_terminate(&mut self) -> io::Result<SignalOutcome> {
+    pub(crate) fn signal_terminate(&mut self) -> io::Result<SignalOutcome> {
         self.signal_group(libc::SIGTERM)
     }
 
     /// Sends `SIGKILL` to the original process group (`kill(-pgid, SIGKILL)`).
-    pub fn signal_kill(&mut self) -> io::Result<SignalOutcome> {
+    pub(crate) fn signal_kill(&mut self) -> io::Result<SignalOutcome> {
         self.signal_group(libc::SIGKILL)
     }
 
@@ -616,72 +617,4 @@ fn check_libc_non_neg(result: libc::c_int) -> io::Result<libc::c_int> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{mem::MaybeUninit, os::fd::AsRawFd};
-
-    use super::*;
-
-    #[test]
-    fn open_pty_pair_returns_distinct_fds() {
-        let (master, slave) = open_pty_pair().expect("open pty");
-        assert_ne!(master.as_raw_fd(), slave.as_raw_fd());
-        assert!(master.as_raw_fd() >= 0);
-        assert!(slave.as_raw_fd() >= 0);
-    }
-
-    #[test]
-    fn set_winsize_round_trips_on_master() {
-        let (master, _slave) = open_pty_pair().expect("open pty");
-        let size = Size::new(31, 97).expect("nonzero size");
-        set_winsize(master.as_raw_fd(), size).expect("set winsize");
-
-        let mut winsize = MaybeUninit::<libc::winsize>::uninit();
-        check_libc_zero(unsafe {
-            libc::ioctl(
-                master.as_raw_fd(),
-                libc::TIOCGWINSZ as _,
-                winsize.as_mut_ptr(),
-            )
-        })
-        .expect("get winsize");
-        let winsize = unsafe { winsize.assume_init() };
-        assert_eq!(winsize.ws_row, 31);
-        assert_eq!(winsize.ws_col, 97);
-    }
-
-    #[test]
-    fn classify_waitid_no_event_when_si_pid_zero() {
-        assert_eq!(
-            classify_waitid_event(0, libc::CLD_EXITED, 0).expect("no event"),
-            None
-        );
-    }
-
-    #[test]
-    fn classify_waitid_exited_killed_dumped() {
-        assert_eq!(
-            classify_waitid_event(7, libc::CLD_EXITED, 42).expect("exited"),
-            Some(ObservedExit::Exited { code: 42 })
-        );
-        assert_eq!(
-            classify_waitid_event(7, libc::CLD_KILLED, libc::SIGTERM).expect("killed"),
-            Some(ObservedExit::Signaled {
-                signal: libc::SIGTERM,
-                core_dumped: false
-            })
-        );
-        assert_eq!(
-            classify_waitid_event(7, libc::CLD_DUMPED, libc::SIGABRT).expect("dumped"),
-            Some(ObservedExit::Signaled {
-                signal: libc::SIGABRT,
-                core_dumped: true
-            })
-        );
-    }
-
-    #[test]
-    fn classify_waitid_unknown_code_is_invalid_data() {
-        let err = classify_waitid_event(1, 999, 0).expect_err("unknown code");
-        assert_eq!(err.kind(), ErrorKind::InvalidData);
-    }
-}
+mod tests;
