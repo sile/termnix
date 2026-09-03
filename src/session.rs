@@ -284,9 +284,11 @@ impl Session {
 
     /// Returns the fd to register with an event loop, if any.
     ///
-    /// `None` is returned after a logical close or once the session is spent;
-    /// callers should unregister the previous registration then. Reaping the
-    /// child while the master is still open does not clear the fd.
+    /// When `Some`, the fd is always non-blocking; `Session` sets that mode at
+    /// construction and never changes it. `None` is returned after a logical
+    /// close or once the session is spent; callers should unregister the
+    /// previous registration then. Reaping the child while the master is still
+    /// open does not clear the fd.
     pub fn fd(&self) -> Option<RawFd> {
         if self.phase == Phase::Closing || self.phase == Phase::Reaped {
             return None;
