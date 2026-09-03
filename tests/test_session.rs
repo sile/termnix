@@ -251,10 +251,16 @@ fn reply_flood_is_bounded_and_nothing_is_dropped() {
     );
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         let session = &sessions[0];
+        let metrics = session.metrics();
         assert!(
-            session.metrics().pending_reply_bytes <= 14,
+            metrics.pending_reply_bytes <= 14,
             "pending reply exceeded the internal bound: {}",
-            session.metrics().pending_reply_bytes
+            metrics.pending_reply_bytes
+        );
+        assert_eq!(
+            metrics.pending_input_bytes + metrics.pending_reply_bytes,
+            metrics.pending_write_bytes,
+            "reply/input split must partition the write queue"
         );
         visible_text(session).contains("GOT:")
     });
@@ -337,6 +343,46 @@ fn try_wait_reaps_and_keeps_state_readable() {
     let metrics = session.metrics();
     assert!(metrics.pty_bytes_read > 0);
     assert!(session.fd().is_none(), "fd should be gone after reap");
+}
+
+#[test]
+fn try_wait_before_eof_still_drains_output() {
+    // Reap as soon as the child exits; remaining PTY output must still be
+    // readable until EOF.
+    let mut session = spawn_session("printf '%s\\n' $(seq 1 200); exit 3");
+    let deadline = Instant::now() + DEADLINE;
+    let mut exit = None;
+    loop {
+        session.pump_io().expect("pump");
+        while session.needs_pump() {
+            session.pump_io().expect("pump");
+        }
+        if exit.is_none() {
+            exit = session.try_wait().expect("try_wait");
+        }
+        let text = visible_text(&session);
+        let finished = text.contains("200")
+            && matches!(
+                session.status(),
+                SessionStatus::Eof | SessionStatus::Reaped
+            );
+        if finished {
+            break;
+        }
+        if Instant::now() > deadline {
+            panic!("timed out; text={text:?} status={:?}", session.status());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        visible_text(&session).contains("200"),
+        "final output lost after early try_wait"
+    );
+    let status = exit.expect("child should have exited");
+    assert_eq!(status.code(), Some(3), "status={status:?}");
+    // Drain/reap to the spent state.
+    let _ = wait_exit(&mut session);
+    assert_eq!(session.status(), SessionStatus::Reaped);
 }
 
 #[test]

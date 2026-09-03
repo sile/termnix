@@ -57,29 +57,44 @@ both.
 `Session` owns one PTY-backed terminal session. The caller registers
 `Session::fd` with the interests from `Session::interests`, calls
 `Session::pump_io` whenever the fd is ready (and after any state change), and
-repeats while `Session::needs_pump` reports more internal work before waiting
-in the poll loop. The fd is non-blocking, so no readiness flags are passed to
+uses `Session::needs_pump` to know when more work is available without a new
+readiness edge. The fd is non-blocking, so no readiness flags are passed to
 the session; `pump_io` learns what is possible from its own `WouldBlock`
-results, which keeps edge-triggered loops correct.
+results, which keeps edge-triggered loops correct. One `pump_io` call is the
+scheduling quantum: with a single session, drain `needs_pump` before blocking;
+with several sessions, rotate among runnable ones so a chatty session cannot
+starve the others.
 
 ```rust
+// Single session: drain internal work before waiting in the poll loop.
 session.pump_io()?;
 while session.needs_pump() {
     session.pump_io()?;
 }
 reregister(session.fd(), session.interests());
+
+// Multiple sessions: round-robin one quantum at a time.
+let mut i = 0;
+while sessions.iter().any(Session::needs_pump) {
+    if sessions[i].needs_pump() {
+        sessions[i].pump_io()?;
+    }
+    i = (i + 1) % sessions.len();
+}
 ```
 
 Application input (`Session::enqueue_input`) and terminal replies share one
 FIFO write queue: a reply is appended in chronological order behind already
 accepted input, and decoding pauses until that reply is fully written, so at
-most one bounded reply is ever pending. The session applies no backpressure
-policy to application input; compare the encoded length against
-`Session::metrics().pending_write_bytes` to decide whether to enqueue, hold,
-or drop. The child-process lifecycle is `try_wait` / `wait` (status cached),
-with `close`, `terminate`, `force_terminate`, and `shutdown` for teardown.
-`SessionMetrics` exposes cumulative counters plus current and maximum values
-for the read buffer, write queue, and scrollback.
+most one bounded reply is ever pending. The write queue itself is unbounded;
+the session applies no backpressure policy to application input—compare the
+encoded length against `Session::metrics().pending_write_bytes` to decide
+whether to enqueue, hold, or drop. Child exit and PTY EOF are separate:
+`try_wait` / `wait` cache the exit status without disabling I/O, so remaining
+master-side output can still be drained until EOF. Use `close`, `terminate`,
+`force_terminate`, and `shutdown` for teardown. `SessionMetrics` exposes
+cumulative counters plus current and maximum values for the read buffer, write
+queue, and scrollback.
 
 ## Roadmap
 

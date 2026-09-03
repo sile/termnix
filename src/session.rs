@@ -9,12 +9,19 @@
 //! The session never owns a poll loop and takes no readiness flags: the fd is
 //! non-blocking, so `pump_io` learns what is possible from the `WouldBlock`
 //! results of its own `read`/`write` calls. Owning, identifying, and
-//! scheduling several sessions is the caller's responsibility.
+//! scheduling several sessions is the caller's responsibility. One `pump_io`
+//! call is the scheduling quantum; a multi-session loop should rotate among
+//! runnable sessions rather than draining one session to idle.
 //!
 //! Application input and terminal replies share one FIFO write queue. A reply
 //! is appended in chronological order and decoding pauses until that reply is
 //! fully written, so at most one reply (bounded by a fixed internal size) is
-//! ever pending and replies never overtake previously accepted input.
+//! ever pending and replies never overtake previously accepted input. The
+//! write queue itself is unbounded; callers apply backpressure via metrics.
+//!
+//! Child exit and PTY EOF are tracked separately: reaping the child does not
+//! disable I/O, so any remaining master-side output can still be drained until
+//! EOF.
 
 use std::{
     io::{self, ErrorKind, Read, Write},
@@ -48,6 +55,12 @@ const PUMP_BYTE_QUANTUM: usize = 65536;
 /// Maximum syscalls a single `pump_io` attempts.
 const PUMP_SYSCALL_QUANTUM: usize = 64;
 
+/// Drop already-written `outbound` prefix once it reaches this size.
+const OUTBOUND_COMPACT_THRESHOLD: usize = 4096;
+
+/// Drop already-decoded `read_buffer` prefix once it reaches this size.
+const READ_COMPACT_THRESHOLD: usize = 4096;
+
 /// Read/write interests an event loop should register for the session's fd.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Interests {
@@ -62,7 +75,8 @@ pub struct Interests {
 /// `metrics()` returns a value snapshot, so callers can hold values taken
 /// before and after a `pump_io` and diff them. Cumulative counters are never
 /// reset for the lifetime of the session; current values are derived from the
-/// live buffers at snapshot time.
+/// live buffers at snapshot time. Maximum fields record peaks observed when
+/// the corresponding buffers grow, not only at pump boundaries.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionMetrics {
     /// Cumulative `pump_io` calls.
@@ -120,7 +134,7 @@ pub enum SessionStatus {
     Eof,
     /// Logically closed; master closed, awaiting reap.
     Closing,
-    /// Direct child reaped; the session is spent.
+    /// Direct child reaped and I/O finished; the session is spent.
     Reaped,
 }
 
@@ -141,6 +155,9 @@ impl Direction {
 }
 
 /// Lifecycle phase of one session.
+///
+/// Tracks I/O and logical close. Child exit is stored separately in
+/// [`Session::exit_status`]; reaping alone does not enter [`Phase::Reaped`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Live,
@@ -190,12 +207,13 @@ struct Cumulative {
 
 /// A single PTY-backed terminal session.
 ///
-/// The session owns the PTY master fd, the emulator state, the bounded
-/// read/write buffers, and the child-process lifecycle, but never owns a poll
-/// loop. Register [`Session::fd`] with [`Session::interests`], call
-/// [`Session::pump_io`] when the fd is ready (or after any state change), and
-/// repeat while [`Session::needs_pump`] returns `true` before waiting in the
-/// poll loop.
+/// The session owns the PTY master fd, the emulator state, a bounded read
+/// buffer, an unbounded write queue, and the child-process lifecycle, but
+/// never owns a poll loop. Register [`Session::fd`] with
+/// [`Session::interests`], call [`Session::pump_io`] when the fd is ready (or
+/// after any state change), and repeat while [`Session::needs_pump`] returns
+/// `true` before waiting in the poll loop. With several sessions, treat each
+/// `pump_io` as one quantum and rotate among runnable sessions.
 ///
 /// # Drop behavior
 ///
@@ -206,8 +224,15 @@ pub struct Session {
     pty: Option<Pty>,
     term: TerminalState,
     phase: Phase,
+    /// Cached status once the direct child has been reaped.
+    ///
+    /// Independent of [`Self::phase`]: I/O may continue until PTY EOF after
+    /// the child exits.
+    exit_status: Option<ExitStatus>,
     /// Raw bytes read from the PTY but not yet decoded.
     read_buffer: Vec<u8>,
+    /// Number of leading `read_buffer` bytes already decoded.
+    read_offset: usize,
     /// Bytes waiting to be written, in chronological order.
     outbound: Vec<u8>,
     /// Number of leading `outbound` bytes already written.
@@ -245,7 +270,9 @@ impl Session {
             pty: Some(Pty::Live(pty)),
             term,
             phase: Phase::Live,
+            exit_status: None,
             read_buffer: Vec::new(),
+            read_offset: 0,
             outbound: Vec::new(),
             write_offset: 0,
             pending_reply_range: None,
@@ -258,8 +285,9 @@ impl Session {
 
     /// Returns the fd to register with an event loop, if any.
     ///
-    /// `None` is returned after a logical close or once the child has been
-    /// reaped; callers should unregister the previous registration then.
+    /// `None` is returned after a logical close or once the session is spent;
+    /// callers should unregister the previous registration then. Reaping the
+    /// child while the master is still open does not clear the fd.
     pub fn fd(&self) -> Option<RawFd> {
         if self.phase == Phase::Closing || self.phase == Phase::Reaped {
             return None;
@@ -296,7 +324,9 @@ impl Session {
     /// reported by [`Session::interests`]. Returns `true` when internal work
     /// (buffered decoding, a pending reply, or a pump interrupted by the
     /// internal budget) is still executable immediately, which an
-    /// edge-triggered loop must drain before blocking.
+    /// edge-triggered loop must drain before blocking. With several sessions,
+    /// prefer rotating among `needs_pump` sessions instead of draining one
+    /// session in a tight loop.
     pub fn needs_pump(&self) -> bool {
         if self.phase == Phase::Closing || self.phase == Phase::Reaped {
             return false;
@@ -307,7 +337,7 @@ impl Session {
         if self.phase == Phase::Live && !self.read_paused() && !self.read_would_block {
             return true;
         }
-        !self.read_buffer.is_empty() && !self.read_paused()
+        self.buffered_read_len() > 0 && !self.read_paused()
     }
 
     /// Advances the session: writes queued bytes, reads and decodes PTY
@@ -354,7 +384,6 @@ impl Session {
             self.cumulative.pump_budget_exhaustions =
                 self.cumulative.pump_budget_exhaustions.saturating_add(1);
         }
-        self.update_maxes();
         Ok(())
     }
 
@@ -420,6 +449,7 @@ impl Session {
             self.write_offset = 0;
             self.pending_reply_range = None;
             self.read_buffer.clear();
+            self.read_offset = 0;
             self.phase = Phase::Closing;
             let pty = self.pty.take();
             self.pty = Some(match pty {
@@ -432,15 +462,19 @@ impl Session {
     /// Observes and reaps the child without blocking.
     ///
     /// Returns `Ok(Some(status))` once the child has exited, caching the
-    /// status; later calls return the same value. After a successful reap the
-    /// session enters the `Reaped` status, its fd disappears, and the terminal
-    /// state and snapshots stay readable.
+    /// status; later calls return the same value. Reaping does not stop PTY
+    /// I/O: while the master is still open the session stays readable until
+    /// EOF. The session enters [`SessionStatus::Reaped`] only after the child
+    /// is reaped and I/O is finished (EOF or a logical close).
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        if let Some(status) = self.exit_status {
+            return Ok(Some(status));
+        }
         match self.pty.as_mut() {
             Some(Pty::Live(pty)) => {
                 let status = pty.try_wait()?;
                 if let Some(status) = status {
-                    self.phase = Phase::Reaped;
+                    self.note_exit(status);
                     Ok(Some(status))
                 } else {
                     Ok(None)
@@ -451,6 +485,7 @@ impl Session {
                     return Ok(None);
                 }
                 let status = pty.wait_and_reap()?;
+                self.exit_status = Some(status);
                 self.phase = Phase::Reaped;
                 Ok(Some(status))
             }
@@ -460,17 +495,21 @@ impl Session {
 
     /// Blocks until the child exits and returns its status.
     ///
-    /// After a successful reap the session enters the `Reaped` status and
-    /// later calls return the cached status.
+    /// After a successful reap the status is cached and later calls return it.
+    /// As with [`Self::try_wait`], reaping alone does not disable PTY I/O.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        if let Some(status) = self.exit_status {
+            return Ok(status);
+        }
         match self.pty.as_mut() {
             Some(Pty::Live(pty)) => {
                 let status = pty.wait()?;
-                self.phase = Phase::Reaped;
+                self.note_exit(status);
                 Ok(status)
             }
             Some(Pty::Closing(pty)) => {
                 let status = pty.wait_and_reap()?;
+                self.exit_status = Some(status);
                 self.phase = Phase::Reaped;
                 Ok(status)
             }
@@ -497,7 +536,7 @@ impl Session {
 
     /// Returns a snapshot of the session's activity counters.
     pub fn metrics(&self) -> SessionMetrics {
-        let buffered_read_bytes = self.read_buffer.len();
+        let buffered_read_bytes = self.buffered_read_len();
         let pending_write_bytes = self.unsent();
         let pending_reply_bytes = self.pending_reply_unsent();
         let pending_input_bytes = pending_write_bytes.saturating_sub(pending_reply_bytes);
@@ -576,6 +615,16 @@ impl Session {
     ///
     /// This consumes the session and may block while reaping.
     pub fn shutdown(mut self) -> io::Result<ExitStatus> {
+        if let Some(status) = self.exit_status.take() {
+            // Child already reaped; still close the master if it remains.
+            match self.pty.take() {
+                Some(Pty::Live(pty)) => {
+                    let _ = pty.into_closing();
+                }
+                Some(Pty::Closing(_)) | None => {}
+            }
+            return Ok(status);
+        }
         let mut closing = match self.pty.take() {
             Some(Pty::Live(pty)) => pty.into_closing(),
             Some(Pty::Closing(closing)) => closing,
@@ -588,6 +637,22 @@ impl Session {
         };
         let _ = closing.signal_kill();
         closing.wait_and_reap()
+    }
+
+    /// Records a freshly reaped exit status and enters `Reaped` if I/O is done.
+    fn note_exit(&mut self, status: ExitStatus) {
+        self.exit_status = Some(status);
+        if self.phase == Phase::Eof {
+            self.phase = Phase::Reaped;
+        }
+    }
+
+    /// Marks PTY EOF and enters `Reaped` when the child was already reaped.
+    fn note_eof(&mut self) {
+        self.phase = Phase::Eof;
+        if self.exit_status.is_some() {
+            self.phase = Phase::Reaped;
+        }
     }
 
     /// Whether decoding and reading are paused on a pending terminal reply.
@@ -605,12 +670,17 @@ impl Session {
         self.outbound.len() - self.write_offset
     }
 
+    /// Returns the number of buffered but not yet decoded read bytes.
+    fn buffered_read_len(&self) -> usize {
+        self.read_buffer.len() - self.read_offset
+    }
+
     /// Returns the number of unsent reply bytes currently held.
+    ///
+    /// Counts only the intersection of the unsent outbound range and the
+    /// pending reply range, so leading unsent input is not counted as reply.
     fn pending_reply_unsent(&self) -> usize {
-        match self.pending_reply_range.as_ref() {
-            Some(range) => range.end.saturating_sub(self.write_offset),
-            None => 0,
-        }
+        pending_reply_unsent_len(self.write_offset, self.pending_reply_range.as_ref())
     }
 
     /// Updates the running maxima tracked in the cumulative counters.
@@ -618,7 +688,7 @@ impl Session {
         self.cumulative.max_buffered_read_bytes = self
             .cumulative
             .max_buffered_read_bytes
-            .max(self.read_buffer.len());
+            .max(self.buffered_read_len());
         self.cumulative.max_pending_write_bytes =
             self.cumulative.max_pending_write_bytes.max(self.unsent());
         self.cumulative.max_scrollback_lines = self
@@ -631,12 +701,47 @@ impl Session {
             .max(self.term.scrollback_cells());
     }
 
+    /// Drops the already-written prefix of `outbound` when it grows large.
+    fn compact_outbound_if_needed(&mut self) {
+        if self.write_offset == 0 {
+            return;
+        }
+        if self.write_offset < OUTBOUND_COMPACT_THRESHOLD && !self.outbound_empty() {
+            return;
+        }
+        if let Some(range) = self.pending_reply_range.as_ref()
+            && self.write_offset >= range.end
+        {
+            self.pending_reply_range = None;
+        }
+        let drained = self.write_offset;
+        self.outbound.drain(..drained);
+        if let Some(range) = self.pending_reply_range.as_mut() {
+            // write_offset may sit inside the reply range after a partial write.
+            range.start = range.start.saturating_sub(drained);
+            range.end -= drained;
+        }
+        self.write_offset = 0;
+    }
+
+    /// Drops the already-decoded prefix of `read_buffer` when it grows large.
+    fn compact_read_buffer_if_needed(&mut self) {
+        if self.read_offset == 0 {
+            return;
+        }
+        if self.read_offset < READ_COMPACT_THRESHOLD && self.buffered_read_len() > 0 {
+            return;
+        }
+        self.read_buffer.drain(..self.read_offset);
+        self.read_offset = 0;
+    }
+
     /// Whether the given direction currently has work.
     fn has_direction_work(&self, direction: Direction) -> bool {
         match direction {
             Direction::Write => !self.outbound_empty(),
             Direction::Read => {
-                (!self.read_buffer.is_empty() && !self.read_paused())
+                (self.buffered_read_len() > 0 && !self.read_paused())
                     || (self.phase == Phase::Live
                         && !self.read_paused()
                         && self.pty.as_ref().is_some_and(Pty::is_live))
@@ -662,12 +767,12 @@ impl Session {
             if cap == 0 {
                 break;
             }
-            let Some(Pty::Live(pty)) = self.pty.as_mut() else {
+            let Some(Pty::Live(mut pty)) = self.pty.take() else {
                 break;
             };
             let start = self.write_offset;
-            let buf = self.outbound[start..start + cap].to_vec();
-            let result = pty.write(&buf);
+            let result = pty.write(&self.outbound[start..start + cap]);
+            self.pty = Some(Pty::Live(pty));
             budget.consume(0, 1);
             self.cumulative.write_syscalls = self.cumulative.write_syscalls.saturating_add(1);
             match result {
@@ -677,11 +782,7 @@ impl Session {
                     budget.consume(n, 0);
                     self.cumulative.pty_bytes_written =
                         self.cumulative.pty_bytes_written.saturating_add(n as u64);
-                    if self.write_offset == self.outbound.len() {
-                        self.outbound.clear();
-                        self.write_offset = 0;
-                        self.pending_reply_range = None;
-                    }
+                    self.compact_outbound_if_needed();
                     progressed = true;
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
@@ -720,7 +821,7 @@ impl Session {
             if self.read_paused() || self.phase != Phase::Live {
                 break;
             }
-            let room = READ_BUFFER_LIMIT.saturating_sub(self.read_buffer.len());
+            let room = READ_BUFFER_LIMIT.saturating_sub(self.buffered_read_len());
             if room == 0 {
                 break;
             }
@@ -728,23 +829,28 @@ impl Session {
             if cap == 0 {
                 break;
             }
-            let Some(Pty::Live(pty)) = self.pty.as_mut() else {
+            self.compact_read_buffer_if_needed();
+            let Some(Pty::Live(mut pty)) = self.pty.take() else {
                 break;
             };
-            let mut buf = vec![0u8; cap];
-            let result = pty.read(&mut buf);
+            let start = self.read_buffer.len();
+            self.read_buffer.resize(start + cap, 0);
+            let result = pty.read(&mut self.read_buffer[start..]);
+            self.pty = Some(Pty::Live(pty));
             budget.consume(0, 1);
             self.cumulative.read_syscalls = self.cumulative.read_syscalls.saturating_add(1);
             match result {
                 Ok(0) => {
-                    self.phase = Phase::Eof;
+                    self.read_buffer.truncate(start);
+                    self.note_eof();
                     break;
                 }
                 Ok(n) => {
-                    self.read_buffer.extend_from_slice(&buf[..n]);
+                    self.read_buffer.truncate(start + n);
                     budget.consume(n, 0);
                     self.cumulative.pty_bytes_read =
                         self.cumulative.pty_bytes_read.saturating_add(n as u64);
+                    self.update_maxes();
                     progressed = true;
                     self.decode_buffered(budget)?;
                     if self.read_paused() {
@@ -752,19 +858,27 @@ impl Session {
                     }
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                    self.read_buffer.truncate(start);
                     self.cumulative.read_would_block =
                         self.cumulative.read_would_block.saturating_add(1);
                     self.read_would_block = true;
                     break;
                 }
-                Err(err) if err.kind() == ErrorKind::Interrupted => break,
+                Err(err) if err.kind() == ErrorKind::Interrupted => {
+                    self.read_buffer.truncate(start);
+                    break;
+                }
                 Err(err) if err.raw_os_error() == Some(libc::EIO) => {
                     // PTY slave close is reported as EIO on some platforms;
                     // normalize it to EOF.
-                    self.phase = Phase::Eof;
+                    self.read_buffer.truncate(start);
+                    self.note_eof();
                     break;
                 }
-                Err(err) => return Err(err),
+                Err(err) => {
+                    self.read_buffer.truncate(start);
+                    return Err(err);
+                }
             }
         }
         Ok(progressed)
@@ -778,16 +892,18 @@ impl Session {
             if budget.bytes_left() == 0 {
                 break;
             }
-            if self.read_paused() || self.read_buffer.is_empty() {
+            if self.read_paused() || self.buffered_read_len() == 0 {
                 break;
             }
-            let byte = self.read_buffer.remove(0);
+            let byte = self.read_buffer[self.read_offset];
+            self.read_offset += 1;
             budget.consume(1, 0);
             self.cumulative.terminal_bytes_processed =
                 self.cumulative.terminal_bytes_processed.saturating_add(1);
             self.decode_byte(byte)?;
             decoded += 1;
         }
+        self.compact_read_buffer_if_needed();
         Ok(decoded)
     }
 
@@ -805,6 +921,8 @@ impl Session {
             let TerminalAction::WritePty(bytes) = action;
             reply.extend_from_slice(&bytes);
         }
+        // Scrollback may have grown even when no reply was produced.
+        self.update_maxes();
         if reply.is_empty() {
             return Ok(());
         }
@@ -821,6 +939,7 @@ impl Session {
             .terminal_reply_bytes_generated
             .saturating_add(reply.len() as u64);
         self.pending_reply_range = Some(start..start + reply.len());
+        self.update_maxes();
         Ok(())
     }
 }
@@ -829,6 +948,15 @@ impl Drop for Session {
     fn drop(&mut self) {
         // Best-effort cleanup: force-kill and reap the remaining child. This
         // may block, and failures cannot be reported from `Drop`.
+        if self.exit_status.is_some() {
+            match self.pty.take() {
+                Some(Pty::Live(pty)) => {
+                    let _ = pty.into_closing();
+                }
+                Some(Pty::Closing(_)) | None => {}
+            }
+            return;
+        }
         let mut closing = match self.pty.take() {
             Some(Pty::Live(pty)) => pty.into_closing(),
             Some(Pty::Closing(closing)) => closing,
@@ -861,5 +989,29 @@ impl Budget {
 
     fn exhausted(&self) -> bool {
         self.bytes == 0 || self.syscalls == 0
+    }
+}
+
+/// Length of the intersection between unsent outbound bytes and a reply range.
+fn pending_reply_unsent_len(write_offset: usize, range: Option<&Range<usize>>) -> usize {
+    match range {
+        Some(range) => range.end.saturating_sub(write_offset.max(range.start)),
+        None => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_reply_unsent_len;
+    use std::ops::Range;
+
+    #[test]
+    fn pending_reply_counts_only_intersection_with_unsent() {
+        let range: Range<usize> = 100..105;
+        assert_eq!(pending_reply_unsent_len(0, Some(&range)), 5);
+        assert_eq!(pending_reply_unsent_len(100, Some(&range)), 5);
+        assert_eq!(pending_reply_unsent_len(102, Some(&range)), 3);
+        assert_eq!(pending_reply_unsent_len(105, Some(&range)), 0);
+        assert_eq!(pending_reply_unsent_len(0, None), 0);
     }
 }
