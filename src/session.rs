@@ -33,7 +33,6 @@ use std::{
 use crate::{
     pty::{ClosingPtyProcess, PtyProcess, SignalOutcome},
     size::Size,
-    snapshot::TerminalSnapshot,
     terminal::{TerminalAction, TerminalState},
 };
 
@@ -438,8 +437,8 @@ impl Session {
     /// bytes, and closes the PTY master. The child is kept in a private
     /// closing state until reaped. After closing, `pump_io` is a successful
     /// no-op, `enqueue_input` and `resize` return [`ErrorKind::BrokenPipe`],
-    /// while the final terminal state, snapshots, metrics, process polling and
-    /// signal delivery remain available until the child is reaped. Idempotent.
+    /// while the final terminal state, metrics, process polling and signal
+    /// delivery remain available until the child is reaped. Idempotent.
     pub fn close(&mut self) {
         if self.phase == Phase::Reaped {
             return;
@@ -520,16 +519,11 @@ impl Session {
         }
     }
 
-    /// Returns an owned snapshot of the session's terminal state.
-    ///
-    /// Available in every phase, including after the child has been reaped.
-    pub fn snapshot(&self) -> TerminalSnapshot {
-        self.term.snapshot()
-    }
-
     /// Returns read-only access to the session's terminal state.
     ///
     /// Available in every phase, including after the child has been reaped.
+    /// Call [`TerminalState::snapshot`] on the returned reference for an owned
+    /// copy.
     pub fn terminal_state(&self) -> &TerminalState {
         &self.term
     }

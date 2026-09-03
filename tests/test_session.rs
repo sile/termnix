@@ -20,7 +20,7 @@ fn spawn_session(script: &str) -> termnix::Session {
 /// Renders the snapshot's scrollback and visible cells as rows, dropping
 /// wide-character continuation cells and trailing blanks.
 fn visible_text(session: &termnix::Session) -> String {
-    let snapshot = session.snapshot();
+    let snapshot = session.terminal_state().snapshot();
     let mut out = String::new();
     for line in snapshot.scrollback() {
         let mut row = String::new();
