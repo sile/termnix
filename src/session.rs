@@ -374,6 +374,15 @@ impl Session {
                 Direction::Read => self.read_phase(&mut budget)?,
             };
             if !progressed {
+                // A WouldBlock (or empty) on one direction must not skip the
+                // other: e.g. after writing some input, a read WouldBlock used
+                // to leave later queued bytes unflushed until the next readiness
+                // edge, while needs_pump stayed true and skipped poll.
+                let other = direction.opposite();
+                if self.has_direction_work(other) {
+                    direction = other;
+                    continue;
+                }
                 break;
             }
             direction = direction.opposite();

@@ -195,6 +195,40 @@ fn key_text_paste_and_raw_reach_the_child() {
 }
 
 #[test]
+fn pump_io_flushes_input_after_read_would_block() {
+    // Reproduce a pump scheduling edge: after draining READY, a first enqueue +
+    // pump can leave direction on Read (WouldBlock). A second enqueue must still
+    // flush on the next pump_io without waiting for a new readiness edge.
+    let mut session = spawn_session(
+        "stty -echo; printf 'READY\\n'; IFS= read -r line; printf 'ECHO:%s\\n' \"$line\"",
+    );
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        visible_text(&sessions[0]).contains("READY")
+    });
+    session
+        .enqueue_input(termnix::Input::Raw(b"hello"))
+        .expect("text");
+    session.pump_io().expect("pump after text");
+    while session.needs_pump() {
+        session.pump_io().expect("drain after text");
+    }
+    session
+        .enqueue_input(termnix::Input::Key(termnix::KeyEvent::new(
+            termnix::KeyCode::Enter,
+        )))
+        .expect("enter");
+    session.pump_io().expect("pump after enter");
+    assert_eq!(
+        session.metrics().pending_write_bytes,
+        0,
+        "Enter must flush even when the prior pump ended on a read WouldBlock"
+    );
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        visible_text(&sessions[0]).contains("ECHO:hello")
+    });
+}
+
+#[test]
 fn query_reply_returns_to_the_querying_session() {
     // Send a primary DA request, read the 5-byte reply, and render its bytes
     // as decimal values so the reply content is observable in the snapshot.

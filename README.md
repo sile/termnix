@@ -98,6 +98,12 @@ master-side output can still be drained until EOF. Use `close`, `terminate`,
 cumulative counters plus current and maximum values for the read buffer, write
 queue, and scrollback.
 
+## Examples
+
+`examples/headless.rs` drives one `Session` with `libc::poll` and no host
+terminal or UI—see that file's module docs for why it exists and what it
+proves. Run `cargo run --quiet --example headless </dev/null`.
+
 ## Roadmap
 
 No planned work is currently tracked.
