@@ -2,7 +2,7 @@
 name = "termnix"
 version = "0.0.1"
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.95"
 publish = false
 
 [dependencies]
@@ -11,4 +11,5 @@ unicode-width = "0.2"
 vte = { version = "0.15", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+tuinix = "0.4"
 noprop = "0.2"

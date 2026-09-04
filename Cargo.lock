@@ -32,8 +32,18 @@ version = "0.0.1"
 dependencies = [
  "libc",
  "noprop",
+ "tuinix",
  "unicode-width",
  "vte",
+]
+
+[[package]]
+name = "tuinix"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92d61a834d69995896499f189dd134f369dcf8dc8f8704e1e3fff8cde1ef7829"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
