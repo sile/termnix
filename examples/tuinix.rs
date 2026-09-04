@@ -3,14 +3,14 @@
 //!
 //! termnix owns neither poll loops, drawing, nor the host terminal: this
 //! example shows how little an application needs on top of the public
-//! [`Session`](termnix::Session) API to integrate with a TUI toolkit. The
-//! host input fd, the resize-signal fd, and each live [`Session::fd`] are
+//! [`termnix::Session`](termnix::Session) API to integrate with a TUI toolkit. The
+//! host input fd, the resize-signal fd, and each live [`Session::fd`](termnix::Session::fd) are
 //! watched by one example-local `libc::poll` loop; readiness is turned into
-//! [`Session::pump_io`](termnix::Session::pump_io) calls with
-//! [`Session::needs_pump`](termnix::Session::needs_pump), keys are converted
+//! [`termnix::Session::pump_io`](termnix::Session::pump_io) calls with
+//! [`termnix::Session::needs_pump`](termnix::Session::needs_pump), keys are converted
 //! and enqueued with caller-side backpressure, and the selected session's
-//! [`TerminalSnapshot`](termnix::TerminalSnapshot) is projected into a
-//! full-screen [`TerminalFrame`].
+//! [`termnix::TerminalSnapshot`](termnix::TerminalSnapshot) is projected into a
+//! full-screen [`TerminalFrame`](tuinix::TerminalFrame).
 //!
 //! Keystrokes: `Ctrl+T` switches the display and input target between the two
 //! sessions (no-op while only one session is left), `Ctrl+Q` quits. Other keys
@@ -33,14 +33,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use termnix::{
-    Cell, Color, Input, KeyCode, KeyEvent, Modifiers, Position, Session, SessionStatus, Size,
-    Style, TerminalSnapshot,
-};
-use tuinix::{
-    EstimateCharWidth, KeyCode as HostKeyCode, KeyInput, Terminal, TerminalColor, TerminalFrame,
-    TerminalInput, TerminalPosition, TerminalSize, TerminalStyle,
-};
+use tuinix::EstimateCharWidth;
 use unicode_width::UnicodeWidthChar;
 
 /// Number of session slots; the example fixes it at two.
@@ -110,15 +103,15 @@ enum AppCommand {
 #[derive(Debug, Clone, Copy)]
 struct PendingInput {
     session: usize,
-    event: KeyEvent,
+    event: termnix::KeyEvent,
 }
 
 /// Inspectable projection of one session's visible screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Projection {
-    size: Size,
-    rows: Vec<Vec<Cell>>,
-    cursor: Position,
+    size: termnix::Size,
+    rows: Vec<Vec<termnix::Cell>>,
+    cursor: termnix::Position,
     cursor_visible: bool,
 }
 
@@ -127,7 +120,7 @@ impl Projection {
     ///
     /// The cursor is validated against the captured size so callers never
     /// project an out-of-range position.
-    fn from_snapshot(snapshot: &TerminalSnapshot) -> Result<Self, String> {
+    fn from_snapshot(snapshot: &termnix::TerminalSnapshot) -> Result<Self, String> {
         let size = snapshot.size();
         let cursor = snapshot.cursor();
         if cursor.row >= size.rows.get() || cursor.col >= size.cols.get() {
@@ -138,7 +131,11 @@ impl Projection {
         let rows = (0..size.rows.get())
             .map(|row| {
                 (0..size.cols.get())
-                    .map(|col| snapshot.cell(Position { row, col }).expect("cell in range"))
+                    .map(|col| {
+                        snapshot
+                            .cell(termnix::Position { row, col })
+                            .expect("cell in range")
+                    })
                     .collect()
             })
             .collect();
@@ -153,7 +150,7 @@ impl Projection {
 
 /// Application state: two session slots plus the event-loop bookkeeping.
 struct App {
-    sessions: [Option<Session>; SESSION_COUNT],
+    sessions: [Option<termnix::Session>; SESSION_COUNT],
     selected: usize,
     pending: Option<PendingInput>,
     next_process_poll: Instant,
@@ -163,12 +160,12 @@ struct App {
 
 impl App {
     /// Spawns both fixed child scripts at `size`.
-    fn spawn(size: Size) -> Result<Self, AppError> {
-        let mut sessions: [Option<Session>; SESSION_COUNT] = [None, None];
+    fn spawn(size: termnix::Size) -> Result<Self, AppError> {
+        let mut sessions: [Option<termnix::Session>; SESSION_COUNT] = [None, None];
         for (index, slot) in sessions.iter_mut().enumerate() {
             let mut command = Command::new("/bin/sh");
             command.arg("-c").arg(child_script(index));
-            *slot = Some(Session::new(&mut command, size).map_err(AppError::io)?);
+            *slot = Some(termnix::Session::new(&mut command, size).map_err(AppError::io)?);
         }
         Ok(Self {
             sessions,
@@ -189,7 +186,7 @@ impl App {
         for slot in &mut self.sessions {
             let _ = slot
                 .as_mut()
-                .map(Session::try_wait)
+                .map(termnix::Session::try_wait)
                 .transpose()
                 .map_err(AppError::io)?;
         }
@@ -202,7 +199,7 @@ impl App {
         for slot in 0..SESSION_COUNT {
             let reaped = self.sessions[slot]
                 .as_ref()
-                .is_some_and(|session| session.status() == SessionStatus::Reaped);
+                .is_some_and(|session| session.status() == termnix::SessionStatus::Reaped);
             if reaped {
                 self.sessions[slot] = None;
                 if let Some(pending) = self.pending
@@ -227,7 +224,7 @@ impl App {
     fn any_needs_pump(&self) -> bool {
         self.sessions
             .iter()
-            .any(|slot| slot.as_ref().is_some_and(Session::needs_pump))
+            .any(|slot| slot.as_ref().is_some_and(termnix::Session::needs_pump))
     }
 
     /// Slots that still own a session.
@@ -251,7 +248,7 @@ impl App {
     }
 
     /// Applies a host resize to every session whose PTY is still open.
-    fn apply_resize(&mut self, size: Size) -> Result<(), AppError> {
+    fn apply_resize(&mut self, size: termnix::Size) -> Result<(), AppError> {
         for slot in &mut self.sessions {
             let live = slot.as_ref().is_some_and(|s| s.fd().is_some());
             if live {
@@ -266,8 +263,8 @@ impl App {
 
     /// Forwards one host input: commands first, then a key to the selected
     /// session. Mouse events and unsupported keys are dropped explicitly.
-    fn handle_input(&mut self, input: TerminalInput) -> Result<(), AppError> {
-        let TerminalInput::Key(key) = input else {
+    fn handle_input(&mut self, input: tuinix::TerminalInput) -> Result<(), AppError> {
+        let tuinix::TerminalInput::Key(key) = input else {
             // Mouse events are out of scope for this example; do not forward.
             return Ok(());
         };
@@ -285,8 +282,8 @@ impl App {
     }
 
     /// Enqueues `event` to the selected session or holds it for backpressure.
-    fn try_enqueue(&mut self, event: KeyEvent) -> Result<(), AppError> {
-        let input = Input::Key(event);
+    fn try_enqueue(&mut self, event: termnix::KeyEvent) -> Result<(), AppError> {
+        let input = termnix::Input::Key(event);
         let held = {
             let Some(session) = self.sessions[self.selected].as_mut() else {
                 return Ok(());
@@ -328,7 +325,7 @@ impl App {
             return Ok(());
         };
         session.pump_io().map_err(AppError::io)?;
-        let input = Input::Key(pending.event);
+        let input = termnix::Input::Key(pending.event);
         let need = input.byte_len(session.terminal_state().modes());
         if session.metrics().pending_write_bytes.saturating_add(need) > WRITE_SOFT_LIMIT {
             return Ok(());
@@ -345,7 +342,7 @@ impl App {
     /// Pumps runnable sessions round-robin, bounded by a per-iteration budget.
     ///
     /// Sessions that were reported ready by `poll` or that report
-    /// [`Session::needs_pump`] are pumped in rotating order so one busy
+    /// [`Session::needs_pump`](termnix::Session::needs_pump) are pumped in rotating order so one busy
     /// session cannot starve the other.
     fn drain_runnable(&mut self, ready: &[usize]) -> Result<(), AppError> {
         let mut ready = ready;
@@ -404,11 +401,11 @@ impl App {
 ///
 /// The host input fd is omitted while a key is held for backpressure; the
 /// resize-signal fd is always present; each open session contributes its fd
-/// with the interests reported by [`Session::interests`].
+/// with the interests reported by [`Session::interests`](termnix::Session::interests).
 fn build_poll_entries(
     host_input_fd: RawFd,
     host_signal_fd: RawFd,
-    sessions: &[Option<Session>],
+    sessions: &[Option<termnix::Session>],
     include_host_input: bool,
 ) -> Vec<PollEntry> {
     let mut entries = Vec::new();
@@ -545,9 +542,9 @@ fn poll_timeout_ms(deadline: Instant) -> i32 {
 
 /// Drains host keystrokes, stopping early on `WouldBlock`, `Ok(None)` or the
 /// budget; `UnexpectedEof` means the host terminal went away.
-fn drain_host_inputs<F>(mut next: F, budget: usize) -> Result<Vec<TerminalInput>, AppError>
+fn drain_host_inputs<F>(mut next: F, budget: usize) -> Result<Vec<tuinix::TerminalInput>, AppError>
 where
-    F: FnMut() -> io::Result<Option<TerminalInput>>,
+    F: FnMut() -> io::Result<Option<tuinix::TerminalInput>>,
 {
     let mut inputs = Vec::new();
     for _ in 0..budget {
@@ -569,40 +566,40 @@ where
 /// tuinix reports `ctrl` and `alt` on keys and has no shift bit: shift is
 /// already applied to `Char` and named keys are unchanged. See
 /// [`key_event_from_host`] for the supported set.
-fn key_event_from_host(key: KeyInput) -> Option<KeyEvent> {
-    let modifiers = Modifiers {
+fn key_event_from_host(key: tuinix::KeyInput) -> Option<termnix::KeyEvent> {
+    let modifiers = termnix::Modifiers {
         ctrl: key.ctrl,
         alt: key.alt,
         shift: false,
     };
     let code = match key.code {
-        HostKeyCode::Char(ch) => KeyCode::Char(ch),
-        HostKeyCode::Enter => KeyCode::Enter,
-        HostKeyCode::Backspace => KeyCode::Backspace,
-        HostKeyCode::Tab => KeyCode::Tab,
-        HostKeyCode::Delete => KeyCode::Delete,
-        HostKeyCode::Insert => KeyCode::Insert,
-        HostKeyCode::Up => KeyCode::Up,
-        HostKeyCode::Down => KeyCode::Down,
-        HostKeyCode::Left => KeyCode::Left,
-        HostKeyCode::Right => KeyCode::Right,
-        HostKeyCode::Home => KeyCode::Home,
-        HostKeyCode::End => KeyCode::End,
-        HostKeyCode::PageUp => KeyCode::PageUp,
-        HostKeyCode::PageDown => KeyCode::PageDown,
+        tuinix::KeyCode::Char(ch) => termnix::KeyCode::Char(ch),
+        tuinix::KeyCode::Enter => termnix::KeyCode::Enter,
+        tuinix::KeyCode::Backspace => termnix::KeyCode::Backspace,
+        tuinix::KeyCode::Tab => termnix::KeyCode::Tab,
+        tuinix::KeyCode::Delete => termnix::KeyCode::Delete,
+        tuinix::KeyCode::Insert => termnix::KeyCode::Insert,
+        tuinix::KeyCode::Up => termnix::KeyCode::Up,
+        tuinix::KeyCode::Down => termnix::KeyCode::Down,
+        tuinix::KeyCode::Left => termnix::KeyCode::Left,
+        tuinix::KeyCode::Right => termnix::KeyCode::Right,
+        tuinix::KeyCode::Home => termnix::KeyCode::Home,
+        tuinix::KeyCode::End => termnix::KeyCode::End,
+        tuinix::KeyCode::PageUp => termnix::KeyCode::PageUp,
+        tuinix::KeyCode::PageDown => termnix::KeyCode::PageDown,
         // BackTab, standalone Escape and mouse events stay unsupported so the
         // example never silently forwards a different key.
-        HostKeyCode::Escape | HostKeyCode::BackTab => return None,
+        tuinix::KeyCode::Escape | tuinix::KeyCode::BackTab => return None,
     };
-    Some(KeyEvent { code, modifiers })
+    Some(termnix::KeyEvent { code, modifiers })
 }
 
 /// Maps a key event to a command; `None` forwards it to the session.
-fn command_from_key(event: KeyEvent) -> Option<AppCommand> {
+fn command_from_key(event: termnix::KeyEvent) -> Option<AppCommand> {
     if event.modifiers.ctrl && !event.modifiers.alt && !event.modifiers.shift {
         match event.code {
-            KeyCode::Char('t' | 'T') => return Some(AppCommand::Switch),
-            KeyCode::Char('q' | 'Q') => return Some(AppCommand::Quit),
+            termnix::KeyCode::Char('t' | 'T') => return Some(AppCommand::Switch),
+            termnix::KeyCode::Char('q' | 'Q') => return Some(AppCommand::Quit),
             _ => {}
         }
     }
@@ -613,18 +610,21 @@ fn command_from_key(event: KeyEvent) -> Option<AppCommand> {
 ///
 /// Zero dimensions and values beyond `u16` are rejected instead of clamped or
 /// silently cast.
-fn size_from_host(size: TerminalSize) -> Result<Size, String> {
+fn size_from_host(size: tuinix::TerminalSize) -> Result<termnix::Size, String> {
     let rows = u16::try_from(size.rows)
         .map_err(|_| format!("unsupported terminal rows: {}", size.rows))?;
     let cols = u16::try_from(size.cols)
         .map_err(|_| format!("unsupported terminal cols: {}", size.cols))?;
-    Size::new(rows, cols).ok_or_else(|| format!("unsupported terminal size: {size:?}"))
+    termnix::Size::new(rows, cols).ok_or_else(|| format!("unsupported terminal size: {size:?}"))
 }
 
 /// Converts a zero-based host position to a termnix grid position.
 ///
 /// Out-of-range or non-`u16` values are rejected instead of clamped.
-fn cursor_from_host(position: TerminalPosition, size: Size) -> Result<Position, String> {
+fn cursor_from_host(
+    position: tuinix::TerminalPosition,
+    size: termnix::Size,
+) -> Result<termnix::Position, String> {
     let row = u16::try_from(position.row)
         .map_err(|_| format!("unsupported cursor row: {}", position.row))?;
     let col = u16::try_from(position.col)
@@ -636,20 +636,20 @@ fn cursor_from_host(position: TerminalPosition, size: Size) -> Result<Position, 
             size.cols.get()
         ));
     }
-    Ok(Position { row, col })
+    Ok(termnix::Position { row, col })
 }
 
 /// Maps a termnix color to tuinix's RGB-only representation.
 ///
 /// `Default` maps to the terminal's default (no explicit color); `Indexed`
 /// follows the xterm 256-color palette.
-fn to_terminal_color(color: Color) -> Option<TerminalColor> {
+fn to_terminal_color(color: termnix::Color) -> Option<tuinix::TerminalColor> {
     let (r, g, b) = match color {
-        Color::Default => return None,
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Indexed(index) => indexed_to_rgb(index),
+        termnix::Color::Default => return None,
+        termnix::Color::Rgb(r, g, b) => (r, g, b),
+        termnix::Color::Indexed(index) => indexed_to_rgb(index),
     };
-    Some(TerminalColor::new(r, g, b))
+    Some(tuinix::TerminalColor::new(r, g, b))
 }
 
 /// Resolves an xterm 256-color index to concrete RGB.
@@ -695,8 +695,8 @@ fn palette_level(index: u8) -> u8 {
 }
 
 /// Maps a termnix style to a tuinix style, dropping unsupported attributes.
-fn to_terminal_style(style: Style) -> TerminalStyle {
-    let mut out = TerminalStyle::new();
+fn to_terminal_style(style: termnix::Style) -> tuinix::TerminalStyle {
+    let mut out = tuinix::TerminalStyle::new();
     if style.bold {
         out = out.bold();
     }
@@ -732,10 +732,10 @@ impl EstimateCharWidth for CellWidthEstimator {
 /// Each row is terminated explicitly; width-0 continuation cells are not
 /// written. Style changes emit only a reset-plus-select sequence.
 fn write_grid(
-    frame: &mut TerminalFrame<CellWidthEstimator>,
+    frame: &mut tuinix::TerminalFrame<CellWidthEstimator>,
     grid: &Projection,
 ) -> std::fmt::Result {
-    let mut current = TerminalStyle::new();
+    let mut current = tuinix::TerminalStyle::new();
     for row in &grid.rows {
         for cell in row {
             if cell.width == 0 {
@@ -754,27 +754,28 @@ fn write_grid(
 }
 
 /// Draws the selected session to the host terminal.
-fn draw_selected(terminal: &mut Terminal, app: &App) -> Result<(), AppError> {
+fn draw_selected(terminal: &mut tuinix::Terminal, app: &App) -> Result<(), AppError> {
     let Some(session) = app.sessions[app.selected].as_ref() else {
         return Ok(());
     };
     let snapshot = session.terminal_state().snapshot();
     let projection = Projection::from_snapshot(&snapshot).map_err(AppError::msg)?;
-    let frame_size = TerminalSize::rows_cols(
+    let frame_size = tuinix::TerminalSize::rows_cols(
         projection.size.rows.get() as usize,
         projection.size.cols.get() as usize,
     );
-    let mut frame = TerminalFrame::with_char_width_estimator(frame_size, CellWidthEstimator);
+    let mut frame =
+        tuinix::TerminalFrame::with_char_width_estimator(frame_size, CellWidthEstimator);
     write_grid(&mut frame, &projection).map_err(|_| AppError::msg("frame write failed"))?;
     let cursor = if projection.cursor_visible {
         cursor_from_host(
-            TerminalPosition::row_col(
+            tuinix::TerminalPosition::row_col(
                 projection.cursor.row as usize,
                 projection.cursor.col as usize,
             ),
             projection.size,
         )
-        .map(|cursor| TerminalPosition::row_col(cursor.row as usize, cursor.col as usize))
+        .map(|cursor| tuinix::TerminalPosition::row_col(cursor.row as usize, cursor.col as usize))
         .ok()
     } else {
         None
@@ -786,7 +787,7 @@ fn draw_selected(terminal: &mut Terminal, app: &App) -> Result<(), AppError> {
 
 /// Runs the main loop until quit, error, or both sessions are gone.
 fn run_loop(
-    terminal: &mut Terminal,
+    terminal: &mut tuinix::Terminal,
     app: &mut App,
     host_input_fd: RawFd,
     host_signal_fd: RawFd,
@@ -876,7 +877,7 @@ fn run_loop(
 
 /// Drives the example: setup, loop, and a single explicit shutdown pass.
 fn run() -> Result<(), AppError> {
-    let mut terminal = Terminal::new().map_err(AppError::io)?;
+    let mut terminal = tuinix::Terminal::new().map_err(AppError::io)?;
     let host_input_fd = terminal.set_input_nonblocking().map_err(AppError::io)?;
     let host_signal_fd = terminal.set_signal_nonblocking().map_err(AppError::io)?;
     let size = size_from_host(terminal.size()).map_err(AppError::msg)?;
@@ -979,29 +980,34 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tuinix::MouseEvent;
 
-    fn key(ctrl: bool, alt: bool, code: HostKeyCode) -> KeyInput {
-        KeyInput { ctrl, alt, code }
+    fn key(ctrl: bool, alt: bool, code: tuinix::KeyCode) -> tuinix::KeyInput {
+        tuinix::KeyInput { ctrl, alt, code }
     }
 
     #[test]
     fn supported_keys_are_converted_with_modifiers() {
         let supported = [
-            (HostKeyCode::Char('a'), Some(KeyCode::Char('a'))),
-            (HostKeyCode::Enter, Some(KeyCode::Enter)),
-            (HostKeyCode::Backspace, Some(KeyCode::Backspace)),
-            (HostKeyCode::Tab, Some(KeyCode::Tab)),
-            (HostKeyCode::Delete, Some(KeyCode::Delete)),
-            (HostKeyCode::Insert, Some(KeyCode::Insert)),
-            (HostKeyCode::Up, Some(KeyCode::Up)),
-            (HostKeyCode::Down, Some(KeyCode::Down)),
-            (HostKeyCode::Left, Some(KeyCode::Left)),
-            (HostKeyCode::Right, Some(KeyCode::Right)),
-            (HostKeyCode::Home, Some(KeyCode::Home)),
-            (HostKeyCode::End, Some(KeyCode::End)),
-            (HostKeyCode::PageUp, Some(KeyCode::PageUp)),
-            (HostKeyCode::PageDown, Some(KeyCode::PageDown)),
+            (
+                tuinix::KeyCode::Char('a'),
+                Some(termnix::KeyCode::Char('a')),
+            ),
+            (tuinix::KeyCode::Enter, Some(termnix::KeyCode::Enter)),
+            (
+                tuinix::KeyCode::Backspace,
+                Some(termnix::KeyCode::Backspace),
+            ),
+            (tuinix::KeyCode::Tab, Some(termnix::KeyCode::Tab)),
+            (tuinix::KeyCode::Delete, Some(termnix::KeyCode::Delete)),
+            (tuinix::KeyCode::Insert, Some(termnix::KeyCode::Insert)),
+            (tuinix::KeyCode::Up, Some(termnix::KeyCode::Up)),
+            (tuinix::KeyCode::Down, Some(termnix::KeyCode::Down)),
+            (tuinix::KeyCode::Left, Some(termnix::KeyCode::Left)),
+            (tuinix::KeyCode::Right, Some(termnix::KeyCode::Right)),
+            (tuinix::KeyCode::Home, Some(termnix::KeyCode::Home)),
+            (tuinix::KeyCode::End, Some(termnix::KeyCode::End)),
+            (tuinix::KeyCode::PageUp, Some(termnix::KeyCode::PageUp)),
+            (tuinix::KeyCode::PageDown, Some(termnix::KeyCode::PageDown)),
         ];
         for (host, expected) in supported {
             let event = key_event_from_host(key(true, true, host)).expect("supported key");
@@ -1014,18 +1020,18 @@ mod tests {
 
     #[test]
     fn unsupported_keys_are_not_mapped() {
-        let event = key_event_from_host(key(false, false, HostKeyCode::Escape));
+        let event = key_event_from_host(key(false, false, tuinix::KeyCode::Escape));
         assert!(event.is_none());
-        let event = key_event_from_host(key(false, false, HostKeyCode::BackTab));
+        let event = key_event_from_host(key(false, false, tuinix::KeyCode::BackTab));
         assert!(event.is_none());
-        let mouse = TerminalInput::Mouse(tuinix::MouseInput {
-            event: MouseEvent::LeftPress,
-            position: TerminalPosition::ZERO,
+        let mouse = tuinix::TerminalInput::Mouse(tuinix::MouseInput {
+            event: tuinix::MouseEvent::LeftPress,
+            position: tuinix::TerminalPosition::ZERO,
             ctrl: false,
             alt: false,
             shift: false,
         });
-        assert!(matches!(mouse, TerminalInput::Mouse(_)));
+        assert!(matches!(mouse, tuinix::TerminalInput::Mouse(_)));
         let mut app = App {
             sessions: [None, None],
             selected: 0,
@@ -1041,87 +1047,96 @@ mod tests {
     #[test]
     fn ctrl_t_and_ctrl_q_are_commands_before_children() {
         let quit = command_from_key(
-            key_event_from_host(key(true, false, HostKeyCode::Char('q'))).expect("key"),
+            key_event_from_host(key(true, false, tuinix::KeyCode::Char('q'))).expect("key"),
         );
         assert_eq!(quit, Some(AppCommand::Quit));
         let switch = command_from_key(
-            key_event_from_host(key(true, false, HostKeyCode::Char('t'))).expect("key"),
+            key_event_from_host(key(true, false, tuinix::KeyCode::Char('t'))).expect("key"),
         );
         assert_eq!(switch, Some(AppCommand::Switch));
         let plain_q = command_from_key(
-            key_event_from_host(key(false, false, HostKeyCode::Char('q'))).expect("key"),
+            key_event_from_host(key(false, false, tuinix::KeyCode::Char('q'))).expect("key"),
         );
         assert_eq!(plain_q, None);
         let ctrl_alt_q = command_from_key(
-            key_event_from_host(key(true, true, HostKeyCode::Char('q'))).expect("key"),
+            key_event_from_host(key(true, true, tuinix::KeyCode::Char('q'))).expect("key"),
         );
         assert_eq!(ctrl_alt_q, None);
     }
 
     #[test]
     fn size_conversion_rejects_zero_and_u16_overflow() {
-        assert!(size_from_host(TerminalSize::rows_cols(0, 80)).is_err());
-        assert!(size_from_host(TerminalSize::rows_cols(24, 0)).is_err());
-        assert!(size_from_host(TerminalSize::rows_cols(24, u16::MAX as usize + 1)).is_err());
-        let size = size_from_host(TerminalSize::rows_cols(24, u16::MAX as usize)).expect("max");
+        assert!(size_from_host(tuinix::TerminalSize::rows_cols(0, 80)).is_err());
+        assert!(size_from_host(tuinix::TerminalSize::rows_cols(24, 0)).is_err());
+        assert!(
+            size_from_host(tuinix::TerminalSize::rows_cols(24, u16::MAX as usize + 1)).is_err()
+        );
+        let size =
+            size_from_host(tuinix::TerminalSize::rows_cols(24, u16::MAX as usize)).expect("max");
         assert_eq!(size.cols.get(), u16::MAX);
     }
 
     #[test]
     fn cursor_conversion_validates_bounds() {
-        let size = Size::new(24, 80).expect("size");
-        let origin = cursor_from_host(TerminalPosition::ZERO, size).expect("origin");
-        assert_eq!(origin, Position { row: 0, col: 0 });
-        let last = cursor_from_host(TerminalPosition::row_col(23, 79), size).expect("last");
-        assert_eq!(last, Position { row: 23, col: 79 });
-        assert!(cursor_from_host(TerminalPosition::row_col(24, 0), size).is_err());
-        assert!(cursor_from_host(TerminalPosition::row_col(0, 80), size).is_err());
-        assert!(cursor_from_host(TerminalPosition::row_col(u16::MAX as usize, 0), size).is_err());
+        let size = termnix::Size::new(24, 80).expect("size");
+        let origin = cursor_from_host(tuinix::TerminalPosition::ZERO, size).expect("origin");
+        assert_eq!(origin, termnix::Position { row: 0, col: 0 });
+        let last = cursor_from_host(tuinix::TerminalPosition::row_col(23, 79), size).expect("last");
+        assert_eq!(last, termnix::Position { row: 23, col: 79 });
+        assert!(cursor_from_host(tuinix::TerminalPosition::row_col(24, 0), size).is_err());
+        assert!(cursor_from_host(tuinix::TerminalPosition::row_col(0, 80), size).is_err());
+        assert!(
+            cursor_from_host(
+                tuinix::TerminalPosition::row_col(u16::MAX as usize, 0),
+                size
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn color_and_style_conversion() {
-        assert_eq!(to_terminal_color(Color::Default), None);
+        assert_eq!(to_terminal_color(termnix::Color::Default), None);
         assert_eq!(
-            to_terminal_color(Color::Rgb(1, 2, 3)),
-            Some(TerminalColor::new(1, 2, 3))
+            to_terminal_color(termnix::Color::Rgb(1, 2, 3)),
+            Some(tuinix::TerminalColor::new(1, 2, 3))
         );
         assert_eq!(
-            to_terminal_color(Color::Indexed(0)),
-            Some(TerminalColor::BLACK)
+            to_terminal_color(termnix::Color::Indexed(0)),
+            Some(tuinix::TerminalColor::BLACK)
         );
         assert_eq!(
-            to_terminal_color(Color::Indexed(15)),
-            Some(TerminalColor::new(255, 255, 255))
+            to_terminal_color(termnix::Color::Indexed(15)),
+            Some(tuinix::TerminalColor::new(255, 255, 255))
         );
         assert_eq!(
-            to_terminal_color(Color::Indexed(16)),
-            Some(TerminalColor::new(0, 0, 0))
+            to_terminal_color(termnix::Color::Indexed(16)),
+            Some(tuinix::TerminalColor::new(0, 0, 0))
         );
         assert_eq!(
-            to_terminal_color(Color::Indexed(21)),
-            Some(TerminalColor::new(0, 0, 255))
+            to_terminal_color(termnix::Color::Indexed(21)),
+            Some(tuinix::TerminalColor::new(0, 0, 255))
         );
         assert_eq!(
-            to_terminal_color(Color::Indexed(196)),
-            Some(TerminalColor::new(255, 0, 0))
+            to_terminal_color(termnix::Color::Indexed(196)),
+            Some(tuinix::TerminalColor::new(255, 0, 0))
         );
         assert_eq!(
-            to_terminal_color(Color::Indexed(231)),
-            Some(TerminalColor::new(255, 255, 255))
+            to_terminal_color(termnix::Color::Indexed(231)),
+            Some(tuinix::TerminalColor::new(255, 255, 255))
         );
         assert_eq!(
-            to_terminal_color(Color::Indexed(232)),
-            Some(TerminalColor::new(8, 8, 8))
+            to_terminal_color(termnix::Color::Indexed(232)),
+            Some(tuinix::TerminalColor::new(8, 8, 8))
         );
         assert_eq!(
-            to_terminal_color(Color::Indexed(255)),
-            Some(TerminalColor::new(238, 238, 238))
+            to_terminal_color(termnix::Color::Indexed(255)),
+            Some(tuinix::TerminalColor::new(238, 238, 238))
         );
 
-        let style = to_terminal_style(Style {
-            foreground: Color::Indexed(1),
-            background: Color::Rgb(10, 20, 30),
+        let style = to_terminal_style(termnix::Style {
+            foreground: termnix::Color::Indexed(1),
+            background: termnix::Color::Rgb(10, 20, 30),
             bold: true,
             italic: true,
             underline: true,
@@ -1131,24 +1146,22 @@ mod tests {
         assert!(style.italic);
         assert!(style.underline);
         assert!(style.reverse);
-        assert_eq!(style.fg_color, Some(TerminalColor::new(205, 0, 0)));
-        assert_eq!(style.bg_color, Some(TerminalColor::new(10, 20, 30)));
+        assert_eq!(style.fg_color, Some(tuinix::TerminalColor::new(205, 0, 0)));
+        assert_eq!(style.bg_color, Some(tuinix::TerminalColor::new(10, 20, 30)));
 
-        let plain = to_terminal_style(Style::default());
-        assert_eq!(plain, TerminalStyle::new());
+        let plain = to_terminal_style(termnix::Style::default());
+        assert_eq!(plain, tuinix::TerminalStyle::new());
     }
 
     #[test]
     fn projection_carries_ascii_wide_continuation_and_cursor() {
-        use termnix::TerminalState;
-
-        let mut terminal = TerminalState::new(Size::new(2, 10).expect("size"));
+        let mut terminal = termnix::TerminalState::new(termnix::Size::new(2, 10).expect("size"));
         terminal.feed(b"a\xe6\x97\xa5b\r\ncd");
         terminal.feed(b"\x1b[?25l");
         let projection = Projection::from_snapshot(&terminal.snapshot()).expect("projection");
 
-        assert_eq!(projection.size, Size::new(2, 10).expect("size"));
-        assert_eq!(projection.cursor, Position { row: 1, col: 2 });
+        assert_eq!(projection.size, termnix::Size::new(2, 10).expect("size"));
+        assert_eq!(projection.cursor, termnix::Position { row: 1, col: 2 });
         assert!(!projection.cursor_visible);
         let row0 = &projection.rows[0];
         assert_eq!(row0[0].ch, 'a');
@@ -1163,30 +1176,30 @@ mod tests {
     #[test]
     fn frame_writer_handles_wide_and_styled_cells() {
         let grid = Projection {
-            size: Size::new(2, 6).expect("size"),
+            size: termnix::Size::new(2, 6).expect("size"),
             rows: vec![
                 vec![
-                    Cell::EMPTY,
-                    Cell {
+                    termnix::Cell::EMPTY,
+                    termnix::Cell {
                         ch: 'あ',
                         width: 2,
-                        style: Style {
+                        style: termnix::Style {
                             bold: true,
-                            ..Style::default()
+                            ..termnix::Style::default()
                         },
                     },
-                    Cell::CONTINUATION,
-                    Cell::EMPTY,
-                    Cell::EMPTY,
-                    Cell::EMPTY,
+                    termnix::Cell::CONTINUATION,
+                    termnix::Cell::EMPTY,
+                    termnix::Cell::EMPTY,
+                    termnix::Cell::EMPTY,
                 ],
-                vec![Cell::EMPTY; 6],
+                vec![termnix::Cell::EMPTY; 6],
             ],
-            cursor: Position { row: 0, col: 0 },
+            cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,
         };
-        let mut frame = TerminalFrame::with_char_width_estimator(
-            TerminalSize::rows_cols(2, 6),
+        let mut frame = tuinix::TerminalFrame::with_char_width_estimator(
+            tuinix::TerminalSize::rows_cols(2, 6),
             CellWidthEstimator,
         );
         write_grid(&mut frame, &grid).expect("write");
@@ -1291,10 +1304,10 @@ mod tests {
             || {
                 count += 1;
                 match count {
-                    1 => Ok(Some(TerminalInput::Key(key(
+                    1 => Ok(Some(tuinix::TerminalInput::Key(key(
                         false,
                         false,
-                        HostKeyCode::Char('a'),
+                        tuinix::KeyCode::Char('a'),
                     )))),
                     2 => Ok(None),
                     _ => panic!("must stop after Ok(None)"),
@@ -1313,10 +1326,10 @@ mod tests {
         let inputs = drain_host_inputs(
             || {
                 called += 1;
-                Ok(Some(TerminalInput::Key(key(
+                Ok(Some(tuinix::TerminalInput::Key(key(
                     false,
                     false,
-                    HostKeyCode::Char('a'),
+                    tuinix::KeyCode::Char('a'),
                 ))))
             },
             3,
@@ -1340,7 +1353,7 @@ mod tests {
             selected: 0,
             pending: Some(PendingInput {
                 session: 0,
-                event: KeyEvent::new(KeyCode::Char('x')),
+                event: termnix::KeyEvent::new(termnix::KeyCode::Char('x')),
             }),
             next_process_poll: Instant::now(),
             pump_cursor: 0,
@@ -1380,19 +1393,19 @@ mod tests {
     #[test]
     fn write_grid_terminates_each_row_with_a_newline() {
         let grid = Projection {
-            size: Size::new(2, 2).expect("size"),
+            size: termnix::Size::new(2, 2).expect("size"),
             rows: vec![
-                vec![Cell::EMPTY, Cell::EMPTY],
-                vec![Cell::EMPTY, Cell::EMPTY],
+                vec![termnix::Cell::EMPTY, termnix::Cell::EMPTY],
+                vec![termnix::Cell::EMPTY, termnix::Cell::EMPTY],
             ],
-            cursor: Position { row: 0, col: 0 },
+            cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,
         };
-        let mut frame = TerminalFrame::with_char_width_estimator(
-            TerminalSize::rows_cols(2, 2),
+        let mut frame = tuinix::TerminalFrame::with_char_width_estimator(
+            tuinix::TerminalSize::rows_cols(2, 2),
             CellWidthEstimator,
         );
         write_grid(&mut frame, &grid).expect("write");
-        assert_eq!(frame.cursor(), TerminalPosition::row_col(2, 0));
+        assert_eq!(frame.cursor(), tuinix::TerminalPosition::row_col(2, 0));
     }
 }

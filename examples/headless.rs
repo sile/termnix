@@ -29,8 +29,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use termnix::{Input, KeyCode, KeyEvent, Session, SessionStatus, Size, TerminalSnapshot};
-
 /// Overall deadline for the example. Does not rely on fixed sleeps.
 const OVERALL_DEADLINE: Duration = Duration::from_secs(15);
 
@@ -72,12 +70,12 @@ fn run() -> Result<(), AppError> {
     }
 }
 
-fn spawn_session() -> Result<Session, AppError> {
+fn spawn_session() -> Result<termnix::Session, AppError> {
     let script = child_script();
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(script);
-    let size = Size::new(24, 80).expect("non-zero size");
-    Session::new(&mut command, size).map_err(AppError::io)
+    let size = termnix::Size::new(24, 80).expect("non-zero size");
+    termnix::Session::new(&mut command, size).map_err(AppError::io)
 }
 
 /// Child that validates a primary DA reply, then echoes one line and exits.
@@ -96,7 +94,7 @@ fn child_script() -> &'static str {
     )
 }
 
-fn workflow(session: &mut Session) -> Result<(), AppError> {
+fn workflow(session: &mut termnix::Session) -> Result<(), AppError> {
     let deadline = Instant::now() + OVERALL_DEADLINE;
     let mut next_process_poll = Instant::now();
 
@@ -121,7 +119,7 @@ fn workflow(session: &mut Session) -> Result<(), AppError> {
                 Err(err) => return Err(AppError::io(err)),
             }
         }
-        let drained = matches!(session.status(), SessionStatus::Eof)
+        let drained = matches!(session.status(), termnix::SessionStatus::Eof)
             || (session.fd().is_none() && !session.needs_pump());
         Ok(exit_status.is_some() && drained)
     })?;
@@ -149,12 +147,12 @@ fn workflow(session: &mut Session) -> Result<(), AppError> {
 }
 
 fn enqueue_payload(
-    session: &mut Session,
+    session: &mut termnix::Session,
     deadline: Instant,
     next_process_poll: &mut Instant,
 ) -> Result<(), AppError> {
-    let text = Input::Raw(PAYLOAD.as_bytes());
-    let enter = Input::Key(KeyEvent::new(KeyCode::Enter));
+    let text = termnix::Input::Raw(PAYLOAD.as_bytes());
+    let enter = termnix::Input::Key(termnix::KeyEvent::new(termnix::KeyCode::Enter));
     try_enqueue(session, text, deadline, next_process_poll)?;
     try_enqueue(session, enter, deadline, next_process_poll)?;
     Ok(())
@@ -162,8 +160,8 @@ fn enqueue_payload(
 
 /// Drains the write queue while over the soft limit, then enqueues.
 fn try_enqueue(
-    session: &mut Session,
-    input: Input<'_>,
+    session: &mut termnix::Session,
+    input: termnix::Input<'_>,
     deadline: Instant,
     next_process_poll: &mut Instant,
 ) -> Result<(), AppError> {
@@ -186,13 +184,13 @@ fn try_enqueue(
 }
 
 fn drive_until<F>(
-    session: &mut Session,
+    session: &mut termnix::Session,
     deadline: Instant,
     next_process_poll: &mut Instant,
     mut pred: F,
 ) -> Result<(), AppError>
 where
-    F: FnMut(&mut Session) -> Result<bool, AppError>,
+    F: FnMut(&mut termnix::Session) -> Result<bool, AppError>,
 {
     while Instant::now() < deadline {
         pump_session(session)?;
@@ -208,7 +206,7 @@ where
     ))
 }
 
-fn pump_session(session: &mut Session) -> Result<(), AppError> {
+fn pump_session(session: &mut termnix::Session) -> Result<(), AppError> {
     session.pump_io().map_err(AppError::io)?;
     let mut budget = PUMP_DRAIN_BUDGET;
     while session.needs_pump() && budget > 0 {
@@ -219,7 +217,7 @@ fn pump_session(session: &mut Session) -> Result<(), AppError> {
 }
 
 fn maybe_poll_process(
-    session: &mut Session,
+    session: &mut termnix::Session,
     next_process_poll: &mut Instant,
 ) -> Result<(), AppError> {
     let now = Instant::now();
@@ -232,7 +230,7 @@ fn maybe_poll_process(
 }
 
 fn poll_once(
-    session: &mut Session,
+    session: &mut termnix::Session,
     deadline: Instant,
     next_process_poll: Instant,
 ) -> Result<(), AppError> {
@@ -301,7 +299,7 @@ fn poll_timeout_ms(deadline: Instant, next_process_poll: Instant) -> i32 {
 }
 
 /// Builds normalized row strings from scrollback and the visible screen.
-fn visible_rows(snapshot: TerminalSnapshot) -> Vec<String> {
+fn visible_rows(snapshot: termnix::TerminalSnapshot) -> Vec<String> {
     let mut rows = Vec::new();
     for line in snapshot.scrollback() {
         rows.push(normalize_cells(line.cells()));
@@ -357,13 +355,13 @@ impl AppError {
         Self::msg(format!("I/O error: {err}"))
     }
 
-    fn protocol(message: impl Into<String>, session: &Session) -> Self {
+    fn protocol(message: impl Into<String>, session: &termnix::Session) -> Self {
         let mut err = Self::msg(message);
         err.attach_session(session);
         err
     }
 
-    fn timeout(message: impl Into<String>, session: &Session) -> Self {
+    fn timeout(message: impl Into<String>, session: &termnix::Session) -> Self {
         Self::protocol(message, session)
     }
 
@@ -380,7 +378,7 @@ impl AppError {
         self.shutdown = Some(err.to_string());
     }
 
-    fn attach_session(&mut self, session: &Session) {
+    fn attach_session(&mut self, session: &termnix::Session) {
         let rows = visible_rows(session.terminal_state().snapshot());
         self.snapshot = Some(rows.join("\n"));
         self.status = Some(format!("{:?}", session.status()));
@@ -408,11 +406,10 @@ impl std::error::Error for AppError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use termnix::{Cell, Color, Position, Size, TerminalState};
 
     #[test]
     fn normalize_cells_skips_continuation_and_trims() {
-        let mut cells = vec![Cell::EMPTY; 4];
+        let mut cells = vec![termnix::Cell::EMPTY; 4];
         cells[0].ch = 'a';
         cells[1].width = 0;
         cells[2].ch = 'b';
@@ -422,7 +419,7 @@ mod tests {
 
     #[test]
     fn visible_rows_keep_row_boundaries() {
-        let mut term = TerminalState::new(Size::new(2, 4).expect("size"));
+        let mut term = termnix::TerminalState::new(termnix::Size::new(2, 4).expect("size"));
         term.feed(b"ab\r\ncd");
         let rows = visible_rows(term.snapshot());
         assert!(rows.iter().any(|row| row == "ab"), "rows={rows:?}");
@@ -446,7 +443,7 @@ mod tests {
 
     #[test]
     fn default_style_is_available_for_cells() {
-        let _ = Color::Default;
-        let _ = Position { row: 0, col: 0 };
+        let _ = termnix::Color::Default;
+        let _ = termnix::Position { row: 0, col: 0 };
     }
 }
