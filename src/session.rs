@@ -31,6 +31,7 @@ use std::{
 };
 
 use crate::{
+    input::Input,
     pty::{ClosingPtyProcess, PtyProcess, SignalOutcome},
     size::Size,
     terminal::{TerminalAction, TerminalState},
@@ -388,25 +389,27 @@ impl Session {
         Ok(())
     }
 
-    /// Enqueues application input (typically the output of
-    /// [`encode_key`](crate::encode_key) or
-    /// [`encode_paste`](crate::encode_paste)) to be written to the PTY.
+    /// Enqueues application [`Input`] to be written to the PTY.
     ///
-    /// All bytes are accepted while the session is open and appended to the
-    /// write queue in chronological order. The session applies no backpressure
-    /// policy; compare the encoded length against
+    /// `Key` and `Paste` are turned into bytes with the session's current
+    /// terminal modes; `Raw` is appended unchanged. All accepted bytes join
+    /// the write queue in chronological order. The session applies no
+    /// backpressure policy; compare [`Input::byte_len`] against
     /// `metrics().pending_write_bytes` to decide whether to enqueue, hold the
     /// input on the caller side, or drop it. A closed session returns
     /// [`ErrorKind::BrokenPipe`].
-    pub fn enqueue_input(&mut self, bytes: &[u8]) -> io::Result<()> {
+    pub fn enqueue_input(&mut self, input: Input<'_>) -> io::Result<()> {
         if self.phase != Phase::Live && self.phase != Phase::Eof {
             return Err(io::Error::new(ErrorKind::BrokenPipe, "session is closed"));
         }
-        self.outbound.extend_from_slice(bytes);
+        let modes = self.term.modes();
+        let before = self.outbound.len();
+        input.write_to(modes, &mut self.outbound);
+        let n = self.outbound.len() - before;
         self.cumulative.input_bytes_enqueued = self
             .cumulative
             .input_bytes_enqueued
-            .saturating_add(bytes.len() as u64);
+            .saturating_add(n as u64);
         self.write_would_block = false;
         self.update_maxes();
         Ok(())

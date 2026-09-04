@@ -2,12 +2,12 @@
 
 Unix-only terminal session engine for Rust.
 
-`termnix` provides an I/O-free terminal emulator, logical input encoding,
-and one `Session` per PTY-backed child process (including that child's
-lifecycle), driven from an external event loop without an async runtime.
-Owning and scheduling multiple sessions, as well as window, pane, and layout
-concepts, belong to the calling application. Host terminal raw mode and final
-frame rendering stay with the caller.
+`termnix` provides an I/O-free terminal emulator, `Input` for session key /
+paste / raw bytes, and one `Session` per PTY-backed child process (including
+that child's lifecycle), driven from an external event loop without an async
+runtime. Owning and scheduling multiple sessions, as well as window, pane,
+and layout concepts, belong to the calling application. Host terminal raw mode
+and final frame rendering stay with the caller.
 
 ## Terminal emulator coverage
 
@@ -30,14 +30,15 @@ Supported in the modes milestone:
 Explicitly out of scope: Sixel, Kitty graphics, iTerm2 images, and DCS payloads
 (ignored without becoming visible text).
 
-## Input encoding
+## Input
 
-`encode_key` and `encode_paste` turn logical input into PTY bytes. Modes come
-from an explicit `TerminalModes` argument (for example from the destination
-terminal state); host focus is never implied. The encoded bytes are handed to
-`Session::enqueue_input`. Mouse report bytes are not encoded yet—only
-`MouseButton` is defined for application-side routing (coordinates reuse
-`Position`).
+`Input` carries raw PTY bytes, a `KeyEvent`, or paste text.
+`Session::enqueue_input` turns `Key` / `Paste` into bytes with the session's
+current `TerminalModes` and appends them to the write queue; `Raw` is appended
+unchanged. Compare `Input::byte_len` with
+`Session::metrics().pending_write_bytes` when applying caller-side
+backpressure. Mouse report bytes are not produced yet—only `MouseButton` is
+defined for application-side routing (coordinates reuse `Position`).
 
 ## Snapshots and scrollback
 
@@ -83,13 +84,14 @@ while sessions.iter().any(Session::needs_pump) {
 }
 ```
 
-Application input (`Session::enqueue_input`) and terminal replies share one
-FIFO write queue: a reply is appended in chronological order behind already
-accepted input, and decoding pauses until that reply is fully written, so at
-most one bounded reply is ever pending. The write queue itself is unbounded;
-the session applies no backpressure policy to application input—compare the
-encoded length against `Session::metrics().pending_write_bytes` to decide
-whether to enqueue, hold, or drop. Child exit and PTY EOF are separate:
+Application input (`Session::enqueue_input` with `Input`) and terminal replies
+share one FIFO write queue: a reply is appended in chronological order behind
+already accepted input, and decoding pauses until that reply is fully written,
+so at most one bounded reply is ever pending. The write queue itself is
+unbounded; the session applies no backpressure policy to application
+input—compare `Input::byte_len` against
+`Session::metrics().pending_write_bytes` to decide whether to enqueue, hold,
+or drop. Child exit and PTY EOF are separate:
 `try_wait` / `wait` cache the exit status without disabling I/O, so remaining
 master-side output can still be drained until EOF. Use `close`, `terminate`,
 `force_terminate`, and `shutdown` for teardown. `SessionMetrics` exposes

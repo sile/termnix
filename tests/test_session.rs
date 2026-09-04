@@ -140,8 +140,10 @@ fn input_routes_to_the_target_session_only() {
     let mut b =
         spawn_session("stty -echo; while IFS= read -r line; do printf 'B:%s\\n' \"$line\"; done");
 
-    a.enqueue_input(b"hello-a\n").expect("enqueue a");
-    b.enqueue_input(b"hello-b\n").expect("enqueue b");
+    a.enqueue_input(termnix::Input::Raw(b"hello-a\n"))
+        .expect("enqueue a");
+    b.enqueue_input(termnix::Input::Raw(b"hello-b\n"))
+        .expect("enqueue b");
 
     let mut sessions = [a, b];
     pump_until(&mut sessions, |sessions| {
@@ -165,18 +167,20 @@ fn key_text_paste_and_raw_reach_the_child() {
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("READY")
     });
-    let modes = session.terminal_state().modes();
-    session.enqueue_input(b"AB").expect("text");
     session
-        .enqueue_input(&termnix::encode_key(
-            termnix::KeyEvent::new(termnix::KeyCode::Enter),
-            modes,
-        ))
+        .enqueue_input(termnix::Input::Raw(b"AB"))
+        .expect("text");
+    session
+        .enqueue_input(termnix::Input::Key(termnix::KeyEvent::new(
+            termnix::KeyCode::Enter,
+        )))
         .expect("enter");
     session
-        .enqueue_input(&termnix::encode_paste("CD", modes))
+        .enqueue_input(termnix::Input::Paste("CD"))
         .expect("paste");
-    session.enqueue_input(b"EFGH").expect("raw");
+    session
+        .enqueue_input(termnix::Input::Raw(b"EFGH"))
+        .expect("raw");
 
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("GOT:")
@@ -225,13 +229,17 @@ fn input_and_reply_keep_fifo_order() {
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("READY")
     });
-    session.enqueue_input(b"ABT").expect("accept before reply");
+    session
+        .enqueue_input(termnix::Input::Raw(b"ABT"))
+        .expect("accept before reply");
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         // The query has been written and decoded, so the reply is generated
         // strictly after A. Enqueue B only now.
         visible_text(&sessions[0]).contains("Q_SENT")
     });
-    session.enqueue_input(b"CD").expect("accept after reply");
+    session
+        .enqueue_input(termnix::Input::Raw(b"CD"))
+        .expect("accept after reply");
 
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("GOT:")
@@ -286,7 +294,9 @@ fn reply_flood_is_bounded_and_nothing_is_dropped() {
 fn metrics_reflect_pending_and_cumulative_state() {
     let mut session =
         spawn_session("stty -echo; while IFS= read -r line; do printf 'X:%s\\n' \"$line\"; done");
-    session.enqueue_input(b"hello\n").expect("enqueue");
+    session
+        .enqueue_input(termnix::Input::Raw(b"hello\n"))
+        .expect("enqueue");
 
     let before = session.metrics();
     assert_eq!(before.input_bytes_enqueued, 6);
@@ -323,7 +333,9 @@ fn resize_updates_child_and_terminal_state() {
         session.terminal_state().size(),
         termnix::Size::new(33, 121).expect("nonzero size")
     );
-    session.enqueue_input(b"SIZE\n").expect("enqueue size");
+    session
+        .enqueue_input(termnix::Input::Raw(b"SIZE\n"))
+        .expect("enqueue size");
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("33 121")
     });
@@ -440,12 +452,16 @@ fn closed_session_rejects_input_and_resize() {
     std::thread::sleep(Duration::from_millis(200));
 
     // Open session accepts all bytes.
-    session.enqueue_input(b"hello").expect("accept while open");
+    session
+        .enqueue_input(termnix::Input::Raw(b"hello"))
+        .expect("accept while open");
     session.close();
     // pump_io after close is a successful no-op.
     session.pump_io().expect("pump after close");
 
-    let err = session.enqueue_input(b"x").expect_err("closed rejects");
+    let err = session
+        .enqueue_input(termnix::Input::Raw(b"x"))
+        .expect_err("closed rejects");
     assert_eq!(err.kind(), ErrorKind::BrokenPipe);
     let err = session
         .resize(termnix::Size::new(40, 40).expect("size"))
