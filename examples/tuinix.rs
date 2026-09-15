@@ -128,17 +128,7 @@ impl Projection {
                 "snapshot cursor {cursor:?} is outside the {size:?} grid"
             ));
         }
-        let rows = (0..size.rows.get())
-            .map(|row| {
-                (0..size.cols.get())
-                    .map(|col| {
-                        snapshot
-                            .cell(termnix::Position { row, col })
-                            .expect("cell in range")
-                    })
-                    .collect()
-            })
-            .collect();
+        let rows = snapshot.rows().map(|row| row.to_vec()).collect();
         Ok(Self {
             size,
             rows,
@@ -156,6 +146,9 @@ struct App {
     next_process_poll: Instant,
     pump_cursor: usize,
     quit: bool,
+    /// Visible-state revision last written to the host for the selected
+    /// session, or `None` when the current selection has not been drawn yet.
+    drawn_revision: Option<u64>,
 }
 
 impl App {
@@ -174,6 +167,7 @@ impl App {
             next_process_poll: Instant::now() + PROCESS_POLL_INTERVAL,
             pump_cursor: 0,
             quit: false,
+            drawn_revision: None,
         })
     }
 
@@ -245,6 +239,7 @@ impl App {
             .position(|&slot| slot == self.selected)
             .unwrap_or(0);
         self.selected = live[(index + 1) % live.len()];
+        self.drawn_revision = None;
     }
 
     /// Applies a host resize to every session whose PTY is still open.
@@ -641,57 +636,13 @@ fn cursor_from_host(
 
 /// Maps a termnix color to tuinix's RGB-only representation.
 ///
-/// `Default` maps to the terminal's default (no explicit color); `Indexed`
-/// follows the xterm 256-color palette.
+/// `Default` maps to the terminal's default (no explicit color); everything
+/// else resolves through [`termnix::Color::to_rgb`] (the xterm 256-color
+/// palette for `Indexed`).
 fn to_terminal_color(color: termnix::Color) -> Option<tuinix::TerminalColor> {
-    let (r, g, b) = match color {
-        termnix::Color::Default => return None,
-        termnix::Color::Rgb(r, g, b) => (r, g, b),
-        termnix::Color::Indexed(index) => indexed_to_rgb(index),
-    };
-    Some(tuinix::TerminalColor::new(r, g, b))
-}
-
-/// Resolves an xterm 256-color index to concrete RGB.
-fn indexed_to_rgb(index: u8) -> (u8, u8, u8) {
-    match index {
-        0..=15 => XTERM_SYSTEM[index as usize],
-        16..=231 => {
-            let n = index - 16;
-            let r = palette_level(n / 36);
-            let g = palette_level((n % 36) / 6);
-            let b = palette_level(n % 6);
-            (r, g, b)
-        }
-        232..=255 => {
-            let level = 8 + (index - 232) * 10;
-            (level, level, level)
-        }
-    }
-}
-
-/// The 0--15 ANSI/xterm system palette.
-const XTERM_SYSTEM: [(u8, u8, u8); 16] = [
-    (0, 0, 0),
-    (205, 0, 0),
-    (0, 205, 0),
-    (205, 205, 0),
-    (0, 0, 238),
-    (205, 0, 205),
-    (0, 205, 205),
-    (229, 229, 229),
-    (127, 127, 127),
-    (255, 0, 0),
-    (0, 255, 0),
-    (255, 255, 0),
-    (92, 92, 255),
-    (255, 0, 255),
-    (0, 255, 255),
-    (255, 255, 255),
-];
-
-fn palette_level(index: u8) -> u8 {
-    if index == 0 { 0 } else { 55 + index * 40 }
+    color
+        .to_rgb()
+        .map(|(r, g, b)| tuinix::TerminalColor::new(r, g, b))
 }
 
 /// Maps a termnix style to a tuinix style, dropping unsupported attributes.
@@ -754,11 +705,21 @@ fn write_grid(
 }
 
 /// Draws the selected session to the host terminal.
-fn draw_selected(terminal: &mut tuinix::Terminal, app: &App) -> Result<(), AppError> {
+///
+/// Rendering is skipped when the session's visible-state revision matches the
+/// last drawn one, so idle polls no longer re-emit the frame or the host
+/// cursor show/hide sequences. The revision is captured from the snapshot so
+/// the recorded value always matches what was actually rendered.
+fn draw_selected(terminal: &mut tuinix::Terminal, app: &mut App) -> Result<(), AppError> {
     let Some(session) = app.sessions[app.selected].as_ref() else {
+        app.drawn_revision = None;
         return Ok(());
     };
     let snapshot = session.terminal_state().snapshot();
+    let revision = snapshot.revision();
+    if app.drawn_revision == Some(revision) {
+        return Ok(());
+    }
     let projection = Projection::from_snapshot(&snapshot).map_err(AppError::msg)?;
     let frame_size = tuinix::TerminalSize::rows_cols(
         projection.size.rows.get() as usize,
@@ -782,7 +743,9 @@ fn draw_selected(terminal: &mut tuinix::Terminal, app: &App) -> Result<(), AppEr
     };
     // `None` hides the host cursor; `Some` shows it at the session cursor.
     terminal.set_cursor(cursor);
-    terminal.draw(frame).map_err(AppError::io)
+    terminal.draw(frame).map_err(AppError::io)?;
+    app.drawn_revision = Some(revision);
+    Ok(())
 }
 
 /// Runs the main loop until quit, error, or both sessions are gone.
@@ -1039,6 +1002,7 @@ mod tests {
             next_process_poll: Instant::now(),
             pump_cursor: 0,
             quit: false,
+            drawn_revision: None,
         };
         app.handle_input(mouse).expect("mouse is dropped");
         assert!(!app.quit);
@@ -1358,6 +1322,7 @@ mod tests {
             next_process_poll: Instant::now(),
             pump_cursor: 0,
             quit: false,
+            drawn_revision: None,
         };
         app.deliver_pending().expect("drop is silent");
         assert!(app.pending.is_none());
@@ -1372,6 +1337,7 @@ mod tests {
             next_process_poll: Instant::now(),
             pump_cursor: 0,
             quit: false,
+            drawn_revision: None,
         };
         app.switch_selected();
         assert_eq!(app.selected, 0, "no-op with no sessions");

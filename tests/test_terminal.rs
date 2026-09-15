@@ -350,3 +350,99 @@ fn insert_mode_shifts_cells() {
     t.feed(b"\x1b[1;1H\x1b[4hX");
     assert_eq!(text_at(&t, 0), "Xabc");
 }
+
+#[test]
+fn revision_advances_on_visible_changes() {
+    let mut t = term(2, 8);
+    let start = t.revision();
+    t.feed(b"a");
+    let after_text = t.revision();
+    assert_ne!(after_text, start, "text write is a visible change");
+
+    t.feed(b"\x1b[2;3H");
+    let after_move = t.revision();
+    assert_ne!(after_move, after_text, "cursor move is a visible change");
+
+    t.feed(b"\x1b[1m");
+    let after_sgr = t.revision();
+    assert_ne!(after_sgr, after_move, "SGR is a visible change");
+
+    t.feed(b"\x1b[?25l");
+    let after_cursor = t.revision();
+    assert_ne!(
+        after_cursor, after_sgr,
+        "cursor visibility is a visible change"
+    );
+
+    t.feed(b"\x1b]2;title\x07");
+    let after_title = t.revision();
+    assert_ne!(
+        after_title, after_cursor,
+        "title change is a visible change"
+    );
+
+    t.resize(termnix::Size::new(3, 9).expect("nonzero size"));
+    assert_ne!(t.revision(), after_title, "resize is a visible change");
+}
+
+#[test]
+fn revision_advances_on_alternate_screen_toggle() {
+    let mut t = term(2, 8);
+    t.feed(b"keep");
+    let before = t.revision();
+    t.feed(b"\x1b[?1049h");
+    let after_enter = t.revision();
+    assert_ne!(
+        after_enter, before,
+        "entering alternate is a visible change"
+    );
+    t.feed(b"\x1b[?1049l");
+    assert_ne!(
+        t.revision(),
+        after_enter,
+        "leaving alternate is a visible change"
+    );
+}
+
+#[test]
+fn revision_stays_put_without_visible_change() {
+    let mut t = term(2, 8);
+    t.feed(b"ab");
+    t.feed(b"\x1b[2;1H"); // a cursor move: visible, so re-baseline after it
+    let base = t.revision();
+
+    t.feed(b"\x07"); // BEL is ignored
+    assert_eq!(t.revision(), base, "BEL must not advance revision");
+
+    t.feed(b"\x1b[3"); // partial CSI, waits for continuation
+    assert_eq!(
+        t.revision(),
+        base,
+        "partial sequence must not advance revision"
+    );
+
+    t.feed(b"\x1b]999;ignored\x07"); // unsupported OSC is ignored
+    assert_eq!(t.revision(), base, "ignored OSC must not advance revision");
+}
+
+#[test]
+fn revision_is_captured_in_snapshot() {
+    let mut t = term(2, 8);
+    t.feed(b"hi");
+    let snap = t.snapshot();
+    assert_eq!(snap.revision(), t.revision());
+
+    let captured = snap.revision();
+    t.feed(b"\x1b[1;1Hmore");
+    assert_ne!(t.revision(), captured);
+    assert_eq!(snap.revision(), captured);
+}
+
+#[test]
+fn identical_feeds_reach_the_same_revision() {
+    let mut a = term(2, 8);
+    let mut b = term(2, 8);
+    a.feed(b"hello\r\nworld");
+    b.feed(b"hello\r\nworld");
+    assert_eq!(a.revision(), b.revision());
+}

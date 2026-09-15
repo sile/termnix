@@ -33,6 +33,57 @@ fn line_text(line: &termnix::TerminalLine) -> String {
 }
 
 #[test]
+fn rows_match_size_and_cell_access() {
+    let mut t = term(3, 4);
+    t.feed(b"ab\x1b[1;31mZ\r\ncd\r\nef");
+    let snap = t.snapshot();
+
+    let rows: Vec<&[termnix::Cell]> = snap.rows().collect();
+    assert_eq!(rows.len(), snap.size().rows.get() as usize);
+    for row in &rows {
+        assert_eq!(row.len(), snap.size().cols.get() as usize);
+    }
+
+    // Every cell reachable by `rows()` matches `cell(Position)`.
+    for (r, row) in rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            let at = termnix::Position {
+                row: r as u16,
+                col: c as u16,
+            };
+            assert_eq!(*cell, snap.cell(at).expect("cell in range"));
+        }
+    }
+}
+
+#[test]
+fn row_returns_slices_and_rejects_out_of_range() {
+    let mut t = term(2, 4);
+    t.feed(b"ab\r\ncd");
+    let snap = t.snapshot();
+
+    assert_eq!(snap.row(0), snap.rows().next());
+    assert_eq!(snap.row(1), snap.rows().nth(1));
+    assert_eq!(snap.row(0).expect("row 0")[0].ch, 'a');
+    assert_eq!(snap.row(1).expect("row 1")[0].ch, 'c');
+    assert_eq!(snap.row(2), None);
+    assert_eq!(snap.row(u16::MAX), None);
+}
+
+#[test]
+fn rows_work_for_single_row_and_column() {
+    let mut t = term(1, 1);
+    t.feed(b"x");
+    let snap = t.snapshot();
+    let rows: Vec<&[termnix::Cell]> = snap.rows().collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 1);
+    assert_eq!(rows[0][0].ch, 'x');
+    assert_eq!(snap.row(0), Some(&[rows[0][0]][..]));
+    assert_eq!(snap.row(1), None);
+}
+
+#[test]
 fn snapshot_owns_size_cells_cursor_modes_style_title_and_active() {
     let mut t = term(2, 4);
     t.feed(b"ab\x1b[1;31mZ");

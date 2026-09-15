@@ -26,6 +26,73 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+impl Color {
+    /// Resolves this color to concrete 24-bit RGB.
+    ///
+    /// [`Color::Default`] has no fixed value (it is whatever the host terminal
+    /// uses for default foreground/background) and returns `None`.
+    /// [`Color::Rgb`] is returned unchanged. [`Color::Indexed`] is resolved
+    /// through the xterm 256-color palette.
+    ///
+    /// The indexed interpretation is the usual xterm convention: indices
+    /// `0..=15` are the system palette, `16..=231` are the 6x6x6 color cube,
+    /// and `232..=255` are the grayscale ramp. Host terminals may override the
+    /// first 16 entries, so an application that needs exact on-screen colors
+    /// should consult its own palette instead of relying on these values.
+    pub fn to_rgb(&self) -> Option<(u8, u8, u8)> {
+        match *self {
+            Self::Default => None,
+            Self::Rgb(r, g, b) => Some((r, g, b)),
+            Self::Indexed(index) => Some(indexed_rgb(index)),
+        }
+    }
+}
+
+/// The 0--15 ANSI/xterm system palette.
+const XTERM_SYSTEM: [(u8, u8, u8); 16] = [
+    (0, 0, 0),
+    (205, 0, 0),
+    (0, 205, 0),
+    (205, 205, 0),
+    (0, 0, 238),
+    (205, 0, 205),
+    (0, 205, 205),
+    (229, 229, 229),
+    (127, 127, 127),
+    (255, 0, 0),
+    (0, 255, 0),
+    (255, 255, 0),
+    (92, 92, 255),
+    (255, 0, 255),
+    (0, 255, 255),
+    (255, 255, 255),
+];
+
+/// Resolves an xterm 256-color index to concrete RGB.
+///
+/// See [`Color::to_rgb`] for the palette layout.
+fn indexed_rgb(index: u8) -> (u8, u8, u8) {
+    match index {
+        0..=15 => XTERM_SYSTEM[index as usize],
+        16..=231 => {
+            let n = index - 16;
+            let r = palette_level(n / 36);
+            let g = palette_level((n % 36) / 6);
+            let b = palette_level(n % 6);
+            (r, g, b)
+        }
+        232..=255 => {
+            let level = 8 + (index - 232) * 10;
+            (level, level, level)
+        }
+    }
+}
+
+/// Maps a 6-level color-cube component index to its 0--255 intensity.
+fn palette_level(index: u8) -> u8 {
+    if index == 0 { 0 } else { 55 + index * 40 }
+}
+
 /// Graphic rendition applied to a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Style {
@@ -187,5 +254,41 @@ impl Default for SavedCursor {
             wrap_pending: false,
             origin: false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Color;
+
+    #[test]
+    fn default_has_no_rgb() {
+        assert_eq!(Color::Default.to_rgb(), None);
+    }
+
+    #[test]
+    fn rgb_is_returned_unchanged() {
+        assert_eq!(Color::Rgb(1, 2, 3).to_rgb(), Some((1, 2, 3)));
+        assert_eq!(Color::Rgb(255, 0, 128).to_rgb(), Some((255, 0, 128)));
+    }
+
+    #[test]
+    fn indexed_system_palette_boundaries() {
+        assert_eq!(Color::Indexed(0).to_rgb(), Some((0, 0, 0)));
+        assert_eq!(Color::Indexed(15).to_rgb(), Some((255, 255, 255)));
+    }
+
+    #[test]
+    fn indexed_color_cube() {
+        assert_eq!(Color::Indexed(16).to_rgb(), Some((0, 0, 0)));
+        assert_eq!(Color::Indexed(21).to_rgb(), Some((0, 0, 255)));
+        assert_eq!(Color::Indexed(196).to_rgb(), Some((255, 0, 0)));
+        assert_eq!(Color::Indexed(231).to_rgb(), Some((255, 255, 255)));
+    }
+
+    #[test]
+    fn indexed_grayscale_ramp() {
+        assert_eq!(Color::Indexed(232).to_rgb(), Some((8, 8, 8)));
+        assert_eq!(Color::Indexed(255).to_rgb(), Some((238, 238, 238)));
     }
 }

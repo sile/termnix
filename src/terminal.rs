@@ -39,6 +39,7 @@ pub use crate::terminal_types::{
 };
 
 use std::collections::VecDeque;
+use std::hash::{Hash, Hasher};
 
 use crate::size::Size;
 use crate::snapshot::{TerminalLine, TerminalSnapshot};
@@ -63,6 +64,8 @@ pub struct TerminalState {
     pub(crate) actions: Vec<TerminalAction>,
     pub(crate) scrollback: VecDeque<TerminalLine>,
     pub(crate) scrollback_cells: usize,
+    pub(crate) revision: u64,
+    pub(crate) last_visible: u64,
 }
 
 impl PartialEq for TerminalState {
@@ -82,6 +85,8 @@ impl PartialEq for TerminalState {
             && self.actions == other.actions
             && self.scrollback == other.scrollback
             && self.scrollback_cells == other.scrollback_cells
+        // `revision` and `last_visible` are derived bookkeeping, not part of
+        // the terminal's observable value, so they are excluded from equality.
     }
 }
 
@@ -131,7 +136,43 @@ impl TerminalState {
             actions: Vec::new(),
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
+            revision: 0,
+            last_visible: 0,
         }
+    }
+
+    /// Returns a counter that increments whenever the visible state changes.
+    ///
+    /// The visible state is the active screen's cells and styles, the cursor,
+    /// the current drawing style (SGR pen), display-related modes (including
+    /// cursor visibility, autowrap, mouse reporting, and alternate-screen
+    /// selection), the screen size, and the window title. It deliberately
+    /// excludes parser-internal progress (a partial sequence), scrollback-only
+    /// changes, and undrained actions.
+    ///
+    /// The counter only guarantees *whether* the visible state changed since a
+    /// previous read, not how many cells or bytes did; a single `feed` may
+    /// bump it once even when many cells changed, and it stays unchanged when
+    /// input produced no visible effect (BEL, an ignored sequence, or a
+    /// partial escape). It wraps on overflow, which is unreachable in practice.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns a fingerprint of the fields that make up the visible state.
+    ///
+    /// Used by [`TerminalState::feed`] to detect whether a feed changed
+    /// anything the caller can see; scrollback and parser state are excluded.
+    fn visible_fingerprint(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.size.hash(&mut hasher);
+        self.active().cells().hash(&mut hasher);
+        self.on_alternate.hash(&mut hasher);
+        self.cursor.hash(&mut hasher);
+        self.pen.hash(&mut hasher);
+        self.modes.hash(&mut hasher);
+        self.title.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Feeds output bytes into the emulator.
@@ -141,6 +182,16 @@ impl TerminalState {
     /// the action queue; call [`TerminalState::drain_actions`] to collect them.
     pub fn feed(&mut self, bytes: &[u8]) {
         feed_bytes(self, bytes);
+        self.refresh_revision();
+    }
+
+    /// Bumps [`revision`](Self::revision) when the visible state changed.
+    fn refresh_revision(&mut self) {
+        let fingerprint = self.visible_fingerprint();
+        if fingerprint != self.last_visible {
+            self.last_visible = fingerprint;
+            self.revision = self.revision.wrapping_add(1);
+        }
     }
 
     /// Removes and returns actions produced since the last drain (or creation).
@@ -203,6 +254,7 @@ impl TerminalState {
             self.title.clone(),
             self.on_alternate,
             self.scrollback.iter().cloned().collect(),
+            self.revision,
         )
     }
 
@@ -250,6 +302,7 @@ impl TerminalState {
         self.cursor.col = self.cursor.col.min(size.cols.get() - 1);
         self.wrap_pending = false;
         self.repair_cursor_cell();
+        self.refresh_revision();
     }
 
     pub(crate) fn active(&self) -> &Screen {
