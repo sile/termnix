@@ -24,7 +24,7 @@ mod terminal_types;
 
 pub use input::{Input, KeyCode, KeyEvent, Modifiers, MouseButton};
 pub use pty::SignalOutcome;
-pub use session::{Interests, Session, SessionMetrics, SessionStatus};
+pub use session::{Interests, PumpBudget, Session, SessionMetrics, SessionStatus};
 pub use size::Size;
 pub use snapshot::{TerminalLine, TerminalSnapshot};
 pub use terminal::{

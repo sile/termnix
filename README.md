@@ -64,13 +64,16 @@ the session; `pump_io` learns what is possible from its own `WouldBlock`
 results, which keeps edge-triggered loops correct. One `pump_io` call is the
 scheduling quantum: with a single session, drain `needs_pump` before blocking;
 with several sessions, rotate among runnable ones so a chatty session cannot
-starve the others.
+starve the others. The work one call may do is bounded by a caller-supplied
+`PumpBudget`; `PumpBudget::default()` is the customary 64 KiB / 64 syscall
+ceiling, and a tighter budget makes `needs_pump` report remaining work sooner
+so the caller rotates back more often.
 
 ```rust
 // Single session: drain internal work before waiting in the poll loop.
-session.pump_io()?;
+session.pump_io(PumpBudget::default())?;
 while session.needs_pump() {
-    session.pump_io()?;
+    session.pump_io(PumpBudget::default())?;
 }
 reregister(session.fd(), session.interests());
 
@@ -78,7 +81,7 @@ reregister(session.fd(), session.interests());
 let mut i = 0;
 while sessions.iter().any(Session::needs_pump) {
     if sessions[i].needs_pump() {
-        sessions[i].pump_io()?;
+        sessions[i].pump_io(PumpBudget::default())?;
     }
     i = (i + 1) % sessions.len();
 }

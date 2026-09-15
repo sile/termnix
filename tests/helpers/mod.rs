@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use termnix::{Interests, Session, SessionStatus, Size};
+use termnix::{Interests, PumpBudget, Session, SessionStatus, Size};
 
 /// Whole-test deadline: any longer wait is a hang, not slow progress.
 pub const DEADLINE: Duration = Duration::from_secs(15);
@@ -87,11 +87,11 @@ fn render_row(cells: &[termnix::Cell]) -> String {
 ///
 /// Suitable for ordinary progress: any session whose internal work is still
 /// executable is taken to idle, so a caller does not have to re-poll.
-pub fn pump_all(sessions: &mut [Session]) {
+pub fn pump_all(sessions: &mut [Session], budget: PumpBudget) {
     for session in sessions.iter_mut() {
-        session.pump_io().expect("pump");
+        session.pump_io(budget).expect("pump");
         while session.needs_pump() {
-            session.pump_io().expect("pump");
+            session.pump_io(budget).expect("pump");
         }
     }
 }
@@ -103,23 +103,25 @@ pub fn pump_all(sessions: &mut [Session]) {
 /// is the scheduling quantum a fair multi-session loop uses, and it is what
 /// lets a short burst on one session be observed before a large burst on
 /// another is exhausted.
-pub fn rotate_once(sessions: &mut [Session]) {
+pub fn rotate_once(sessions: &mut [Session], budget: PumpBudget) {
     for session in sessions.iter_mut() {
-        session.pump_io().expect("pump");
+        session.pump_io(budget).expect("pump");
     }
 }
 
 /// Drives `sessions` with one rotation per condition check until `cond` holds.
 ///
 /// Used for fairness assertions: the loop never drains one session to idle, so
-/// a large burst on one session cannot hide another's progress.
-pub fn rotate_until<F>(sessions: &mut [Session], context: &str, mut cond: F)
+/// a large burst on one session cannot hide another's progress. `budget` is
+/// the per-`pump_io` ceiling; a tight budget makes any non-empty backlog spill
+/// across rotations even with a small fixture.
+pub fn rotate_until<F>(sessions: &mut [Session], budget: PumpBudget, context: &str, mut cond: F)
 where
     F: FnMut(&mut [Session]) -> bool,
 {
     let deadline = Instant::now() + DEADLINE;
     while Instant::now() < deadline {
-        rotate_once(sessions);
+        rotate_once(sessions, budget);
         if cond(sessions) {
             return;
         }
@@ -143,15 +145,15 @@ pub fn enqueue(sessions: &mut [Session], index: usize, input: termnix::Input<'_>
 /// on freshly collected fds. `cond` receives the sessions mutably so a check
 /// can reap, close, or feed a session as part of the condition. Panics with
 /// `context`, the per-session statuses, and the normalized snapshots when the
-/// deadline expires.
-pub fn pump_until<F>(sessions: &mut [Session], context: &str, mut cond: F)
+/// deadline expires. `budget` is the per-`pump_io` ceiling used for every pump.
+pub fn pump_until<F>(sessions: &mut [Session], budget: PumpBudget, context: &str, mut cond: F)
 where
     F: FnMut(&mut [Session]) -> bool,
 {
     let deadline = Instant::now() + DEADLINE;
     let mut next_process_poll = Instant::now();
     while Instant::now() < deadline {
-        pump_all(sessions);
+        pump_all(sessions, budget);
         if cond(sessions) {
             return;
         }

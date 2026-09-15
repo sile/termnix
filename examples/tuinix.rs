@@ -288,7 +288,9 @@ impl App {
                 true
             } else {
                 match session.enqueue_input(input) {
-                    Ok(()) => session.pump_io().map_err(AppError::io)?,
+                    Ok(()) => session
+                        .pump_io(termnix::PumpBudget::default())
+                        .map_err(AppError::io)?,
                     Err(err) if err.kind() == ErrorKind::BrokenPipe => {
                         // Target session closed underneath us: drop the key.
                     }
@@ -319,14 +321,18 @@ impl App {
             self.pending = None;
             return Ok(());
         };
-        session.pump_io().map_err(AppError::io)?;
+        session
+            .pump_io(termnix::PumpBudget::default())
+            .map_err(AppError::io)?;
         let input = termnix::Input::Key(pending.event);
         let need = input.byte_len(session.terminal_state().modes());
         if session.metrics().pending_write_bytes.saturating_add(need) > WRITE_SOFT_LIMIT {
             return Ok(());
         }
         match session.enqueue_input(input) {
-            Ok(()) => session.pump_io().map_err(AppError::io)?,
+            Ok(()) => session
+                .pump_io(termnix::PumpBudget::default())
+                .map_err(AppError::io)?,
             Err(err) if err.kind() == ErrorKind::BrokenPipe => {}
             Err(err) => return Err(AppError::io(err)),
         }
@@ -355,7 +361,9 @@ impl App {
                 if !session.needs_pump() && !ready.contains(&slot) {
                     continue;
                 }
-                session.pump_io().map_err(AppError::io)?;
+                session
+                    .pump_io(termnix::PumpBudget::default())
+                    .map_err(AppError::io)?;
                 budget -= 1;
                 progressed = true;
             }

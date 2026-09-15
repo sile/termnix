@@ -53,9 +53,13 @@ fn visible_text(session: &termnix::Session) -> String {
 /// Pumps every session once and drains each `needs_pump` loop.
 fn pump_all(sessions: &mut [termnix::Session]) {
     for session in sessions.iter_mut() {
-        session.pump_io().expect("pump");
+        session
+            .pump_io(termnix::PumpBudget::default())
+            .expect("pump");
         while session.needs_pump() {
-            session.pump_io().expect("pump");
+            session
+                .pump_io(termnix::PumpBudget::default())
+                .expect("pump");
         }
     }
 }
@@ -208,16 +212,22 @@ fn pump_io_flushes_input_after_read_would_block() {
     session
         .enqueue_input(termnix::Input::Raw(b"hello"))
         .expect("text");
-    session.pump_io().expect("pump after text");
+    session
+        .pump_io(termnix::PumpBudget::default())
+        .expect("pump after text");
     while session.needs_pump() {
-        session.pump_io().expect("drain after text");
+        session
+            .pump_io(termnix::PumpBudget::default())
+            .expect("drain after text");
     }
     session
         .enqueue_input(termnix::Input::Key(termnix::KeyEvent::new(
             termnix::KeyCode::Enter,
         )))
         .expect("enter");
-    session.pump_io().expect("pump after enter");
+    session
+        .pump_io(termnix::PumpBudget::default())
+        .expect("pump after enter");
     assert_eq!(
         session.metrics().pending_write_bytes,
         0,
@@ -405,9 +415,13 @@ fn try_wait_before_eof_still_drains_output() {
     let deadline = Instant::now() + DEADLINE;
     let mut exit = None;
     loop {
-        session.pump_io().expect("pump");
+        session
+            .pump_io(termnix::PumpBudget::default())
+            .expect("pump");
         while session.needs_pump() {
-            session.pump_io().expect("pump");
+            session
+                .pump_io(termnix::PumpBudget::default())
+                .expect("pump");
         }
         if exit.is_none() {
             exit = session.try_wait().expect("try_wait");
@@ -491,7 +505,9 @@ fn closed_session_rejects_input_and_resize() {
         .expect("accept while open");
     session.close();
     // pump_io after close is a successful no-op.
-    session.pump_io().expect("pump after close");
+    session
+        .pump_io(termnix::PumpBudget::default())
+        .expect("pump after close");
 
     let err = session
         .enqueue_input(termnix::Input::Raw(b"x"))
@@ -501,6 +517,49 @@ fn closed_session_rejects_input_and_resize() {
         .resize(termnix::Size::new(40, 40).expect("size"))
         .expect_err("closed rejects");
     assert_eq!(err.kind(), ErrorKind::BrokenPipe);
+}
+
+#[test]
+fn pump_budget_bounds_work_per_call() {
+    // An echoing child keeps output flowing, so a pump can always find work.
+    let script = "stty -echo; while IFS= read -r line; do printf 'ECHO:%s\\n' \"$line\"; done";
+    let mut session = spawn_session(script);
+    // A budget of one syscall cannot both read input and write the echo, so
+    // every pump stops with work still pending.
+    let tiny = termnix::PumpBudget::new(0, 1);
+    assert_eq!(tiny.bytes(), 0);
+    assert_eq!(tiny.syscalls(), 1);
+
+    let before = session.metrics().pump_budget_exhaustions;
+    session
+        .enqueue_input(termnix::Input::Raw(b"hello\n"))
+        .expect("enqueue");
+    session.pump_io(tiny).expect("pump with tiny budget");
+    let after = session.metrics().pump_budget_exhaustions;
+    assert!(
+        after > before,
+        "tiny budget should report exhaustion: {before} -> {after}"
+    );
+    assert!(
+        session.needs_pump(),
+        "work must remain when the budget was exhausted"
+    );
+
+    // The default budget eventually drives the child's echo into the visible
+    // state, so the session keeps making progress across calls.
+    let mut sessions = [session];
+    pump_until(&mut sessions, |sessions| {
+        visible_text(&sessions[0]).contains("ECHO:hello")
+    });
+}
+
+#[test]
+fn pump_budget_default_is_stable() {
+    // The default is part of the public contract; pin it so a change is a
+    // deliberate decision rather than an accident.
+    let default = termnix::PumpBudget::default();
+    assert_eq!(default.bytes(), 65536);
+    assert_eq!(default.syscalls(), 64);
 }
 
 #[test]

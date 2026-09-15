@@ -207,10 +207,14 @@ where
 }
 
 fn pump_session(session: &mut termnix::Session) -> Result<(), AppError> {
-    session.pump_io().map_err(AppError::io)?;
+    session
+        .pump_io(termnix::PumpBudget::default())
+        .map_err(AppError::io)?;
     let mut budget = PUMP_DRAIN_BUDGET;
     while session.needs_pump() && budget > 0 {
-        session.pump_io().map_err(AppError::io)?;
+        session
+            .pump_io(termnix::PumpBudget::default())
+            .map_err(AppError::io)?;
         budget -= 1;
     }
     Ok(())

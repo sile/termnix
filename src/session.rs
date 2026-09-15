@@ -11,7 +11,9 @@
 //! results of its own `read`/`write` calls. Owning, identifying, and
 //! scheduling several sessions is the caller's responsibility. One `pump_io`
 //! call is the scheduling quantum; a multi-session loop should rotate among
-//! runnable sessions rather than draining one session to idle.
+//! runnable sessions rather than draining one session to idle. How much work a
+//! single call may do is bounded by the [`PumpBudget`] passed to it, so a
+//! session with a large backlog cannot monopolise the loop.
 //!
 //! Application input and terminal replies share one FIFO write queue. A reply
 //! is appended in chronological order and decoding pauses until that reply is
@@ -49,17 +51,77 @@ const MAX_PENDING_REPLY_BYTES: usize = 14;
 /// Maximum raw bytes held between reading from the PTY and decoding.
 const READ_BUFFER_LIMIT: usize = 65536;
 
-/// Maximum bytes a single `pump_io` processes (read + decode + write).
-const PUMP_BYTE_QUANTUM: usize = 65536;
-
-/// Maximum syscalls a single `pump_io` attempts.
-const PUMP_SYSCALL_QUANTUM: usize = 64;
-
 /// Drop already-written `outbound` prefix once it reaches this size.
 const OUTBOUND_COMPACT_THRESHOLD: usize = 4096;
 
 /// Drop already-decoded `read_buffer` prefix once it reaches this size.
 const READ_COMPACT_THRESHOLD: usize = 4096;
+
+/// Ceiling on the work a single [`Session::pump_io`] call performs.
+///
+/// One `pump_io` call is the scheduling quantum at the caller's level: the
+/// caller decides, by rotating among sessions, how the work is interleaved.
+/// This struct bounds *how much work* one such call may do in total. A ceiling
+/// is required for that rotation to be possible at all: without it a child
+/// that never stops writing could hold the PTY in one call forever, starving
+/// the other sessions. The ceiling is a defaulted, inspectable value rather
+/// than a hidden constant so callers can tighten it, for example to observe
+/// [`SessionMetrics::pump_budget_exhaustions`] with a small fixture, or widen
+/// it to drain a single session in one call.
+///
+/// The ceiling counts both bytes moved (read + decoded + written) and
+/// syscalls attempted. `pump_io` stops at whichever is reached first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PumpBudget {
+    bytes: usize,
+    syscalls: usize,
+}
+
+impl PumpBudget {
+    /// A ceiling allowing at most `bytes` bytes and `syscalls` syscalls.
+    ///
+    /// A zero in either field makes every `pump_io` stop immediately, which
+    /// reports an exhausted budget without doing work.
+    pub const fn new(bytes: usize, syscalls: usize) -> Self {
+        Self { bytes, syscalls }
+    }
+
+    /// The byte ceiling.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// The syscall ceiling.
+    pub fn syscalls(&self) -> usize {
+        self.syscalls
+    }
+
+    /// Charges `bytes` and `syscalls` against the ceiling.
+    fn consume(&mut self, bytes: usize, syscalls: usize) {
+        self.bytes = self.bytes.saturating_sub(bytes);
+        self.syscalls = self.syscalls.saturating_sub(syscalls);
+    }
+
+    /// Bytes still allowed in this pump.
+    fn bytes_left(&self) -> usize {
+        self.bytes
+    }
+
+    /// Whether either ceiling has been reached.
+    fn exhausted(&self) -> bool {
+        self.bytes == 0 || self.syscalls == 0
+    }
+}
+
+impl Default for PumpBudget {
+    /// 64 KiB of traffic or 64 syscalls, whichever comes first.
+    fn default() -> Self {
+        Self {
+            bytes: 65536,
+            syscalls: 64,
+        }
+    }
+}
 
 /// Read/write interests an event loop should register for the session's fd.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -81,7 +143,12 @@ pub struct Interests {
 pub struct SessionMetrics {
     /// Cumulative `pump_io` calls.
     pub pump_calls: u64,
-    /// Cumulative pumps that ended with the internal budget exhausted.
+    /// Cumulative pumps that ended with their [`PumpBudget`] exhausted.
+    ///
+    /// A pump that exhausts its budget stopped with work still pending, so
+    /// [`Session::needs_pump`] stays true. Callers can use a delta of this
+    /// counter as an oracle that a single pump did not finish the backlog,
+    /// without knowing the budget's numeric value.
     pub pump_budget_exhaustions: u64,
     /// Cumulative bytes read from the PTY.
     pub pty_bytes_read: u64,
@@ -213,7 +280,8 @@ struct Cumulative {
 /// [`Session::interests`], call [`Session::pump_io`] when the fd is ready (or
 /// after any state change), and repeat while [`Session::needs_pump`] returns
 /// `true` before waiting in the poll loop. With several sessions, treat each
-/// `pump_io` as one quantum and rotate among runnable sessions.
+/// `pump_io` as one quantum and rotate among runnable sessions; pass a
+/// [`PumpBudget`] to bound how much work one quantum does.
 ///
 /// # Drop behavior
 ///
@@ -324,8 +392,8 @@ impl Session {
     /// Returns `false` when the last pump stopped because a `read` or `write`
     /// returned `WouldBlock`; the caller should then wait for the interest
     /// reported by [`Session::interests`]. Returns `true` when internal work
-    /// (buffered decoding, a pending reply, or a pump interrupted by the
-    /// internal budget) is still executable immediately, which an
+    /// (buffered decoding, a pending reply, or a pump interrupted by its
+    /// [`PumpBudget`]) is still executable immediately, which an
     /// edge-triggered loop must drain before blocking. With several sessions,
     /// prefer rotating among `needs_pump` sessions instead of draining one
     /// session in a tight loop.
@@ -343,19 +411,25 @@ impl Session {
     }
 
     /// Advances the session: writes queued bytes, reads and decodes PTY
-    /// output, and detects EOF, bounded by an internal budget.
+    /// output, and detects EOF, bounded by `budget`.
     ///
     /// The fd is non-blocking, so no readiness flags are taken; `WouldBlock`
-    /// results decide how far a single call goes. After a logical close this
-    /// is a successful no-op.
-    pub fn pump_io(&mut self) -> io::Result<()> {
+    /// results decide how far a single call goes. A call stops early when
+    /// `budget` is exhausted, which [`SessionMetrics::pump_budget_exhaustions`]
+    /// counts; [`needs_pump`](Self::needs_pump) then stays true so the caller
+    /// can return to this session on a later rotation. After a logical close
+    /// this is a successful no-op.
+    ///
+    /// Pass [`PumpBudget::default`] for the customary 64 KiB / 64 syscall
+    /// ceiling.
+    pub fn pump_io(&mut self, budget: PumpBudget) -> io::Result<()> {
         if self.phase == Phase::Closing || self.phase == Phase::Reaped {
             return Ok(());
         }
         self.cumulative.pump_calls = self.cumulative.pump_calls.saturating_add(1);
         self.read_would_block = false;
         self.write_would_block = false;
-        let mut budget = Budget::new(PUMP_BYTE_QUANTUM, PUMP_SYSCALL_QUANTUM);
+        let mut budget = budget;
         let mut direction = self.direction;
         for _ in 0..2 {
             if budget.exhausted() {
@@ -758,7 +832,7 @@ impl Session {
     }
 
     /// Writes pending bytes, bounded by the pump budget.
-    fn write_phase(&mut self, budget: &mut Budget) -> io::Result<bool> {
+    fn write_phase(&mut self, budget: &mut PumpBudget) -> io::Result<bool> {
         let mut progressed = false;
         loop {
             if budget.exhausted() {
@@ -814,7 +888,7 @@ impl Session {
     }
 
     /// Reads and decodes bytes, bounded by the pump budget.
-    fn read_phase(&mut self, budget: &mut Budget) -> io::Result<bool> {
+    fn read_phase(&mut self, budget: &mut PumpBudget) -> io::Result<bool> {
         let mut progressed = false;
         progressed |= self.decode_buffered(budget)? > 0;
 
@@ -894,7 +968,7 @@ impl Session {
 
     /// Decodes already-buffered raw bytes, one at a time, until paused, empty,
     /// or the budget is exhausted. Returns the number of bytes decoded.
-    fn decode_buffered(&mut self, budget: &mut Budget) -> io::Result<usize> {
+    fn decode_buffered(&mut self, budget: &mut PumpBudget) -> io::Result<usize> {
         let mut decoded = 0;
         loop {
             if budget.bytes_left() == 0 {
@@ -972,31 +1046,6 @@ impl Drop for Session {
         };
         let _ = closing.signal_kill();
         let _ = closing.wait_and_reap();
-    }
-}
-
-/// Per-pump byte and syscall budget accounting.
-struct Budget {
-    bytes: usize,
-    syscalls: usize,
-}
-
-impl Budget {
-    fn new(bytes: usize, syscalls: usize) -> Self {
-        Self { bytes, syscalls }
-    }
-
-    fn consume(&mut self, bytes: usize, syscalls: usize) {
-        self.bytes = self.bytes.saturating_sub(bytes);
-        self.syscalls = self.syscalls.saturating_sub(syscalls);
-    }
-
-    fn bytes_left(&self) -> usize {
-        self.bytes
-    }
-
-    fn exhausted(&self) -> bool {
-        self.bytes == 0 || self.syscalls == 0
     }
 }
 

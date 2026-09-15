@@ -25,25 +25,28 @@ use helpers::{
     DEADLINE, Teardown, default_size, enqueue, poll_once, pump_all, pump_until, rotate_until,
     screen_text, snapshot_text, snapshots, spawn, write_raw,
 };
-use termnix::{Input, Session, SessionStatus, Size};
+use termnix::{Input, PumpBudget, Session, SessionStatus, Size};
 
-/// A's initial payload. Each filler line is `FILLER-%04d` padded to roughly
-/// 60 bytes, so the whole burst is far larger than one `PUMP_BYTE_QUANTUM`
-/// (64 KiB). `pump_io` is also capped at `PUMP_SYSCALL_QUANTUM` reads per call,
-/// so a burst of many lines takes many rotations to drain; that is what makes
-/// the fairness check non-vacuous, since B's first marker must appear while A
-/// is still mid-burst.
+/// Per-`pump_io` work ceiling used throughout the workflow.
 ///
-/// The lines are wide on purpose: the byte volume is set by the line count and
-/// width, while the per-iteration shell loop overhead is set by the count
-/// alone. Enough lines are kept to outlast B's shell startup across rotations,
-/// without the syscall cost of one line per byte of output.
-const A_FILLER_LINES: u32 = 4_000;
+/// Deliberately far below [`PumpBudget::default`] so a modest fixture cannot
+/// be drained in one call. That makes the fairness check non-vacuous without
+/// guessing an internal constant: the only requirement is that A's burst
+/// exceeds one call's budget, which this budget guarantees, and the loop's
+/// rotation is then observable. It also keeps the test fast, since the
+/// smallest burst that stalls a pump is enough. The ceiling is expressed in
+/// syscalls (4), because the filler emits one line per `printf` / read.
+const WORK_BUDGET: PumpBudget = PumpBudget::new(48, 4);
+
+/// A's initial payload. With [`WORK_BUDGET`] capping one call at 4 syscalls,
+/// even this small burst spans many rotations, so B's marker can appear while
+/// A is still mid-burst.
+const A_FILLER_LINES: u32 = 200;
 
 /// The last filler line: it exists only if the child's initial burst was
 /// fully drained, so its absence proves A was still streaming when B's
 /// sentinel appeared.
-const A_FILLER_LAST: &str = "FILLER-3999";
+const A_FILLER_LAST: &str = "FILLER-0199";
 
 /// A's output on `EXIT`: deliberately a few bytes so the child's exit can be
 /// observed before the payload is drained. Kept far below any PTY buffer.
@@ -107,10 +110,17 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
     // Once A is idle with an empty read buffer while its process is still
     // live, the child can only be blocked in `read` waiting for input, which
     // means the burst is complete.
-    pump_until(sessions, "A filler fully emitted and drained", |sessions| {
-        let a = &sessions[0];
-        a.status() == SessionStatus::Live && a.metrics().buffered_read_bytes == 0 && !a.needs_pump()
-    });
+    pump_until(
+        sessions,
+        WORK_BUDGET,
+        "A filler fully emitted and drained",
+        |sessions| {
+            let a = &sessions[0];
+            a.status() == SessionStatus::Live
+                && a.metrics().buffered_read_bytes == 0
+                && !a.needs_pump()
+        },
+    );
     // The marker confirms the oracle: the whole burst really was emitted.
     assert!(
         snapshot_text(&sessions[0]).contains(A_FILLER_LAST),
@@ -123,7 +133,7 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
     // exit has been seen, so `A_FINAL` cannot be read out of the PTY before
     // the exit is observed: the order is enforced by what is *not* driven, not
     // by the scheduler. B keeps being driven so the loop stays live.
-    sessions[0].pump_io().expect("flush EXIT");
+    sessions[0].pump_io(WORK_BUDGET).expect("flush EXIT");
     let status = wait_exit_without_reading_a(sessions);
     // The pre-drain snapshot is still readable, and the final marker must not
     // be decoded yet, because the exit was observed first.
@@ -135,13 +145,18 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
     // The process exited but the PTY master is still open, so the fd is still
     // a live registration until the drain reaches EOF.
     let stale_fd = sessions[0].fd().expect("A keeps its fd until EOF");
-    pump_until(sessions, "A final output and EOF", |sessions| {
-        snapshot_text(&sessions[0]).contains(A_FINAL)
-            && matches!(
-                sessions[0].status(),
-                SessionStatus::Eof | SessionStatus::Reaped
-            )
-    });
+    pump_until(
+        sessions,
+        WORK_BUDGET,
+        "A final output and EOF",
+        |sessions| {
+            snapshot_text(&sessions[0]).contains(A_FINAL)
+                && matches!(
+                    sessions[0].status(),
+                    SessionStatus::Eof | SessionStatus::Reaped
+                )
+        },
+    );
     assert!(status.success(), "A exit status: {status:?}");
     reap(&mut sessions[0]);
     stale_fd
@@ -167,7 +182,7 @@ fn wait_exit_without_reading_a(sessions: &mut [Session]) -> ExitStatus {
             std::thread::sleep(Duration::from_millis(5));
         } else {
             poll_once(rest, 5);
-            pump_all(rest);
+            pump_all(rest, WORK_BUDGET);
         }
     }
     panic!(
@@ -185,7 +200,7 @@ fn assert_stale_fd_does_not_drive(c: &mut Session, stale_fd: RawFd) {
     let deadline = Instant::now() + DEADLINE;
     while Instant::now() < deadline {
         poll_once(std::slice::from_ref(&*c), 10);
-        pump_all(std::slice::from_mut(c));
+        pump_all(std::slice::from_mut(c), WORK_BUDGET);
         if screen_text(c).contains("C_INPUT") {
             panic!("C advanced from A's stale fd: {}", screen_text(c));
         }
@@ -220,6 +235,7 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
     let mut b_ready = false;
     rotate_until(
         &mut sessions,
+        WORK_BUDGET,
         "A streaming while B becomes ready",
         |sessions| {
             a_started |= screen_text(&sessions[0]).contains("FILLER-");
@@ -251,6 +267,7 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
     enqueue(&mut sessions, 1, Input::Raw(b"beta\n"));
     pump_until(
         &mut sessions,
+        WORK_BUDGET,
         "A_INPUT:alpha and B_INPUT:beta",
         |sessions| {
             screen_text(&sessions[0]).contains("A_INPUT:alpha")
@@ -283,6 +300,7 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
     enqueue(&mut sessions, 1, Input::Raw(b"SIZE\n"));
     pump_until(
         &mut sessions,
+        WORK_BUDGET,
         "B reports the resized stty size",
         |sessions| screen_text(&sessions[1]).contains("SIZE:31 111"),
     );
@@ -296,15 +314,21 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
 
     // Step 9: B keeps working after A is reaped.
     enqueue(&mut sessions, 1, Input::Raw(b"gamma\n"));
-    pump_until(&mut sessions, "B input after A reap", |sessions| {
-        screen_text(&sessions[1]).contains("B_INPUT:gamma")
-    });
+    pump_until(
+        &mut sessions,
+        WORK_BUDGET,
+        "B input after A reap",
+        |sessions| screen_text(&sessions[1]).contains("B_INPUT:gamma"),
+    );
     let shrink = Size::new(20, 60).expect("20x60 is non-zero");
     sessions[1].resize(shrink).expect("resize B again");
     enqueue(&mut sessions, 1, Input::Raw(b"SIZE\n"));
-    pump_until(&mut sessions, "B reports size after A reap", |sessions| {
-        screen_text(&sessions[1]).contains("SIZE:20 60")
-    });
+    pump_until(
+        &mut sessions,
+        WORK_BUDGET,
+        "B reports size after A reap",
+        |sessions| screen_text(&sessions[1]).contains("SIZE:20 60"),
+    );
 
     // Step 10: C waits for input without producing output. A's stale fd must
     // not move it; only C's own fd and a real enqueue do.
@@ -316,6 +340,7 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
     enqueue(std::slice::from_mut(&mut c), 0, Input::Raw(b"charlie\n"));
     pump_until(
         std::slice::from_mut(&mut c),
+        WORK_BUDGET,
         "C_INPUT:charlie",
         |sessions| screen_text(&sessions[0]).contains("C_INPUT:charlie"),
     );
