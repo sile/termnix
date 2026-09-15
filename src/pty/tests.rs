@@ -17,6 +17,10 @@ fn open_pty_pair_returns_distinct_fds() {
 }
 
 #[test]
+#[expect(
+    unsafe_code,
+    reason = "libc::ioctl probes the window size set on the master"
+)]
 fn set_winsize_round_trips_on_master() {
     let (master, _slave) = open_pty_pair().expect("open pty");
     let size = Size::new(31, 97).expect("nonzero size");
@@ -428,6 +432,7 @@ fn count_open_fds() -> usize {
     {
         let mut count = 0;
         for fd in 0..1024 {
+            #[expect(unsafe_code, reason = "macOS counts open fds via libc::fcntl")]
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
             if flags >= 0 {
                 count += 1;

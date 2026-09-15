@@ -53,6 +53,10 @@ impl PtyProcess {
     ///
     /// On failure, opened PTY file descriptors are closed before the error is
     /// returned.
+    #[expect(
+        unsafe_code,
+        reason = "CommandExt::pre_exec is unsafe; it runs setup_child_session in the forked child"
+    )]
     pub(crate) fn spawn(command: &mut Command, size: Size) -> io::Result<Self> {
         let (master, slave) = open_pty_pair()?;
         set_cloexec(master.as_raw_fd())?;
@@ -129,6 +133,7 @@ impl PtyProcess {
     ///
     /// The child is a session leader created with `setsid`, so its PID equals
     /// its process group ID. No signal is sent once the child has been reaped.
+    #[expect(unsafe_code, reason = "libc::kill signals the child's process group")]
     pub(crate) fn signal_group(&self, signal: libc::c_int) -> io::Result<SignalOutcome> {
         if self.reaped_status.is_some() {
             return Ok(SignalOutcome::AlreadyReaped);
@@ -415,6 +420,7 @@ impl ClosingPtyProcess {
         self.signal_group(libc::SIGKILL)
     }
 
+    #[expect(unsafe_code, reason = "libc::kill signals the child's process group")]
     fn signal_group(&mut self, signal: libc::c_int) -> io::Result<SignalOutcome> {
         match &self.state {
             ClosingState::Reaped { .. } => Ok(SignalOutcome::AlreadyReaped),
@@ -472,6 +478,7 @@ fn classify_waitid_event(
     }
 }
 
+#[expect(unsafe_code, reason = "libc::waitid and siginfo_t access are unsafe")]
 fn poll_exit_waitid(pid: libc::pid_t) -> io::Result<Option<ObservedExit>> {
     // Zero-initialize every call; kernels may only write parts of siginfo_t.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -506,6 +513,10 @@ fn poll_exit_waitid(pid: libc::pid_t) -> io::Result<Option<ObservedExit>> {
 ///   not exposed for macOS in the targeted `libc` bindings
 ///
 /// Close-on-exec is applied afterward because `openpty` does not guarantee it.
+#[expect(
+    unsafe_code,
+    reason = "libc::openpty and File::from_raw_fd take raw fds"
+)]
 fn open_pty_pair() -> io::Result<(File, File)> {
     let mut master = -1;
     let mut slave = -1;
@@ -535,6 +546,10 @@ fn open_pty_pair() -> io::Result<(File, File)> {
 /// This function must stay async-signal-safe: no allocation, locking, or
 /// unwinding. After `setsid`, the child PID is the session ID and process
 /// group ID.
+#[expect(
+    unsafe_code,
+    reason = "called in the forked child; all calls are async-signal-safe libc syscalls"
+)]
 fn setup_child_session(master_fd: RawFd, slave_fd: RawFd) -> io::Result<()> {
     // SAFETY: Called only in the forked child before exec. `setsid` creates a
     // new session so the subsequent `TIOCSCTTY` can assign a controlling tty.
@@ -565,6 +580,7 @@ fn setup_child_session(master_fd: RawFd, slave_fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+#[expect(unsafe_code, reason = "libc::ioctl sets the PTY window size")]
 fn set_winsize(fd: RawFd, size: Size) -> io::Result<()> {
     let winsize = libc::winsize {
         ws_row: size.rows.get(),
@@ -577,6 +593,7 @@ fn set_winsize(fd: RawFd, size: Size) -> io::Result<()> {
     check_libc_zero(unsafe { libc::ioctl(fd, libc::TIOCSWINSZ as _, &winsize) })
 }
 
+#[expect(unsafe_code, reason = "libc::fcntl toggles the close-on-exec flag")]
 fn set_cloexec(fd: RawFd) -> io::Result<()> {
     // SAFETY: `fd` is open and owned by the caller.
     let flags = check_libc_non_neg(unsafe { libc::fcntl(fd, libc::F_GETFD) })?;
@@ -585,6 +602,7 @@ fn set_cloexec(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+#[expect(unsafe_code, reason = "libc::fcntl toggles the status flags")]
 fn set_nonblocking(fd: RawFd, nonblocking: bool) -> io::Result<()> {
     // SAFETY: `fd` is open and owned by the caller.
     let flags = check_libc_non_neg(unsafe { libc::fcntl(fd, libc::F_GETFL) })?;

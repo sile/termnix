@@ -9,6 +9,7 @@
 //! with the caller.
 
 #![warn(missing_docs)]
+#![deny(unsafe_code)]
 
 mod input;
 mod pty;
