@@ -10,7 +10,14 @@
 //! [`termnix::Session::needs_pump`](termnix::Session::needs_pump), keys are converted
 //! and enqueued with caller-side backpressure, and the selected session's
 //! [`termnix::TerminalSnapshot`](termnix::TerminalSnapshot) is projected into a
-//! full-screen [`TerminalFrame`](tuinix::TerminalFrame).
+//! full-screen [`Frame`](tuinix::Frame).
+//!
+//! `tuinix` keeps the pure types ([`Frame`](tuinix::Frame), [`Char`](tuinix::Char),
+//! [`InputDecoder`](tuinix::InputDecoder)) separate from the I/O types
+//! ([`TerminalDriver`](tuinix::TerminalDriver)), so this example owns both the
+//! event loop and the frame-to-frame diffing: a [`Frame`](tuinix::Frame) is built
+//! from the snapshot, rendered against the previously rendered frame, and the
+//! bytes are written to the driver.
 //!
 //! Keystrokes: `Ctrl+T` switches the display and input target between the two
 //! sessions (no-op while only one session is left), `Ctrl+Q` quits. Other keys
@@ -21,23 +28,24 @@
 //!
 //! The example intentionally adds no window, pane, layout, split, focus,
 //! popup, border, or label model. Terminal mode restoration is handled by
-//! `tuinix`'s `Terminal` drop.
+//! `tuinix`'s [`TerminalDriver`](tuinix::TerminalDriver) drop.
 //!
 //! Run it from a terminal: `cargo run --quiet --example tuinix`.
 
 use std::{
-    fmt::Write as _,
-    io::{self, ErrorKind},
+    io::{self, ErrorKind, Read as _, Write as _},
     os::fd::RawFd,
     process::Command,
     time::{Duration, Instant},
 };
 
-use tuinix::EstimateCharWidth;
-use unicode_width::UnicodeWidthChar;
+use tuinix::{Frame, TerminalDriver};
 
 /// Number of session slots; the example fixes it at two.
 const SESSION_COUNT: usize = 2;
+
+/// Bytes read from the host terminal in one `read` call.
+const HOST_READ_BUFFER: usize = 4096;
 
 /// How often the direct children are polled with `try_wait`.
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -45,11 +53,8 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Maximum `pump_io` calls per outer iteration across all sessions.
 const PUMP_DRAIN_BUDGET: usize = 64;
 
-/// Maximum host keystrokes read per drain.
+/// Maximum host input reads (and decoded inputs) handled per drain.
 const INPUT_DRAIN_BUDGET: usize = 64;
-
-/// Maximum resize events handled per iteration.
-const RESIZE_DRAIN_BUDGET: usize = 4;
 
 /// Caller-side write-queue limit; holds the key when above this.
 const WRITE_SOFT_LIMIT: usize = 4096;
@@ -149,6 +154,13 @@ struct App {
     /// Visible-state revision last written to the host for the selected
     /// session, or `None` when the current selection has not been drawn yet.
     drawn_revision: Option<u64>,
+    /// Frame most recently rendered to the host.
+    ///
+    /// [`Frame::render`](tuinix::Frame::render) emits only the cells that
+    /// differ from this frame; it is also the reference for the host cursor.
+    /// `None` after a resize or a selection switch, so the whole screen is
+    /// repainted rather than diffed against a stale frame.
+    prev_frame: Option<Frame>,
 }
 
 impl App {
@@ -168,6 +180,7 @@ impl App {
             pump_cursor: 0,
             quit: false,
             drawn_revision: None,
+            prev_frame: None,
         })
     }
 
@@ -240,10 +253,16 @@ impl App {
             .unwrap_or(0);
         self.selected = live[(index + 1) % live.len()];
         self.drawn_revision = None;
+        self.prev_frame = None;
     }
 
     /// Applies a host resize to every session whose PTY is still open.
+    ///
+    /// The cached frame is dropped because it was built at the old size;
+    /// `render` would otherwise diff against a frame of a different geometry.
     fn apply_resize(&mut self, size: termnix::Size) -> Result<(), AppError> {
+        self.prev_frame = None;
+        self.drawn_revision = None;
         for slot in &mut self.sessions {
             let live = slot.as_ref().is_some_and(|s| s.fd().is_some());
             if live {
@@ -258,8 +277,8 @@ impl App {
 
     /// Forwards one host input: commands first, then a key to the selected
     /// session. Mouse events and unsupported keys are dropped explicitly.
-    fn handle_input(&mut self, input: tuinix::TerminalInput) -> Result<(), AppError> {
-        let tuinix::TerminalInput::Key(key) = input else {
+    fn handle_input(&mut self, input: tuinix::Input) -> Result<(), AppError> {
+        let tuinix::Input::Key(key) = input else {
             // Mouse events are out of scope for this example; do not forward.
             return Ok(());
         };
@@ -543,25 +562,45 @@ fn poll_timeout_ms(deadline: Instant) -> i32 {
     i32::try_from(ms).unwrap_or(i32::MAX).max(0)
 }
 
-/// Drains host keystrokes, stopping early on `WouldBlock`, `Ok(None)` or the
-/// budget; `UnexpectedEof` means the host terminal went away.
-fn drain_host_inputs<F>(mut next: F, budget: usize) -> Result<Vec<tuinix::TerminalInput>, AppError>
-where
-    F: FnMut() -> io::Result<Option<tuinix::TerminalInput>>,
-{
-    let mut inputs = Vec::new();
+/// Reads raw host bytes into `decoder`, stopping at `WouldBlock`, end of
+/// input, or after `budget` read syscalls.
+///
+/// A short `Ok(0)` from a terminal that is still open is not treated as end of
+/// input: the read is retried until `budget` is spent. The decoder holds
+/// partial sequences across calls, so a sequence split over two `poll`
+/// wakeups is still parsed exactly once.
+fn drain_host_inputs(
+    driver: &mut TerminalDriver,
+    decoder: &mut tuinix::InputDecoder,
+    budget: usize,
+) -> Result<(), AppError> {
+    let mut buf = [0u8; HOST_READ_BUFFER];
     for _ in 0..budget {
-        match next() {
-            Ok(Some(input)) => inputs.push(input),
-            Ok(None) => break,
+        match driver.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => decoder.feed(&buf[..n]),
             Err(err) if err.kind() == ErrorKind::WouldBlock => break,
-            Err(err) if err.kind() == ErrorKind::UnexpectedEof => {
-                return Err(AppError::msg("host terminal input closed"));
-            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
             Err(err) => return Err(AppError::io(err)),
         }
     }
-    Ok(inputs)
+    Ok(())
+}
+
+/// Pulls every complete [`Input`](tuinix::Input) the decoder can produce.
+///
+/// A lone `ESC` is left uncommitted: the example never forwards Escape to a
+/// child, so waiting for more bytes can only ever turn it into an Alt+key
+/// sequence, which is the more faithful reading of what the user typed.
+fn collect_inputs(decoder: &mut tuinix::InputDecoder, budget: usize) -> Vec<tuinix::Input> {
+    let mut inputs = Vec::new();
+    for _ in 0..budget {
+        match decoder.next() {
+            Some(input) => inputs.push(input),
+            None => break,
+        }
+    }
+    inputs
 }
 
 /// Converts a supported host key into a termnix key event.
@@ -613,7 +652,7 @@ fn command_from_key(event: termnix::KeyEvent) -> Option<AppCommand> {
 ///
 /// Zero dimensions and values beyond `u16` are rejected instead of clamped or
 /// silently cast.
-fn size_from_host(size: tuinix::TerminalSize) -> Result<termnix::Size, String> {
+fn size_from_host(size: tuinix::Size) -> Result<termnix::Size, String> {
     let rows = u16::try_from(size.rows)
         .map_err(|_| format!("unsupported terminal rows: {}", size.rows))?;
     let cols = u16::try_from(size.cols)
@@ -621,25 +660,15 @@ fn size_from_host(size: tuinix::TerminalSize) -> Result<termnix::Size, String> {
     termnix::Size::new(rows, cols).ok_or_else(|| format!("unsupported terminal size: {size:?}"))
 }
 
-/// Converts a zero-based host position to a termnix grid position.
+/// Converts a termnix grid position into a host position.
 ///
-/// Out-of-range or non-`u16` values are rejected instead of clamped.
-fn cursor_from_host(
-    position: tuinix::TerminalPosition,
-    size: termnix::Size,
-) -> Result<termnix::Position, String> {
-    let row = u16::try_from(position.row)
-        .map_err(|_| format!("unsupported cursor row: {}", position.row))?;
-    let col = u16::try_from(position.col)
-        .map_err(|_| format!("unsupported cursor col: {}", position.col))?;
-    if row >= size.rows.get() || col >= size.cols.get() {
-        return Err(format!(
-            "cursor ({row},{col}) outside the {}x{} grid",
-            size.rows.get(),
-            size.cols.get()
-        ));
+/// The frame and the grid share an origin and are built at the same size, so
+/// the conversion is total; the `usize` widening cannot fail.
+fn position_to_host(position: termnix::Position) -> tuinix::Position {
+    tuinix::Position {
+        row: position.row as usize,
+        col: position.col as usize,
     }
-    Ok(termnix::Position { row, col })
 }
 
 /// Maps a termnix color to tuinix's RGB-only representation.
@@ -647,15 +676,16 @@ fn cursor_from_host(
 /// `Default` maps to the terminal's default (no explicit color); everything
 /// else resolves through [`termnix::Color::to_rgb`] (the xterm 256-color
 /// palette for `Indexed`).
-fn to_terminal_color(color: termnix::Color) -> Option<tuinix::TerminalColor> {
-    color
-        .to_rgb()
-        .map(|(r, g, b)| tuinix::TerminalColor::new(r, g, b))
+fn to_host_color(color: termnix::Color) -> Option<tuinix::Color> {
+    color.to_rgb().map(|(r, g, b)| tuinix::Color::new(r, g, b))
 }
 
 /// Maps a termnix style to a tuinix style, dropping unsupported attributes.
-fn to_terminal_style(style: termnix::Style) -> tuinix::TerminalStyle {
-    let mut out = tuinix::TerminalStyle::new();
+///
+/// `blink`, `dim`, and `strikethrough` have no termnix counterpart and are
+/// left disabled rather than guessed at.
+fn to_host_style(style: termnix::Style) -> tuinix::Style {
+    let mut out = tuinix::Style::new();
     if style.bold {
         out = out.bold();
     }
@@ -668,46 +698,52 @@ fn to_terminal_style(style: termnix::Style) -> tuinix::TerminalStyle {
     if style.reverse {
         out = out.reverse();
     }
-    if let Some(color) = to_terminal_color(style.foreground) {
+    if let Some(color) = to_host_color(style.foreground) {
         out = out.fg_color(color);
     }
-    if let Some(color) = to_terminal_color(style.background) {
+    if let Some(color) = to_host_color(style.background) {
         out = out.bg_color(color);
     }
     out
 }
 
-/// Width estimator that mirrors the emulator's Unicode width rule.
-struct CellWidthEstimator;
-
-impl EstimateCharWidth for CellWidthEstimator {
-    fn estimate_char_width(&self, c: char) -> usize {
-        c.width().unwrap_or_default()
-    }
-}
-
-/// Projects one row-major grid into a full-screen frame.
+/// Builds a full-screen frame from one row-major grid.
 ///
-/// Each row is terminated explicitly; width-0 continuation cells are not
-/// written. Style changes emit only a reset-plus-select sequence.
-fn write_grid(
-    frame: &mut tuinix::TerminalFrame<CellWidthEstimator>,
-    grid: &Projection,
-) -> std::fmt::Result {
-    let mut current = tuinix::TerminalStyle::new();
+/// Each grid cell carries its own display width, so the width is passed
+/// straight through to [`Char::new`](tuinix::Char::new) and no width estimator
+/// is needed. Width-0 continuation cells are skipped: they cover columns that
+/// the preceding wide character already owns.
+///
+/// A cell that [`push_char`](tuinix::Frame::push_char) clips means the grid and
+/// the frame disagree about their geometry; that is a bug in this example, not
+/// a condition to paper over, so it is reported as an error.
+fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
     for row in &grid.rows {
         for cell in row {
             if cell.width == 0 {
                 continue;
             }
-            let style = to_terminal_style(cell.style);
-            if style != current {
-                write!(frame, "{style}")?;
-                current = style;
+            let style = to_host_style(cell.style);
+            let ch =
+                tuinix::Char::new(cell.ch, usize::from(cell.width), style).ok_or_else(|| {
+                    format!(
+                        "cell {:?} is not framable (control char or zero width)",
+                        cell.ch
+                    )
+                })?;
+            let pos = frame.next_push_position();
+            if !frame.push_char(ch) {
+                return Err(format!(
+                    "cell {:?} was clipped at {}x{} position ({}, {})",
+                    cell.ch,
+                    frame.size().rows,
+                    frame.size().cols,
+                    pos.row,
+                    pos.col
+                ));
             }
-            write!(frame, "{}", cell.ch)?;
         }
-        writeln!(frame)?;
+        frame.push_newline();
     }
     Ok(())
 }
@@ -718,9 +754,10 @@ fn write_grid(
 /// last drawn one, so idle polls no longer re-emit the frame or the host
 /// cursor show/hide sequences. The revision is captured from the snapshot so
 /// the recorded value always matches what was actually rendered.
-fn draw_selected(terminal: &mut tuinix::Terminal, app: &mut App) -> Result<(), AppError> {
+fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppError> {
     let Some(session) = app.sessions[app.selected].as_ref() else {
         app.drawn_revision = None;
+        app.prev_frame = None;
         return Ok(());
     };
     let snapshot = session.terminal_state().snapshot();
@@ -729,36 +766,30 @@ fn draw_selected(terminal: &mut tuinix::Terminal, app: &mut App) -> Result<(), A
         return Ok(());
     }
     let projection = Projection::from_snapshot(&snapshot).map_err(AppError::msg)?;
-    let frame_size = tuinix::TerminalSize::rows_cols(
-        projection.size.rows.get() as usize,
-        projection.size.cols.get() as usize,
-    );
-    let mut frame =
-        tuinix::TerminalFrame::with_char_width_estimator(frame_size, CellWidthEstimator);
-    write_grid(&mut frame, &projection).map_err(|_| AppError::msg("frame write failed"))?;
-    let cursor = if projection.cursor_visible {
-        cursor_from_host(
-            tuinix::TerminalPosition::row_col(
-                projection.cursor.row as usize,
-                projection.cursor.col as usize,
-            ),
-            projection.size,
-        )
-        .map(|cursor| tuinix::TerminalPosition::row_col(cursor.row as usize, cursor.col as usize))
-        .ok()
-    } else {
-        None
+    let frame_size = tuinix::Size {
+        rows: usize::from(projection.size.rows.get()),
+        cols: usize::from(projection.size.cols.get()),
     };
+    let mut frame = Frame::new(frame_size);
+    write_grid(&mut frame, &projection).map_err(AppError::msg)?;
     // `None` hides the host cursor; `Some` shows it at the session cursor.
-    terminal.set_cursor(cursor);
-    terminal.draw(frame).map_err(AppError::io)?;
+    let cursor = projection
+        .cursor_visible
+        .then(|| position_to_host(projection.cursor));
+    let bytes = frame.render(app.prev_frame.as_ref(), cursor);
+    driver
+        .write_all(&bytes)
+        .and_then(|()| driver.flush())
+        .map_err(AppError::io)?;
+    app.prev_frame = Some(frame);
     app.drawn_revision = Some(revision);
     Ok(())
 }
 
 /// Runs the main loop until quit, error, or both sessions are gone.
 fn run_loop(
-    terminal: &mut tuinix::Terminal,
+    driver: &mut TerminalDriver,
+    decoder: &mut tuinix::InputDecoder,
     app: &mut App,
     host_input_fd: RawFd,
     host_signal_fd: RawFd,
@@ -775,26 +806,19 @@ fn run_loop(
         app.drain_runnable(&ready)?;
         ready.clear();
 
-        for _ in 0..RESIZE_DRAIN_BUDGET {
-            match terminal.wait_for_resize() {
-                Ok(size) => {
-                    let size = size_from_host(size).map_err(AppError::msg)?;
-                    app.apply_resize(size)?;
-                }
-                Err(err) if err.kind() == ErrorKind::WouldBlock => break,
-                Err(err) => return Err(AppError::io(err)),
-            }
-        }
+        // `size()` drains the resize-signal pipe itself; a burst is collapsed
+        // to one query because only the latest size matters.
+        let size = driver.size().map_err(AppError::io)?;
+        let size = size_from_host(size).map_err(AppError::msg)?;
+        app.apply_resize(size)?;
 
-        draw_selected(terminal, app)?;
+        draw_selected(driver, app)?;
 
         if app.pending.is_none() {
-            let inputs = drain_host_inputs(|| terminal.read_input(), INPUT_DRAIN_BUDGET)?;
-            for input in inputs {
-                app.handle_input(input)?;
-                if app.quit {
-                    return Ok(());
-                }
+            drain_host_inputs(driver, decoder, INPUT_DRAIN_BUDGET)?;
+            deliver_host_inputs(decoder, app)?;
+            if app.quit {
+                return Ok(());
             }
         }
 
@@ -813,25 +837,18 @@ fn run_loop(
         for outcome in poll_once(&entries, timeout)? {
             match outcome {
                 PollOutcome::HostInput => {
-                    let inputs = drain_host_inputs(|| terminal.read_input(), INPUT_DRAIN_BUDGET)?;
-                    for input in inputs {
-                        app.handle_input(input)?;
-                        if app.quit {
-                            return Ok(());
-                        }
+                    drain_host_inputs(driver, decoder, INPUT_DRAIN_BUDGET)?;
+                    deliver_host_inputs(decoder, app)?;
+                    if app.quit {
+                        return Ok(());
                     }
                 }
                 PollOutcome::HostResize => {
-                    // Called after POLLIN; the signal pipe is non-blocking, so
-                    // a stale WouldBlock is simply skipped.
-                    match terminal.wait_for_resize() {
-                        Ok(size) => {
-                            let size = size_from_host(size).map_err(AppError::msg)?;
-                            app.apply_resize(size)?;
-                        }
-                        Err(err) if err.kind() == ErrorKind::WouldBlock => {}
-                        Err(err) => return Err(AppError::io(err)),
-                    }
+                    // The signal fd was reported readable, so `size()` re-queries
+                    // the terminal instead of returning the cached value.
+                    let size = driver.size().map_err(AppError::io)?;
+                    let size = size_from_host(size).map_err(AppError::msg)?;
+                    app.apply_resize(size)?;
                 }
                 PollOutcome::SessionReady(slot) => ready.push(slot),
                 PollOutcome::HostError(message) => return Err(AppError::msg(message)),
@@ -846,15 +863,33 @@ fn run_loop(
     }
 }
 
+/// Hands every complete decoded input to the application.
+fn deliver_host_inputs(decoder: &mut tuinix::InputDecoder, app: &mut App) -> Result<(), AppError> {
+    for input in collect_inputs(decoder, INPUT_DRAIN_BUDGET) {
+        app.handle_input(input)?;
+        if app.quit {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
 /// Drives the example: setup, loop, and a single explicit shutdown pass.
 fn run() -> Result<(), AppError> {
-    let mut terminal = tuinix::Terminal::new().map_err(AppError::io)?;
-    let host_input_fd = terminal.set_input_nonblocking().map_err(AppError::io)?;
-    let host_signal_fd = terminal.set_signal_nonblocking().map_err(AppError::io)?;
-    let size = size_from_host(terminal.size()).map_err(AppError::msg)?;
+    let mut driver = TerminalDriver::new().map_err(AppError::io)?;
+    let host_input_fd = driver.input_fd();
+    let host_signal_fd = driver.signal_fd();
+    let mut decoder = tuinix::InputDecoder::new();
+    let size = size_from_host(driver.size().map_err(AppError::io)?).map_err(AppError::msg)?;
     let mut app = App::spawn(size)?;
 
-    let primary = run_loop(&mut terminal, &mut app, host_input_fd, host_signal_fd);
+    let primary = run_loop(
+        &mut driver,
+        &mut decoder,
+        &mut app,
+        host_input_fd,
+        host_signal_fd,
+    );
     // Shutdown completes even when the loop failed, and holds both results.
     let shutdown = app.shutdown_all();
     match (primary, shutdown) {
@@ -956,6 +991,25 @@ mod tests {
         tuinix::KeyInput { ctrl, alt, code }
     }
 
+    /// An empty [`App`] for tests that only exercise pure helpers.
+    fn empty_app() -> App {
+        App {
+            sessions: [None, None],
+            selected: 0,
+            pending: None,
+            next_process_poll: Instant::now(),
+            pump_cursor: 0,
+            quit: false,
+            drawn_revision: None,
+            prev_frame: None,
+        }
+    }
+
+    /// The xterm-256 palette entry for a `termnix` indexed color.
+    fn host_palette(index: u8) -> Option<tuinix::Color> {
+        to_host_color(termnix::Color::Indexed(index))
+    }
+
     #[test]
     fn supported_keys_are_converted_with_modifiers() {
         let supported = [
@@ -995,23 +1049,15 @@ mod tests {
         assert!(event.is_none());
         let event = key_event_from_host(key(false, false, tuinix::KeyCode::BackTab));
         assert!(event.is_none());
-        let mouse = tuinix::TerminalInput::Mouse(tuinix::MouseInput {
-            event: tuinix::MouseEvent::LeftPress,
-            position: tuinix::TerminalPosition::ZERO,
+        let mouse = tuinix::Input::Mouse(tuinix::MouseInput {
+            kind: tuinix::MouseInputKind::LeftPress,
+            position: tuinix::Position::ORIGIN,
             ctrl: false,
             alt: false,
             shift: false,
         });
-        assert!(matches!(mouse, tuinix::TerminalInput::Mouse(_)));
-        let mut app = App {
-            sessions: [None, None],
-            selected: 0,
-            pending: None,
-            next_process_poll: Instant::now(),
-            pump_cursor: 0,
-            quit: false,
-            drawn_revision: None,
-        };
+        assert!(matches!(mouse, tuinix::Input::Mouse(_)));
+        let mut app = empty_app();
         app.handle_input(mouse).expect("mouse is dropped");
         assert!(!app.quit);
     }
@@ -1038,75 +1084,52 @@ mod tests {
 
     #[test]
     fn size_conversion_rejects_zero_and_u16_overflow() {
-        assert!(size_from_host(tuinix::TerminalSize::rows_cols(0, 80)).is_err());
-        assert!(size_from_host(tuinix::TerminalSize::rows_cols(24, 0)).is_err());
+        assert!(size_from_host(tuinix::Size { rows: 0, cols: 80 }).is_err());
+        assert!(size_from_host(tuinix::Size { rows: 24, cols: 0 }).is_err());
         assert!(
-            size_from_host(tuinix::TerminalSize::rows_cols(24, u16::MAX as usize + 1)).is_err()
+            size_from_host(tuinix::Size {
+                rows: 24,
+                cols: u16::MAX as usize + 1
+            })
+            .is_err()
         );
-        let size =
-            size_from_host(tuinix::TerminalSize::rows_cols(24, u16::MAX as usize)).expect("max");
+        let size = size_from_host(tuinix::Size {
+            rows: 24,
+            cols: u16::MAX as usize,
+        })
+        .expect("max");
         assert_eq!(size.cols.get(), u16::MAX);
     }
 
     #[test]
-    fn cursor_conversion_validates_bounds() {
-        let size = termnix::Size::new(24, 80).expect("size");
-        let origin = cursor_from_host(tuinix::TerminalPosition::ZERO, size).expect("origin");
-        assert_eq!(origin, termnix::Position { row: 0, col: 0 });
-        let last = cursor_from_host(tuinix::TerminalPosition::row_col(23, 79), size).expect("last");
-        assert_eq!(last, termnix::Position { row: 23, col: 79 });
-        assert!(cursor_from_host(tuinix::TerminalPosition::row_col(24, 0), size).is_err());
-        assert!(cursor_from_host(tuinix::TerminalPosition::row_col(0, 80), size).is_err());
-        assert!(
-            cursor_from_host(
-                tuinix::TerminalPosition::row_col(u16::MAX as usize, 0),
-                size
-            )
-            .is_err()
+    fn position_conversion_is_total() {
+        assert_eq!(
+            position_to_host(termnix::Position { row: 0, col: 0 }),
+            tuinix::Position::ORIGIN
+        );
+        assert_eq!(
+            position_to_host(termnix::Position { row: 23, col: 79 }),
+            tuinix::Position { row: 23, col: 79 }
         );
     }
 
     #[test]
     fn color_and_style_conversion() {
-        assert_eq!(to_terminal_color(termnix::Color::Default), None);
+        assert_eq!(to_host_color(termnix::Color::Default), None);
         assert_eq!(
-            to_terminal_color(termnix::Color::Rgb(1, 2, 3)),
-            Some(tuinix::TerminalColor::new(1, 2, 3))
+            to_host_color(termnix::Color::Rgb(1, 2, 3)),
+            Some(tuinix::Color::new(1, 2, 3))
         );
-        assert_eq!(
-            to_terminal_color(termnix::Color::Indexed(0)),
-            Some(tuinix::TerminalColor::BLACK)
-        );
-        assert_eq!(
-            to_terminal_color(termnix::Color::Indexed(15)),
-            Some(tuinix::TerminalColor::new(255, 255, 255))
-        );
-        assert_eq!(
-            to_terminal_color(termnix::Color::Indexed(16)),
-            Some(tuinix::TerminalColor::new(0, 0, 0))
-        );
-        assert_eq!(
-            to_terminal_color(termnix::Color::Indexed(21)),
-            Some(tuinix::TerminalColor::new(0, 0, 255))
-        );
-        assert_eq!(
-            to_terminal_color(termnix::Color::Indexed(196)),
-            Some(tuinix::TerminalColor::new(255, 0, 0))
-        );
-        assert_eq!(
-            to_terminal_color(termnix::Color::Indexed(231)),
-            Some(tuinix::TerminalColor::new(255, 255, 255))
-        );
-        assert_eq!(
-            to_terminal_color(termnix::Color::Indexed(232)),
-            Some(tuinix::TerminalColor::new(8, 8, 8))
-        );
-        assert_eq!(
-            to_terminal_color(termnix::Color::Indexed(255)),
-            Some(tuinix::TerminalColor::new(238, 238, 238))
-        );
+        assert_eq!(host_palette(0), Some(tuinix::Color::BLACK));
+        assert_eq!(host_palette(15), Some(tuinix::Color::new(255, 255, 255)));
+        assert_eq!(host_palette(16), Some(tuinix::Color::new(0, 0, 0)));
+        assert_eq!(host_palette(21), Some(tuinix::Color::new(0, 0, 255)));
+        assert_eq!(host_palette(196), Some(tuinix::Color::new(255, 0, 0)));
+        assert_eq!(host_palette(231), Some(tuinix::Color::new(255, 255, 255)));
+        assert_eq!(host_palette(232), Some(tuinix::Color::new(8, 8, 8)));
+        assert_eq!(host_palette(255), Some(tuinix::Color::new(238, 238, 238)));
 
-        let style = to_terminal_style(termnix::Style {
+        let style = to_host_style(termnix::Style {
             foreground: termnix::Color::Indexed(1),
             background: termnix::Color::Rgb(10, 20, 30),
             bold: true,
@@ -1118,11 +1141,14 @@ mod tests {
         assert!(style.italic);
         assert!(style.underline);
         assert!(style.reverse);
-        assert_eq!(style.fg_color, Some(tuinix::TerminalColor::new(205, 0, 0)));
-        assert_eq!(style.bg_color, Some(tuinix::TerminalColor::new(10, 20, 30)));
+        assert_eq!(style.fg_color, Some(tuinix::Color::new(205, 0, 0)));
+        assert_eq!(style.bg_color, Some(tuinix::Color::new(10, 20, 30)));
+        assert_eq!(style.blink, false, "tuinix-only attributes stay off");
+        assert_eq!(style.dim, false);
+        assert_eq!(style.strikethrough, false);
 
-        let plain = to_terminal_style(termnix::Style::default());
-        assert_eq!(plain, tuinix::TerminalStyle::new());
+        let plain = to_host_style(termnix::Style::default());
+        assert_eq!(plain, tuinix::Style::new());
     }
 
     #[test]
@@ -1170,17 +1196,41 @@ mod tests {
             cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,
         };
-        let mut frame = tuinix::TerminalFrame::with_char_width_estimator(
-            tuinix::TerminalSize::rows_cols(2, 6),
-            CellWidthEstimator,
-        );
+        let mut frame = Frame::new(tuinix::Size { rows: 2, cols: 6 });
         write_grid(&mut frame, &grid).expect("write");
         assert_eq!(
-            frame.cursor().row,
+            frame.next_push_position().row,
             2,
             "explicit newline terminates each row"
         );
-        assert_eq!(frame.cursor().col, 0);
+        assert_eq!(frame.next_push_position().col, 0);
+
+        let written = frame
+            .chars()
+            .filter(|(_, c)| !c.is_blank())
+            .map(|(_, c)| c.value())
+            .collect::<String>();
+        assert_eq!(written, "あ", "the wide char is stored once, not twice");
+    }
+
+    #[test]
+    fn write_grid_reports_a_clipped_cell() {
+        // Five 2-column cells cannot fit in a 6-column row: the grid and the
+        // frame disagree, which `write_grid` reports instead of truncating.
+        let wide = termnix::Cell {
+            ch: 'あ',
+            width: 2,
+            style: termnix::Style::default(),
+        };
+        let grid = Projection {
+            size: termnix::Size::new(1, 6).expect("size"),
+            rows: vec![vec![wide; 6]],
+            cursor: termnix::Position { row: 0, col: 0 },
+            cursor_visible: true,
+        };
+        let mut frame = Frame::new(tuinix::Size { rows: 1, cols: 6 });
+        let err = write_grid(&mut frame, &grid).expect_err("clipped cell");
+        assert!(err.contains("clipped"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1270,83 +1320,53 @@ mod tests {
     }
 
     #[test]
-    fn host_input_drain_classifies_ok_none_would_block_and_budget() {
-        let mut count = 0;
-        let inputs = drain_host_inputs(
-            || {
-                count += 1;
-                match count {
-                    1 => Ok(Some(tuinix::TerminalInput::Key(key(
-                        false,
-                        false,
-                        tuinix::KeyCode::Char('a'),
-                    )))),
-                    2 => Ok(None),
-                    _ => panic!("must stop after Ok(None)"),
-                }
-            },
-            10,
-        )
-        .expect("drain");
+    fn collect_inputs_stops_at_budget_and_incomplete_escapes() {
+        let mut decoder = tuinix::InputDecoder::new();
+        assert!(collect_inputs(&mut decoder, 10).is_empty());
+
+        // Three complete keys, then an unterminated sequence.
+        decoder.feed(b"abc\x1b");
+        let inputs = collect_inputs(&mut decoder, 2);
+        assert_eq!(inputs.len(), 2, "budget stops before the third input");
+        let inputs = collect_inputs(&mut decoder, 10);
         assert_eq!(inputs.len(), 1);
+        assert!(
+            decoder.has_uncommitted_escape(),
+            "a lone ESC is held, not decoded"
+        );
+        let stray = collect_inputs(&mut decoder, 10);
+        assert!(stray.is_empty(), "held ESC must not decode: {stray:?}");
 
-        let inputs = drain_host_inputs(|| Err(io::Error::new(ErrorKind::WouldBlock, "empty")), 10)
-            .expect("drain");
-        assert!(inputs.is_empty());
-
-        let mut called = 0;
-        let inputs = drain_host_inputs(
-            || {
-                called += 1;
-                Ok(Some(tuinix::TerminalInput::Key(key(
-                    false,
-                    false,
-                    tuinix::KeyCode::Char('a'),
-                ))))
-            },
-            3,
-        )
-        .expect("drain");
-        assert_eq!(inputs.len(), 3);
-        assert_eq!(called, 3, "budget stops before the next read");
-
-        let err = drain_host_inputs(
-            || Err(io::Error::new(ErrorKind::UnexpectedEof, "closed")),
-            10,
-        )
-        .expect_err("EOF is fatal");
-        assert!(err.message.contains("input closed"));
+        // A sequence split across two feeds is parsed exactly once.
+        decoder.feed(b"[");
+        assert!(collect_inputs(&mut decoder, 10).is_empty());
+        decoder.feed(b"A");
+        let inputs = collect_inputs(&mut decoder, 10);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(
+            inputs[0],
+            tuinix::Input::Key(key(false, false, tuinix::KeyCode::Up))
+        );
+        assert!(
+            collect_inputs(&mut decoder, 10).is_empty(),
+            "the sequence is consumed only once"
+        );
     }
 
     #[test]
     fn pending_input_becomes_undeliverable_when_target_gone() {
-        let mut app = App {
-            sessions: [None, None],
-            selected: 0,
-            pending: Some(PendingInput {
-                session: 0,
-                event: termnix::KeyEvent::new(termnix::KeyCode::Char('x')),
-            }),
-            next_process_poll: Instant::now(),
-            pump_cursor: 0,
-            quit: false,
-            drawn_revision: None,
-        };
+        let mut app = empty_app();
+        app.pending = Some(PendingInput {
+            session: 0,
+            event: termnix::KeyEvent::new(termnix::KeyCode::Char('x')),
+        });
         app.deliver_pending().expect("drop is silent");
         assert!(app.pending.is_none());
     }
 
     #[test]
     fn switch_selected_requires_two_live_sessions() {
-        let mut app = App {
-            sessions: [None, None],
-            selected: 0,
-            pending: None,
-            next_process_poll: Instant::now(),
-            pump_cursor: 0,
-            quit: false,
-            drawn_revision: None,
-        };
+        let mut app = empty_app();
         app.switch_selected();
         assert_eq!(app.selected, 0, "no-op with no sessions");
         app.sessions[1] = None;
@@ -1375,11 +1395,11 @@ mod tests {
             cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,
         };
-        let mut frame = tuinix::TerminalFrame::with_char_width_estimator(
-            tuinix::TerminalSize::rows_cols(2, 2),
-            CellWidthEstimator,
-        );
+        let mut frame = Frame::new(tuinix::Size { rows: 2, cols: 2 });
         write_grid(&mut frame, &grid).expect("write");
-        assert_eq!(frame.cursor(), tuinix::TerminalPosition::row_col(2, 0));
+        assert_eq!(
+            frame.next_push_position(),
+            tuinix::Position { row: 2, col: 0 }
+        );
     }
 }
