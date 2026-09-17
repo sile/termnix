@@ -11,13 +11,15 @@ use crate::terminal_types::{Cell, Position, Style, TerminalModes};
 /// One physical row saved into scrollback, oldest-first.
 ///
 /// Cells are owned in left-to-right order and are never reflowed by later
-/// resizes.
+/// resizes, unlike the visible rows returned by
+/// [`TerminalState::rows()`](crate::TerminalState::rows), which are re-laid out
+/// on resize.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TerminalLine {
+pub struct ScrollbackLine {
     cells: Vec<Cell>,
 }
 
-impl TerminalLine {
+impl ScrollbackLine {
     pub(crate) fn new(cells: Vec<Cell>) -> Self {
         Self { cells }
     }
@@ -51,7 +53,7 @@ pub struct TerminalSnapshot {
     style: Style,
     title: String,
     on_alternate: bool,
-    scrollback: Vec<TerminalLine>,
+    scrollback: Vec<ScrollbackLine>,
     revision: u64,
 }
 
@@ -87,7 +89,7 @@ impl TerminalSnapshot {
         style: Style,
         title: String,
         on_alternate: bool,
-        scrollback: Vec<TerminalLine>,
+        scrollback: Vec<ScrollbackLine>,
         revision: u64,
     ) -> Self {
         Self {
@@ -129,8 +131,6 @@ impl TerminalSnapshot {
     ///
     /// The number of rows equals [`Size::rows`](crate::size::Size::rows) and
     /// every slice has exactly [`Size::cols`](crate::size::Size::cols) cells.
-    /// A row slice keeps the width it had at snapshot time and is never
-    /// reflowed by later resizes.
     pub fn rows(&self) -> impl Iterator<Item = &[Cell]> {
         let cols = self.size.cols.get() as usize;
         self.cells.chunks(cols)
@@ -172,7 +172,7 @@ impl TerminalSnapshot {
     }
 
     /// Returns the captured primary-derived scrollback, oldest-first.
-    pub fn scrollback(&self) -> &[TerminalLine] {
+    pub fn scrollback(&self) -> &[ScrollbackLine] {
         &self.scrollback
     }
 }

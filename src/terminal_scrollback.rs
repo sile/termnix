@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use crate::snapshot::TerminalLine;
+use crate::snapshot::ScrollbackLine;
 
 /// Removes the oldest complete lines until both limits hold.
 ///
@@ -12,7 +12,7 @@ use crate::snapshot::TerminalLine;
 /// single newest line alone exceeds `max_cells`, nothing can be retained and
 /// the history ends empty.
 pub(crate) fn trim_scrollback(
-    scrollback: &mut VecDeque<TerminalLine>,
+    scrollback: &mut VecDeque<ScrollbackLine>,
     cells: &mut usize,
     max_lines: usize,
     max_cells: usize,
@@ -32,8 +32,8 @@ mod tests {
     use super::*;
     use crate::terminal_types::{Cell, Style};
 
-    fn line(cells: usize, ch: char) -> TerminalLine {
-        TerminalLine::new(vec![
+    fn line(cells: usize, ch: char) -> ScrollbackLine {
+        ScrollbackLine::new(vec![
             Cell {
                 ch,
                 width: 1,
@@ -43,11 +43,11 @@ mod tests {
         ])
     }
 
-    fn lines(chars: &[char]) -> VecDeque<TerminalLine> {
+    fn lines(chars: &[char]) -> VecDeque<ScrollbackLine> {
         chars.iter().map(|ch| line(4, *ch)).collect()
     }
 
-    fn kept_chars(sb: &VecDeque<TerminalLine>) -> Vec<char> {
+    fn kept_chars(sb: &VecDeque<ScrollbackLine>) -> Vec<char> {
         sb.iter().map(|l| l.cells()[0].ch).collect()
     }
 

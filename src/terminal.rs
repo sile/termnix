@@ -42,7 +42,7 @@ use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 
 use crate::size::Size;
-use crate::snapshot::{TerminalLine, TerminalSnapshot};
+use crate::snapshot::{ScrollbackLine, TerminalSnapshot};
 use crate::terminal_buffer::Screen;
 use crate::terminal_types::SavedCursor;
 
@@ -62,7 +62,7 @@ pub struct TerminalState {
     pub(crate) scroll_top: u16,
     pub(crate) scroll_bottom: u16,
     pub(crate) actions: Vec<TerminalAction>,
-    pub(crate) scrollback: VecDeque<TerminalLine>,
+    pub(crate) scrollback: VecDeque<ScrollbackLine>,
     pub(crate) scrollback_cells: usize,
     pub(crate) revision: u64,
     pub(crate) last_visible: u64,
@@ -356,7 +356,7 @@ impl TerminalState {
         let displaced = self.active_mut().scroll_up(count, top, bottom, style);
         if full_screen && !self.on_alternate {
             for row in displaced {
-                let line = TerminalLine::new(row);
+                let line = ScrollbackLine::new(row);
                 self.scrollback_cells = self.scrollback_cells.saturating_add(line.len());
                 self.scrollback.push_back(line);
             }

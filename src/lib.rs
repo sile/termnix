@@ -26,7 +26,7 @@ pub use input::{Input, KeyCode, KeyEvent, Modifiers, MouseButton};
 pub use pty::SignalOutcome;
 pub use session::{Interests, PumpBudget, Session, SessionMetrics, SessionStatus};
 pub use size::Size;
-pub use snapshot::{TerminalLine, TerminalSnapshot};
+pub use snapshot::{ScrollbackLine, TerminalSnapshot};
 pub use terminal::{
     Cell, Color, MouseReporting, Position, Style, TerminalAction, TerminalModes, TerminalState,
 };

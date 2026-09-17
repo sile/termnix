@@ -474,7 +474,7 @@ fn text_at(snap: &termnix::TerminalSnapshot, row: u16) -> String {
     out.trim_end().to_string()
 }
 
-fn line_text(line: &termnix::TerminalLine) -> String {
+fn line_text(line: &termnix::ScrollbackLine) -> String {
     let mut out = String::new();
     for cell in line.cells() {
         if cell.width == 0 {
