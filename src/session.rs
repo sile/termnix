@@ -1,10 +1,38 @@
 //! Single PTY-backed terminal session with runtime-free I/O.
 //!
 //! [`Session`] owns one PTY-backed terminal session. The caller drives it
-//! from its own poll loop: read [`Session::fd()`] and [`Session::interests()`],
-//! call [`Session::pump_io()`] whenever the fd is ready or after any call that
-//! changes the session, and repeat while [`Session::needs_pump()`] reports
-//! that more work is available without waiting for a new readiness edge.
+//! from its own poll loop:
+//!
+//! ```no_run
+//! # fn main() -> std::io::Result<()> {
+//! # let mut session: termnix::Session = unimplemented!();
+//! loop {
+//!     // 1. Run everything that can be done without a new readiness edge.
+//!     //    An edge-triggered loop must drain this before blocking, or the
+//!     //    poll can miss the edge that a later pump would have consumed.
+//!     while session.needs_pump() {
+//!         session.pump_io(termnix::PumpBudget::default())?;
+//!     }
+//!     // 2. Nothing more is possible without readiness, so read the
+//!     //    registration and wait. `interests` is re-read every round
+//!     //    because it changes as the write queue drains and decoding
+//!     //    resumes.
+//!     let interests = session.interests();
+//!     if session.fd().is_none() {
+//!         break;
+//!     }
+//! #   let _ = interests;
+//!     // 3. poll(...) on session.fd() for interests, then loop.
+//! #   break;
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Step 1 must come first: `interests()` reports what blocking would
+//! usefully wait for, not what `pump_io` can do right now. Waiting while
+//! `needs_pump()` is still true can hang, because the session has work that
+//! produces no further readiness edge.
 //!
 //! The session never owns a poll loop and takes no readiness flags: the fd is
 //! non-blocking, so `pump_io` learns what is possible from the `WouldBlock`
@@ -44,9 +72,11 @@ use crate::{
 ///
 /// The emulator answers a CPR (cursor position report) request with
 /// `ESC [ <row> ; <col> R`. Both numbers are at most five digits because the
-/// grid is `u16` sized, so the longest reply is `ESC [ 65536 ; 65536 R`,
-/// which is 14 bytes. A single decode unit must produce at most this many
-/// reply bytes; the invariant is pinned by tests.
+/// grid is `u16` sized, so the longest reply is `ESC [ 65535 ; 65535 R`,
+/// which is 14 bytes. (Five digits is what matters for the length: the grid
+/// cannot report 65536, and widening the type would not change the bound.) A
+/// single decode unit must produce at most this many reply bytes; the
+/// invariant is pinned by tests.
 const MAX_PENDING_REPLY_BYTES: usize = 14;
 
 /// Maximum raw bytes held between reading from the PTY and decoding.
@@ -82,7 +112,11 @@ impl PumpBudget {
     /// A ceiling allowing at most `bytes` bytes and `syscalls` syscalls.
     ///
     /// A zero in either field makes every `pump_io` stop immediately, which
-    /// reports an exhausted budget without doing work.
+    /// reports an exhausted budget without doing work. That is not an error:
+    /// the call returns `Ok(())`, increments
+    /// [`SessionCounters::pump_budget_exhaustions`], and leaves
+    /// [`Session::needs_pump()`] true for any work still pending. It is the
+    /// intended way to observe budget exhaustion in a small fixture.
     pub const fn new(bytes: usize, syscalls: usize) -> Self {
         Self { bytes, syscalls }
     }
@@ -297,10 +331,11 @@ impl Pty {
 /// buffer, an unbounded write queue, and the child-process lifecycle, but
 /// never owns a poll loop. Register [`Session::fd()`] with
 /// [`Session::interests()`], call [`Session::pump_io()`] when the fd is ready (or
-/// after any state change), and repeat while [`Session::needs_pump()`] returns
-/// `true` before waiting in the poll loop. With several sessions, treat each
-/// `pump_io` as one quantum and rotate among runnable sessions; pass a
-/// [`PumpBudget`] to bound how much work one quantum does.
+/// after any state change), and drain [`Session::needs_pump()`] before
+/// blocking in the poll loop; the module documentation shows the canonical
+/// loop. With several sessions, treat each `pump_io` as one quantum and rotate
+/// among runnable sessions; pass a [`PumpBudget`] to bound how much work one
+/// quantum does.
 ///
 /// # Drop behavior
 ///
@@ -441,6 +476,18 @@ impl Session {
     ///
     /// Pass [`PumpBudget::default()`] for the customary 64 KiB / 64 syscall
     /// ceiling.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error surfaced by the underlying `read` or `write`. Note
+    /// that a PTY error that the caller did not cause is
+    /// [`ErrorKind::ReadOnlyFilesystem`] (`EIO`), reported by the kernel when
+    /// the last slave fd closes. This is the normal way for the master side to
+    /// learn that the child side is gone, and it can arrive before or after
+    /// [`Session::try_wait()`] observes the exit. A
+    /// [`ErrorKind::InvalidData`] error means the emulator produced a reply
+    /// longer than its internal bound, which is a library invariant violation
+    /// rather than a recoverable condition.
     pub fn pump_io(&mut self, budget: PumpBudget) -> io::Result<()> {
         if self.phase == Phase::Closing || self.phase == Phase::Reaped {
             return Ok(());
@@ -561,6 +608,20 @@ impl Session {
                 other => other.expect("pty is present while closing"),
             });
         }
+    }
+
+    /// Returns the cached exit status without touching the child.
+    ///
+    /// `None` until the child has been reaped, whether by [`Session::try_wait()`],
+    /// [`Session::wait()`], [`Session::shutdown()`], or a [`Drop`]. Unlike
+    /// `try_wait`, this performs no syscall and cannot fail, so it is the way
+    /// to ask "has the child already exited?" from code that must not block
+    /// or reap, for example while driving other sessions.
+    ///
+    /// This is the exit of the direct child only. It says nothing about PTY
+    /// I/O, which continues until EOF independently of the child's state.
+    pub fn exit_status(&self) -> Option<ExitStatus> {
+        self.exit_status
     }
 
     /// Observes and reaps the child without blocking.
@@ -690,7 +751,13 @@ impl Session {
 
     /// Cleans up this session, force-killing and reaping the direct child.
     ///
-    /// This consumes the session and may block while reaping.
+    /// This consumes the session and may block while reaping. Both this and
+    /// [`Drop`] can block for as long as the child takes to die, so a session
+    /// that shares a poll loop with others must be taken out of the rotation
+    /// first; blocking here would stall every other session in that loop.
+    /// Prefer [`Session::terminate()`] (SIGTERM) or [`Session::force_terminate()`]
+    /// (SIGKILL) to request the exit without blocking, then reap with
+    /// `try_wait` from the loop.
     pub fn shutdown(mut self) -> io::Result<ExitStatus> {
         if let Some(status) = self.exit_status.take() {
             // Child already reaped; still close the master if it remains.

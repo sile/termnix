@@ -317,6 +317,18 @@ impl TerminalState {
     /// Existing contents are copied into the overlapping region. Broken wide
     /// characters at the new right edge are cleared. The cursor and scroll
     /// region are clamped into the new bounds.
+    ///
+    /// The visible grid reflows to the new size; the scrollback does not. Each
+    /// retained [`ScrollbackLine`] keeps the width it had when it was
+    /// scrolled off, so after a resize [`TerminalState::rows()`] and
+    /// [`TerminalState::scrollback_lines()`] can have different column counts.
+    /// Code that stitches them together should track the width per line or
+    /// clear the scrollback via [`TerminalState::trim_scrollback()`] when a
+    /// change of size makes mixed widths a problem.
+    ///
+    /// Changing the visible size here is independent of the kernel's view of
+    /// the window: the PTY's `TIOCSWINSZ` is the caller's to set, and the
+    /// child sees a `SIGWINCH` only when the caller arranges it.
     pub fn resize(&mut self, size: Size) {
         if size == self.size {
             return;
