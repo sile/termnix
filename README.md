@@ -14,6 +14,21 @@ driven from the caller's own poll loop. What it leaves to the caller is just
 as much a part of the design. Multiplexing several sessions is one use of
 these primitives, not the scope of the crate.
 
+Nothing runs behind the caller's back. There is one poll loop, the caller's
+own; no event loop, no thread, no async runtime, and no buffering policy the
+caller cannot see or override. Each pump call does a bounded amount of work,
+and what it leaves undone is readable from the session itself, so fairness,
+backpressure, and redraw timing stay decisions the caller makes with full
+information.
+
+That is what makes the crate fit where a heavier terminal library would not. A
+TUI that owns its rendering, a test harness that drives interactive commands, a
+scraper that reads progress out of a program that insists on a terminal, a
+recorder that captures what a command would have displayed, or a multiplexer
+that interleaves several sessions in one loop. The emulator can be used on its
+own, with no child process at all, and the PTY machinery on its own, with no
+screen.
+
 ## What it does not own
 
 The boundaries are the design:
