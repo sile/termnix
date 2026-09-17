@@ -15,7 +15,6 @@ mod input;
 mod pty;
 mod session;
 mod size;
-mod snapshot;
 mod terminal;
 mod terminal_buffer;
 mod terminal_emu;
@@ -26,9 +25,9 @@ pub use input::{Input, KeyCode, KeyEvent, Modifiers, MouseButton};
 pub use pty::SignalOutcome;
 pub use session::{Interests, PumpBudget, Session, SessionCounters, SessionStatus};
 pub use size::Size;
-pub use snapshot::{ScrollbackLine, TerminalSnapshot};
 pub use terminal::{
-    Cell, Color, MouseReporting, Position, Style, TerminalAction, TerminalModes, TerminalState,
+    Cell, Color, MouseReporting, Position, ScrollbackLine, Style, TerminalAction, TerminalModes,
+    TerminalState,
 };
 
 /// Compiles the code example in `README.md` as a doctest so it cannot drift

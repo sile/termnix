@@ -628,8 +628,8 @@ impl Session {
     ///
     /// Available in every phase, including after the child has been reaped.
     /// The returned reference exposes the live state directly, so a caller
-    /// that keeps the data after the session moves on should call
-    /// [`TerminalState::snapshot()`] for an owned copy.
+    /// that keeps the data after the session moves on should copy what it
+    /// needs out of the state.
     pub fn terminal_state(&self) -> &TerminalState {
         &self.term
     }
@@ -763,7 +763,7 @@ impl Session {
         self.counters.max_scrollback_lines = self
             .counters
             .max_scrollback_lines
-            .max(self.term.scrollback_len());
+            .max(self.term.scrollback().len());
         self.counters.max_scrollback_cells = self
             .counters
             .max_scrollback_cells

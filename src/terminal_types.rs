@@ -1,5 +1,37 @@
 //! Public value types for the terminal emulator.
 
+/// One physical row saved into scrollback, oldest-first.
+///
+/// Cells are owned in left-to-right order and are never reflowed by later
+/// resizes, unlike the visible rows returned by
+/// [`TerminalState::rows()`](crate::TerminalState::rows), which are re-laid out
+/// on resize.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScrollbackLine {
+    cells: Vec<Cell>,
+}
+
+impl ScrollbackLine {
+    pub(crate) fn new(cells: Vec<Cell>) -> Self {
+        Self { cells }
+    }
+
+    /// Returns the row's cells in left-to-right order.
+    pub fn cells(&self) -> &[Cell] {
+        &self.cells
+    }
+
+    /// Returns the number of cells in the line (the row width at save time).
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Returns whether the line has no cells.
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+}
+
 /// Zero-based position on the active screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Position {

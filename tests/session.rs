@@ -17,12 +17,12 @@ fn spawn_session(script: &str) -> termnix::Session {
     .expect("create session")
 }
 
-/// Renders the snapshot's scrollback and visible cells as rows, dropping
+/// Renders the terminal's scrollback and visible cells as rows, dropping
 /// wide-character continuation cells and trailing blanks.
 fn visible_text(session: &termnix::Session) -> String {
-    let snapshot = session.terminal_state().snapshot();
+    let state = session.terminal_state();
     let mut out = String::new();
-    for line in snapshot.scrollback() {
+    for line in state.scrollback().iter() {
         let mut row = String::new();
         for cell in line.cells() {
             if cell.width == 0 {
@@ -33,10 +33,10 @@ fn visible_text(session: &termnix::Session) -> String {
         out.push_str(row.trim_end());
         out.push('\n');
     }
-    for row in 0..snapshot.size().rows.get() {
+    for row in 0..state.size().rows.get() {
         let mut line = String::new();
-        for col in 0..snapshot.size().cols.get() {
-            let cell = snapshot
+        for col in 0..state.size().cols.get() {
+            let cell = state
                 .cell(termnix::Position { row, col })
                 .expect("cell in range");
             if cell.width == 0 {
@@ -588,22 +588,22 @@ fn trim_scrollback_via_session_matches_terminal_state() {
     let mut session =
         spawn_session("for i in $(seq 1 40); do printf 'line-%02d\\n' \"$i\"; done; sleep 0.2");
     pump_until(std::slice::from_mut(&mut session), |sessions| {
-        sessions[0].terminal_state().scrollback_len() >= 10
+        sessions[0].terminal_state().scrollback().len() >= 10
     });
     let before = session.counters().clone();
-    let before_len = session.terminal_state().scrollback_len();
+    let before_len = session.terminal_state().scrollback().len();
     let before_cells = session.terminal_state().scrollback_cells();
     assert!(before_len > 0);
     assert_eq!(before_len, before.max_scrollback_lines);
     assert!(before_cells > 0);
 
     session.trim_scrollback(5, usize::MAX);
-    let after_len = session.terminal_state().scrollback_len();
+    let after_len = session.terminal_state().scrollback().len();
     assert_eq!(after_len, 5);
     // Each retained row keeps its full 80-cell width.
     assert_eq!(session.terminal_state().scrollback_cells(), 5 * 80);
 
     session.trim_scrollback(usize::MAX, 0);
-    assert_eq!(session.terminal_state().scrollback_len(), 0);
+    assert_eq!(session.terminal_state().scrollback().len(), 0);
     assert_eq!(session.terminal_state().scrollback_cells(), 0);
 }

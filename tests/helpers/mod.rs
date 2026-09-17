@@ -37,8 +37,8 @@ pub fn spawn(script: &str, size: Size) -> Session {
     Session::new(&mut command, size).expect("create session")
 }
 
-/// Renders the snapshot as newline-terminated rows with trailing blanks and
-/// wide-character continuation cells removed.
+/// Renders the terminal state as newline-terminated rows with trailing blanks
+/// and wide-character continuation cells removed.
 ///
 /// Retained scrollback is rendered before the visible rows, because a marker
 /// printed early by a chatty child scrolls out of the visible grid and would
@@ -46,12 +46,12 @@ pub fn spawn(script: &str, size: Size) -> Session {
 /// assertions match on it, and timeout diagnostics print it, so a failure
 /// shows what the child actually emitted rather than a screenful of padding.
 pub fn snapshot_text(session: &Session) -> String {
-    let snapshot = session.terminal_state().snapshot();
+    let state = session.terminal_state();
     let mut out = String::new();
-    for line in snapshot.scrollback() {
+    for line in state.scrollback().iter() {
         out.push_str(&render_row(line.cells()));
     }
-    for row in snapshot.rows() {
+    for row in state.rows() {
         out.push_str(&render_row(row));
     }
     out
@@ -62,9 +62,8 @@ pub fn snapshot_text(session: &Session) -> String {
 /// Cheap enough to call inside a wait loop: freshly written output is always on
 /// screen, and scrollback can be thousands of lines long.
 pub fn screen_text(session: &Session) -> String {
-    let snapshot = session.terminal_state().snapshot();
     let mut out = String::new();
-    for row in snapshot.rows() {
+    for row in session.terminal_state().rows() {
         out.push_str(&render_row(row));
     }
     out

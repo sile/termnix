@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use crate::snapshot::ScrollbackLine;
+use crate::terminal_types::ScrollbackLine;
 
 /// Removes the oldest complete lines until both limits hold.
 ///

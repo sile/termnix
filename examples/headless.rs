@@ -99,14 +99,14 @@ fn workflow(session: &mut termnix::Session) -> Result<(), AppError> {
     let mut next_process_poll = Instant::now();
 
     drive_until(session, deadline, &mut next_process_poll, |session| {
-        let rows = visible_rows(session.terminal_state().snapshot());
+        let rows = visible_rows(session.terminal_state());
         Ok(row_contains(&rows, "REPLY_OK") && row_contains(&rows, "READY"))
     })?;
 
     enqueue_payload(session, deadline, &mut next_process_poll)?;
 
     drive_until(session, deadline, &mut next_process_poll, |session| {
-        let rows = visible_rows(session.terminal_state().snapshot());
+        let rows = visible_rows(session.terminal_state());
         Ok(row_contains(&rows, &format!("ECHO:{PAYLOAD}")))
     })?;
 
@@ -124,7 +124,7 @@ fn workflow(session: &mut termnix::Session) -> Result<(), AppError> {
         Ok(exit_status.is_some() && drained)
     })?;
 
-    let rows = visible_rows(session.terminal_state().snapshot());
+    let rows = visible_rows(session.terminal_state());
     if !row_contains(&rows, "REPLY_OK")
         || !row_contains(&rows, "READY")
         || !row_contains(&rows, &format!("ECHO:{PAYLOAD}"))
@@ -303,16 +303,16 @@ fn poll_timeout_ms(deadline: Instant, next_process_poll: Instant) -> i32 {
 }
 
 /// Builds normalized row strings from scrollback and the visible screen.
-fn visible_rows(snapshot: termnix::TerminalSnapshot) -> Vec<String> {
+fn visible_rows(state: &termnix::TerminalState) -> Vec<String> {
     let mut rows = Vec::new();
-    for line in snapshot.scrollback() {
+    for line in state.scrollback().iter() {
         rows.push(normalize_cells(line.cells()));
     }
-    let size = snapshot.size();
+    let size = state.size();
     for row in 0..size.rows.get() {
         let mut cells = Vec::with_capacity(size.cols.get() as usize);
         for col in 0..size.cols.get() {
-            let cell = snapshot
+            let cell = state
                 .cell(termnix::Position { row, col })
                 .expect("cell in range");
             cells.push(cell);
@@ -383,7 +383,7 @@ impl AppError {
     }
 
     fn attach_session(&mut self, session: &termnix::Session) {
-        let rows = visible_rows(session.terminal_state().snapshot());
+        let rows = visible_rows(session.terminal_state());
         self.snapshot = Some(rows.join("\n"));
         self.status = Some(format!("{:?}", session.status()));
     }
@@ -425,7 +425,7 @@ mod tests {
     fn visible_rows_keep_row_boundaries() {
         let mut term = termnix::TerminalState::new(termnix::Size::new(2, 4).expect("size"));
         term.feed(b"ab\r\ncd");
-        let rows = visible_rows(term.snapshot());
+        let rows = visible_rows(&term);
         assert!(rows.iter().any(|row| row == "ab"), "rows={rows:?}");
         assert!(rows.iter().any(|row| row == "cd"), "rows={rows:?}");
     }

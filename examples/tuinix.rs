@@ -9,7 +9,7 @@
 //! [`termnix::Session::pump_io`](termnix::Session::pump_io) calls with
 //! [`termnix::Session::needs_pump`](termnix::Session::needs_pump), keys are converted
 //! and enqueued with caller-side backpressure, and the selected session's
-//! [`termnix::TerminalSnapshot`](termnix::TerminalSnapshot) is projected into a
+//! [`termnix::TerminalState`](termnix::TerminalState) is projected into a
 //! full-screen [`Frame`](tuinix::Frame).
 //!
 //! `tuinix` keeps the pure types ([`Frame`](tuinix::Frame), [`Char`](tuinix::Char),
@@ -121,24 +121,24 @@ struct Projection {
 }
 
 impl Projection {
-    /// Copies a snapshot into an example-local, side-effect-free form.
+    /// Copies a terminal state into an example-local, side-effect-free form.
     ///
-    /// The cursor is validated against the captured size so callers never
+    /// The cursor is validated against the current size so callers never
     /// project an out-of-range position.
-    fn from_snapshot(snapshot: &termnix::TerminalSnapshot) -> Result<Self, String> {
-        let size = snapshot.size();
-        let cursor = snapshot.cursor();
+    fn from_state(state: &termnix::TerminalState) -> Result<Self, String> {
+        let size = state.size();
+        let cursor = state.cursor();
         if cursor.row >= size.rows.get() || cursor.col >= size.cols.get() {
             return Err(format!(
                 "snapshot cursor {cursor:?} is outside the {size:?} grid"
             ));
         }
-        let rows = snapshot.rows().map(|row| row.to_vec()).collect();
+        let rows = state.rows().map(|row| row.to_vec()).collect();
         Ok(Self {
             size,
             rows,
             cursor,
-            cursor_visible: snapshot.modes().cursor_visible,
+            cursor_visible: state.modes().cursor_visible,
         })
     }
 }
@@ -761,7 +761,7 @@ fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
 ///
 /// Rendering is skipped when the session's visible-state revision matches the
 /// last drawn one, so idle polls no longer re-emit the frame or the host
-/// cursor show/hide sequences. The revision is captured from the snapshot so
+/// cursor show/hide sequences. The revision is read from the terminal state so
 /// the recorded value always matches what was actually rendered.
 fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppError> {
     let Some(session) = app.sessions[app.selected].as_ref() else {
@@ -769,12 +769,12 @@ fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppEr
         app.prev_frame = None;
         return Ok(());
     };
-    let snapshot = session.terminal_state().snapshot();
-    let revision = snapshot.revision();
+    let state = session.terminal_state();
+    let revision = state.revision();
     if app.drawn_revision == Some(revision) {
         return Ok(());
     }
-    let projection = Projection::from_snapshot(&snapshot).map_err(AppError::msg)?;
+    let projection = Projection::from_state(state).map_err(AppError::msg)?;
     let frame_size = tuinix::Size {
         rows: usize::from(projection.size.rows.get()),
         cols: usize::from(projection.size.cols.get()),
@@ -1165,7 +1165,7 @@ mod tests {
         let mut terminal = termnix::TerminalState::new(termnix::Size::new(2, 10).expect("size"));
         terminal.feed(b"a\xe6\x97\xa5b\r\ncd");
         terminal.feed(b"\x1b[?25l");
-        let projection = Projection::from_snapshot(&terminal.snapshot()).expect("projection");
+        let projection = Projection::from_state(&terminal).expect("projection");
 
         assert_eq!(projection.size, termnix::Size::new(2, 10).expect("size"));
         assert_eq!(projection.cursor, termnix::Position { row: 1, col: 2 });

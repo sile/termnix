@@ -35,22 +35,21 @@
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
 pub use crate::terminal_types::{
-    Cell, Color, MouseReporting, Position, Style, TerminalAction, TerminalModes,
+    Cell, Color, MouseReporting, Position, ScrollbackLine, Style, TerminalAction, TerminalModes,
 };
 
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 
 use crate::size::Size;
-use crate::snapshot::{ScrollbackLine, TerminalSnapshot};
 use crate::terminal_buffer::Screen;
 use crate::terminal_types::SavedCursor;
 
 /// Primary terminal emulator state (no I/O).
 ///
 /// Feed PTY bytes with [`feed()`](TerminalState::feed), then read the screen
-/// grid through [`rows()`](TerminalState::rows) or take a copy with
-/// [`snapshot()`](TerminalState::snapshot). Query replies are queued as
+/// grid through [`rows()`](TerminalState::rows) and the retained history with
+/// [`scrollback()`](TerminalState::scrollback). Query replies are queued as
 /// [`TerminalAction`] values for the caller to write, so this type never
 /// touches a file descriptor.
 ///
@@ -244,8 +243,8 @@ impl TerminalState {
     /// the current size. Unlike the cells saved into scrollback, the visible
     /// rows are re-laid out by [`TerminalState::resize()`], so slices obtained
     /// before a resize may differ in length from slices obtained after it. The
-    /// slices borrow the live screen; call [`TerminalState::snapshot()`] to keep
-    /// the contents once the state moves on.
+    /// slices borrow the live screen; copy them (for example with
+    /// [`to_vec()`](slice::to_vec)) to keep the contents once the state moves on.
     pub fn rows(&self) -> impl Iterator<Item = &[Cell]> {
         let cols = self.size.cols.get() as usize;
         self.active().cells().chunks(cols)
@@ -281,25 +280,15 @@ impl TerminalState {
         self.pen
     }
 
-    /// Returns an owned copy of the visible state and primary scrollback.
+    /// Returns the retained scrollback lines, oldest-first.
     ///
-    /// No I/O is performed. Callers that want to keep the visible state after
-    /// the state moves on should take a snapshot rather than holding the
-    /// borrow returned by [`TerminalState::rows()`]; retaining several snapshots
-    /// long-term is the caller's concern.
-    pub fn snapshot(&self) -> TerminalSnapshot {
-        let active = self.active();
-        TerminalSnapshot::new(
-            self.size,
-            active.cells().to_vec(),
-            self.cursor,
-            self.modes,
-            self.pen,
-            self.title.clone(),
-            self.on_alternate,
-            self.scrollback.iter().cloned().collect(),
-            self.revision,
-        )
+    /// The lines are borrowed, not copied, and each keeps the width it had
+    /// when it was saved; unlike the visible rows from
+    /// [`TerminalState::rows()`], they are never reflowed by a later resize.
+    /// The deque is exposed directly so callers can index, iterate, or measure
+    /// the history without cloning it.
+    pub fn scrollback(&self) -> &VecDeque<ScrollbackLine> {
+        &self.scrollback
     }
 
     /// Removes the oldest scrollback lines until both limits hold.
@@ -315,11 +304,6 @@ impl TerminalState {
             max_lines,
             max_cells,
         );
-    }
-
-    /// Returns the number of retained scrollback lines.
-    pub fn scrollback_len(&self) -> usize {
-        self.scrollback.len()
     }
 
     /// Returns the number of retained scrollback cells, including blank and

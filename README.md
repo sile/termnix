@@ -106,7 +106,7 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
   `cargo run --quiet --example headless </dev/null`.
 - [`examples/tuinix.rs`](examples/tuinix.rs) runs two sessions behind a host
   terminal built with [`tuinix`](https://crates.io/crates/tuinix), and shows
-  how to bridge a snapshot into a host frame buffer.
+  how to bridge a terminal state into a host frame buffer.
 
 [`Session::counters()`]: https://docs.rs/termnix/latest/termnix/struct.Session.html#method.counters
 [`TerminalState`]: https://docs.rs/termnix/latest/termnix/struct.TerminalState.html

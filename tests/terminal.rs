@@ -1253,16 +1253,25 @@ fn revision_stays_put_without_visible_change() {
 }
 
 #[test]
-fn revision_is_captured_in_snapshot() {
+fn revision_advances_on_visible_change_and_holds_otherwise() {
     let mut t = term(2, 8);
     t.feed(b"hi");
-    let snap = t.snapshot();
-    assert_eq!(snap.revision(), t.revision());
+    let captured = t.revision();
 
-    let captured = snap.revision();
     t.feed(b"\x1b[1;1Hmore");
-    assert_ne!(t.revision(), captured);
-    assert_eq!(snap.revision(), captured);
+    assert_ne!(
+        t.revision(),
+        captured,
+        "a visible change must advance revision"
+    );
+
+    let after_change = t.revision();
+    t.feed(b"");
+    assert_eq!(
+        t.revision(),
+        after_change,
+        "an empty feed must leave revision unchanged"
+    );
 }
 
 #[test]
