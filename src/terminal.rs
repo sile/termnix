@@ -47,6 +47,29 @@ use crate::terminal_buffer::Screen;
 use crate::terminal_types::SavedCursor;
 
 /// Primary terminal emulator state (no I/O).
+///
+/// Feed PTY bytes with [`feed()`](TerminalState::feed), then read the screen
+/// grid through [`rows()`](TerminalState::rows) or take a copy with
+/// [`snapshot()`](TerminalState::snapshot). Query replies are queued as
+/// [`TerminalAction`] values for the caller to write, so this type never
+/// touches a file descriptor.
+///
+/// The supported sequences are:
+///
+/// - **C0**: BEL (ignored), BS, HT, LF/VT/FF, CR
+/// - **ESC**: IND, NEL, RI, DECSC/DECRC, RIS
+/// - **CSI cursor**: CUU/CUD/CUF/CUB, CNL/CPL, CHA/HPA, VPA, CUP/HVP
+/// - **CSI editing**: ICH/DCH/IL/DL/ED/EL/ECH/SU/SD, DECSTBM scroll regions
+/// - **SGR**: bold, italic, underline, reverse, 16/256/24-bit color
+/// - **DEC private modes**: application cursor/keypad, origin, autowrap,
+///   cursor visibility, bracketed paste, mouse reporting (including SGR)
+/// - **Alternate screen**: `?1049`, `?47`, `?1047`
+/// - **OSC 0/2**: window title (stored)
+/// - **Queries**: DSR, CPR, and primary DA, answered with
+///   [`TerminalAction::WritePty`](TerminalAction::WritePty)
+///
+/// Sixel, Kitty graphics, iTerm2 images, and DCS payloads are ignored without
+/// becoming visible text.
 pub struct TerminalState {
     pub(crate) parser: vte::Parser,
     pub(crate) size: Size,
