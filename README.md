@@ -31,34 +31,29 @@ The boundaries are the design:
 
 ## Terminal emulator
 
-The emulator is a pure state machine: feed it PTY bytes, read back the screen
-grid, cursor, modes, and style, and drain query replies as values for the
-caller to write. It never touches a file descriptor.
-
-It covers the cursor, editing, scroll-region, SGR, alternate-screen, and
-DEC-private-mode sequences a real application needs, answers the common
-queries, and ignores what it does not implement (Sixel, Kitty graphics,
-iTerm2 images, DCS payloads) without letting those bytes become visible text.
-See `TerminalState` in the API documentation for the exact list.
+The emulator is a pure state machine. Feed it PTY bytes and read back the
+screen grid, cursor, modes, and style; query replies come back as values for
+the caller to write. It never touches a file descriptor. It covers the cursor,
+editing, SGR, and alternate-screen sequences an application needs, and ignores
+what it does not implement without turning those bytes into visible text. See
+the [`TerminalState`][] API documentation for the exact list.
 
 ## Input and backpressure
 
-Input is raw bytes, a decoded key event, or paste text; enqueuing the latter
-two encodes them with the session's current modes. Application input and
-terminal replies share one FIFO write queue, so replies are never reordered,
-and the queue is unbounded: the session applies no backpressure policy of its
-own. Compare the input size with the pending write bytes in the session metrics
-to decide whether to enqueue, hold, or drop.
+Input is raw bytes, a decoded key event, or paste text. The latter two are
+encoded with the session's current modes. Application input and terminal
+replies share one FIFO write queue, so replies are never reordered. The queue
+is unbounded: the session applies no backpressure policy of its own. Compare
+the pending write bytes in [`SessionMetrics`][] against the input size to
+decide whether to enqueue, hold, or drop.
 
 ## Lifecycle
 
-Child exit and PTY EOF are separate, so the exit status can be observed while
-remaining master-side output is still drained. Exit status, EOF, and teardown
-are independent, so the session exposes them as separate operations. Metrics
-report cumulative counters plus current and maximum values for the read buffer,
-the write queue, and scrollback.
-
-Details for all of the above live in the API documentation.
+Child exit and PTY EOF are tracked separately, so remaining output can still be
+drained after the exit status is observed. Exit status, EOF, and teardown are
+independent operations. [`SessionMetrics`][] reports cumulative counters plus
+current and maximum values for the read buffer, the write queue, and
+scrollback.
 
 ## Example
 
@@ -96,6 +91,5 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
   terminal built with [`tuinix`](https://crates.io/crates/tuinix), and shows
   how to bridge a snapshot into a host frame buffer.
 
-## Roadmap
-
-No planned work is currently tracked.
+[`SessionMetrics`]: https://docs.rs/termnix/latest/termnix/struct.SessionMetrics.html
+[`TerminalState`]: https://docs.rs/termnix/latest/termnix/struct.TerminalState.html
