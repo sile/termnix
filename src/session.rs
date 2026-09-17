@@ -699,8 +699,8 @@ impl Session {
     ///
     /// The reference exposes the live counters directly, and they are never
     /// reset for the lifetime of the session. A caller that keeps the values
-    /// after the session moves on can copy them, since [`SessionCounters`] is
-    /// `Copy`.
+    /// after the session moves on should clone them, as with
+    /// [`Session::terminal_state()`].
     pub fn counters(&self) -> &SessionCounters {
         &self.counters
     }
