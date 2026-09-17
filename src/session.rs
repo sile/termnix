@@ -172,6 +172,8 @@ pub struct SessionMetrics {
     /// Current raw bytes read from the PTY but not yet decoded.
     pub buffered_read_bytes: usize,
     /// Current bytes not yet written to the PTY (input plus reply).
+    ///
+    /// Always equals `pending_input_bytes + pending_reply_bytes`.
     pub pending_write_bytes: usize,
     /// Current unsent application input bytes.
     pub pending_input_bytes: usize,
