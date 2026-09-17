@@ -117,7 +117,7 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
         |sessions| {
             let a = &sessions[0];
             a.status() == SessionStatus::Live
-                && a.pending_bytes().undecoded_read == 0
+                && a.counters().undecoded_read() == 0
                 && !a.needs_pump()
         },
     );

@@ -62,17 +62,15 @@ Input is raw bytes, a decoded key event, or paste text. The latter two are
 encoded with the session's current modes. Application input and terminal
 replies share one FIFO write queue, so replies are never reordered. The queue
 is unbounded: the session applies no backpressure policy of its own. Compare
-the pending write bytes in [`SessionCounters`][] (running totals) or
-[`Session::pending_bytes()`][] (current amounts) against the input size to
-decide whether to enqueue, hold, or drop.
+the unwritten bytes reported by [`Session::counters()`][] against the input
+size to decide whether to enqueue, hold, or drop.
 
 ### Lifecycle
 
 Child exit and PTY EOF are tracked separately, so remaining output can still be
 drained after the exit status is observed. [`Session::counters()`][] reports
-cumulative counters plus maximum values for the read buffer, the write queue,
-and scrollback, while [`Session::pending_bytes()`][] reports how much the
-session currently holds.
+the session's running totals plus peak values, including how many bytes are
+still waiting to be decoded or written.
 
 ## Example
 
@@ -93,7 +91,7 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
     }
 
     // Send a keystroke to the child, holding off if writes are piling up.
-    if session.pending_bytes().unwritten_total < 4096 {
+    if session.counters().unwritten() < 4096 {
         let enter = termnix::KeyEvent::new(termnix::KeyCode::Enter);
         session.enqueue_input(termnix::Input::Key(enter))?;
     }
@@ -110,7 +108,5 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
   terminal built with [`tuinix`](https://crates.io/crates/tuinix), and shows
   how to bridge a snapshot into a host frame buffer.
 
-[`SessionCounters`]: https://docs.rs/termnix/latest/termnix/struct.SessionCounters.html
-[`Session::pending_bytes()`]: https://docs.rs/termnix/latest/termnix/struct.Session.html#method.pending_bytes
 [`Session::counters()`]: https://docs.rs/termnix/latest/termnix/struct.Session.html#method.counters
 [`TerminalState`]: https://docs.rs/termnix/latest/termnix/struct.TerminalState.html

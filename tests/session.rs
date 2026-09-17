@@ -229,7 +229,7 @@ fn pump_io_flushes_input_after_read_would_block() {
         .pump_io(termnix::PumpBudget::default())
         .expect("pump after enter");
     assert_eq!(
-        session.pending_bytes().unwritten_total,
+        session.counters().unwritten(),
         0,
         "Enter must flush even when the prior pump ended on a read WouldBlock"
     );
@@ -306,15 +306,15 @@ fn reply_flood_is_bounded_and_nothing_is_dropped() {
     );
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         let session = &sessions[0];
-        let pending = session.pending_bytes();
+        let counters = session.counters();
         assert!(
-            pending.unwritten_reply <= 14,
+            counters.unwritten_reply() <= 14,
             "pending reply exceeded the internal bound: {}",
-            pending.unwritten_reply
+            counters.unwritten_reply()
         );
         assert_eq!(
-            pending.unwritten_input + pending.unwritten_reply,
-            pending.unwritten_total,
+            counters.unwritten_input() + counters.unwritten_reply(),
+            counters.unwritten(),
             "reply/input split must partition the write queue"
         );
         visible_text(session).contains("GOT:")
@@ -335,29 +335,27 @@ fn reply_flood_is_bounded_and_nothing_is_dropped() {
 }
 
 #[test]
-fn counters_and_pending_bytes_reflect_state() {
+fn counters_reflect_produced_and_consumed_bytes() {
     let mut session =
         spawn_session("stty -echo; while IFS= read -r line; do printf 'X:%s\\n' \"$line\"; done");
     session
         .enqueue_input(termnix::Input::Raw(b"hello\n"))
         .expect("enqueue");
 
-    let before_counters = *session.counters();
-    let before_pending = session.pending_bytes();
+    let before_counters = session.counters().clone();
     assert_eq!(before_counters.input_bytes_enqueued, 6);
-    assert_eq!(before_pending.unwritten_total, 6);
-    assert_eq!(before_pending.unwritten_input, 6);
-    assert_eq!(before_pending.unwritten_reply, 0);
+    assert_eq!(before_counters.unwritten(), 6);
+    assert_eq!(before_counters.unwritten_input(), 6);
+    assert_eq!(before_counters.unwritten_reply(), 0);
     assert!(session.interests().writable, "writable interest missing");
     assert!(session.needs_pump(), "queued input should need a pump");
 
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("X:hello")
     });
-    let after_counters = *session.counters();
-    let after_pending = session.pending_bytes();
-    assert!(after_counters.pty_bytes_written >= 6, "bytes not written");
-    assert_eq!(after_pending.unwritten_total, 0);
+    let after_counters = session.counters().clone();
+    assert!(after_counters.written() >= 6, "bytes not written");
+    assert_eq!(after_counters.unwritten(), 0);
     assert!(!session.interests().writable, "stale writable interest");
     // With nothing queued and the fd drained to WouldBlock, no immediate
     // re-pump is requested.
@@ -592,7 +590,7 @@ fn trim_scrollback_via_session_matches_terminal_state() {
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         sessions[0].terminal_state().scrollback_len() >= 10
     });
-    let before = *session.counters();
+    let before = session.counters().clone();
     let before_len = session.terminal_state().scrollback_len();
     let before_cells = session.terminal_state().scrollback_cells();
     assert!(before_len > 0);

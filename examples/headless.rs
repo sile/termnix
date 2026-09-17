@@ -167,7 +167,7 @@ fn try_enqueue(
 ) -> Result<(), AppError> {
     let modes = session.terminal_state().modes();
     let need = input.byte_len(modes);
-    while session.pending_bytes().unwritten_total.saturating_add(need) > WRITE_SOFT_LIMIT {
+    while session.counters().unwritten().saturating_add(need) > WRITE_SOFT_LIMIT {
         if Instant::now() >= deadline {
             return Err(AppError::timeout(
                 "timed out waiting for write queue room",
