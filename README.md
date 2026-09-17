@@ -16,10 +16,11 @@ these primitives, not the scope of the crate.
 
 ## Why caller-owned I/O
 
-Nothing runs behind the caller's back. There is one poll loop, the caller's
-own. Each pump call does a bounded amount of work, and what it leaves undone is
-readable from the session itself, so fairness, backpressure, and redraw timing
-stay decisions the caller makes with full information.
+Nothing runs behind the caller's back. The caller owns the only poll loop;
+the crate owns no loop of its own. Each pump call does a bounded amount of
+work, and what it leaves undone is readable from the session itself, so
+fairness, backpressure, and redraw timing stay decisions the caller makes with
+full information.
 
 That is what makes the crate fit where a heavier terminal library would not. A
 TUI that owns its rendering, a test harness that drives interactive commands, a
@@ -44,16 +45,18 @@ The boundaries are the design:
   stay with the caller.
 - **No window, pane, or layout concepts.** Those belong to the application.
 
-## Terminal emulator
+## The pieces
+
+### Terminal emulator
 
 The emulator is a pure state machine. Feed it PTY bytes and read back the
 screen grid, cursor, modes, and style; query replies come back as values for
-the caller to write. It never touches a file descriptor. It covers the cursor,
-editing, SGR, and alternate-screen sequences an application needs, and ignores
-what it does not implement without turning those bytes into visible text. See
-the [`TerminalState`][] API documentation for the exact list.
+the caller to write. It never touches a file descriptor. It implements cursor,
+editing, SGR, and alternate-screen sequences, and swallows the sequences it does
+not implement instead of turning them into visible text. See the
+[`TerminalState`][] API documentation for the exact list.
 
-## Input and backpressure
+### Input and backpressure
 
 Input is raw bytes, a decoded key event, or paste text. The latter two are
 encoded with the session's current modes. Application input and terminal
@@ -62,13 +65,12 @@ is unbounded: the session applies no backpressure policy of its own. Compare
 the pending write bytes in [`SessionMetrics`][] against the input size to
 decide whether to enqueue, hold, or drop.
 
-## Lifecycle
+### Lifecycle
 
 Child exit and PTY EOF are tracked separately, so remaining output can still be
-drained after the exit status is observed. Exit status, EOF, and teardown are
-independent operations. [`SessionMetrics`][] reports cumulative counters plus
-current and maximum values for the read buffer, the write queue, and
-scrollback.
+drained after the exit status is observed. [`SessionMetrics`][] reports
+cumulative counters plus current and maximum values for the read buffer, the
+write queue, and scrollback.
 
 ## Example
 
