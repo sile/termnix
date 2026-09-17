@@ -1,111 +1,109 @@
-# termnix
+termnix
+=======
 
-Unix-only terminal session engine for Rust.
+[![Crates.io](https://img.shields.io/crates/v/termnix.svg)](https://crates.io/crates/termnix)
+[![Documentation](https://docs.rs/termnix/badge.svg)](https://docs.rs/termnix)
+[![Actions Status](https://github.com/sile/termnix/workflows/CI/badge.svg)](https://github.com/sile/termnix/actions)
+![License](https://img.shields.io/crates/l/termnix)
 
-`termnix` provides an I/O-free terminal emulator, `Input` for session key /
-paste / raw bytes, and one `Session` per PTY-backed child process (including
-that child's lifecycle), driven from an external event loop without an async
-runtime. Owning and scheduling multiple sessions, as well as window, pane,
-and layout concepts, belong to the calling application. Host terminal raw mode
-and final frame rendering stay with the caller.
+A Unix-only foundation for building terminal multiplexers.
+
+`termnix` provides an I/O-free terminal emulator, logical `Input`, and one
+PTY-backed `Session` per child process, all driven from the caller's event loop
+without an async runtime.
+
+## What it does not own
+
+The boundaries are the design:
+
+- **No event loop.** The caller registers `Session::fd` with the interests from
+  `Session::interests`, and calls `Session::pump_io` when the fd is ready.
+  `termnix` never blocks on a poll.
+- **No async runtime.** The fd is non-blocking; `pump_io` discovers what is
+  possible from its own `WouldBlock` results, which keeps edge-triggered loops
+  correct.
+- **No scheduling policy.** One `pump_io` call is the scheduling quantum. The
+  caller decides how to interleave sessions; the work one call may do is
+  bounded by a caller-supplied `PumpBudget`, so a chatty child cannot starve
+  the others.
+- **No host terminal state.** Raw mode, the alternate screen, and final frame
+  rendering stay with the caller.
+- **No window, pane, or layout concepts.** Those belong to the application.
 
 ## Terminal emulator coverage
 
-`TerminalState` is a state machine: feed PTY bytes, read cells / cursor / modes,
-and drain query replies as `TerminalAction` values. It never writes to a fd.
+`TerminalState` is a state machine: feed PTY bytes, read cells, cursor, and
+modes, and drain query replies as `TerminalAction` values. It never writes to
+a file descriptor.
 
-Supported in the modes milestone:
+- **C0**: BEL (ignored), BS, HT, LF/VT/FF, CR
+- **ESC**: IND, NEL, RI, DECSC/DECRC, RIS
+- **CSI cursor**: CUU/CUD/CUF/CUB, CNL/CPL, CHA/HPA, VPA, CUP/HVP
+- **CSI editing**: ICH/DCH/IL/DL/ED/EL/ECH/SU/SD, DECSTBM scroll regions
+- **SGR**: bold, italic, underline, reverse, 16/256/24-bit color
+- **DEC private modes**: application cursor/keypad, origin, autowrap, cursor
+  visibility, bracketed paste, mouse reporting (including SGR)
+- **Alternate screen**: `?1049`, `?47`, `?1047`
+- **OSC 0/2**: window title (stored)
+- **Queries**: DSR, CPR, and primary DA, answered through
+  `TerminalAction::WritePty`
 
-- C0: BEL (ignored), BS, HT, LF/VT/FF, CR
-- ESC: IND, NEL, RI, DECSC/DECRC, RIS
-- CSI cursor motion and addressing (CUU/CUD/CUF/CUB, CNL/CPL, CHA/HPA, VPA, CUP/HVP)
-- CSI editing (ICH/DCH/IL/DL/ED/EL/ECH/SU/SD) and DECSTBM scroll regions
-- SGR: bold, italic, underline, reverse, 16-color, 256-color, 24-bit color
-- DEC private modes retained for later input encoding: application cursor/keypad,
-  origin, autowrap, cursor visibility, bracketed paste, mouse reporting (+ SGR)
-- Alternate screen (`?1049` / `?47` / `?1047`)
-- OSC 0/2 window title (stored)
-- DSR / CPR / primary DA replies via `TerminalAction::WritePty`
+Explicitly out of scope: Sixel, Kitty graphics, iTerm2 images, and DCS
+payloads, which are ignored without becoming visible text.
 
-Explicitly out of scope: Sixel, Kitty graphics, iTerm2 images, and DCS payloads
-(ignored without becoming visible text).
-
-## Input
+## Input and backpressure
 
 `Input` carries raw PTY bytes, a `KeyEvent`, or paste text.
-`Session::enqueue_input` turns `Key` / `Paste` into bytes with the session's
+`Session::enqueue_input` turns `Key` / `Paste` into bytes using the session's
 current `TerminalModes` and appends them to the write queue; `Raw` is appended
-unchanged. Compare `Input::byte_len` with
-`Session::metrics().pending_write_bytes` when applying caller-side
-backpressure. Mouse report bytes are not produced yet—only `MouseButton` is
-defined for application-side routing (coordinates reuse `Position`).
+unchanged.
 
-## Snapshots and scrollback
+Application input and terminal replies share one FIFO write queue, so a reply
+never overtakes previously accepted input and at most one bounded reply is
+pending. The queue itself is unbounded: the session applies no backpressure
+policy. Compare `Input::byte_len` with
+`Session::metrics().pending_write_bytes` to decide whether to enqueue, hold, or
+drop. Mouse report bytes are not produced yet—only `MouseButton` is defined, so
+application-side routing can share button identity.
 
-`TerminalState::snapshot` returns an owned `TerminalSnapshot` (visible screen,
-cursor, modes, style, title, alternate-screen flag, and primary-derived scrollback)
-without I/O, so a consumer can render or retain the data while the session
-keeps running. The primary screen's full-screen scrolls (LF/VT/FF, IND, NEL,
-autowrap, CSI SU) retain displaced rows with no built-in cap; `trim_scrollback`
-removes the oldest whole lines to caller-chosen line and cell bounds (either
-bound at zero clears the history). Partial scroll regions, line edits,
-scroll-downs, the alternate screen, and resize never enter history. CSI ED 2
-clears the visible screen, CSI ED 3 clears only the scrollback, and RIS clears
-both.
+## Lifecycle
 
-## Terminal session API
+Child exit and PTY EOF are separate. `try_wait` / `wait` cache the exit status
+without disabling I/O, so remaining master-side output can still be drained
+until EOF. Use `close`, `terminate`, `force_terminate`, and `shutdown` for
+teardown. `SessionMetrics` exposes cumulative counters plus current and maximum
+values for the read buffer, the write queue, and scrollback.
 
-`Session` owns one PTY-backed terminal session. The caller registers
-`Session::fd` with the interests from `Session::interests`, calls
-`Session::pump_io` whenever the fd is ready (and after any state change), and
-uses `Session::needs_pump` to know when more work is available without a new
-readiness edge. The fd is non-blocking, so no readiness flags are passed to
-the session; `pump_io` learns what is possible from its own `WouldBlock`
-results, which keeps edge-triggered loops correct. One `pump_io` call is the
-scheduling quantum: with a single session, drain `needs_pump` before blocking;
-with several sessions, rotate among runnable ones so a chatty session cannot
-starve the others. The work one call may do is bounded by a caller-supplied
-`PumpBudget`; `PumpBudget::default()` is the customary 64 KiB / 64 syscall
-ceiling, and a tighter budget makes `needs_pump` report remaining work sooner
-so the caller rotates back more often.
+## Example
 
-```rust
-// Single session: drain internal work before waiting in the poll loop.
-session.pump_io(PumpBudget::default())?;
-while session.needs_pump() {
+```rust,no_run
+use termnix::{Input, KeyCode, KeyEvent, PumpBudget, Session};
+
+fn pump(session: &mut Session) -> std::io::Result<()> {
+    // Drain work before blocking in the caller's poll loop.
     session.pump_io(PumpBudget::default())?;
-}
-reregister(session.fd(), session.interests());
-
-// Multiple sessions: round-robin one quantum at a time.
-let mut i = 0;
-while sessions.iter().any(Session::needs_pump) {
-    if sessions[i].needs_pump() {
-        sessions[i].pump_io(PumpBudget::default())?;
+    while session.needs_pump() {
+        session.pump_io(PumpBudget::default())?;
     }
-    i = (i + 1) % sessions.len();
+
+    // Register the fd with these interests, then poll it outside this crate.
+    let _ = (session.fd(), session.interests());
+
+    if session.metrics().pending_write_bytes < 4096 {
+        session.enqueue_input(Input::Key(KeyEvent::new(KeyCode::Enter)))?;
+    }
+    Ok(())
 }
 ```
 
-Application input (`Session::enqueue_input` with `Input`) and terminal replies
-share one FIFO write queue: a reply is appended in chronological order behind
-already accepted input, and decoding pauses until that reply is fully written,
-so at most one bounded reply is ever pending. The write queue itself is
-unbounded; the session applies no backpressure policy to application
-input—compare `Input::byte_len` against
-`Session::metrics().pending_write_bytes` to decide whether to enqueue, hold,
-or drop. Child exit and PTY EOF are separate:
-`try_wait` / `wait` cache the exit status without disabling I/O, so remaining
-master-side output can still be drained until EOF. Use `close`, `terminate`,
-`force_terminate`, and `shutdown` for teardown. `SessionMetrics` exposes
-cumulative counters plus current and maximum values for the read buffer, write
-queue, and scrollback.
-
 ## Examples
 
-`examples/headless.rs` drives one `Session` with `libc::poll` and no host
-terminal or UI—see that file's module docs for why it exists and what it
-proves. Run `cargo run --quiet --example headless </dev/null`.
+- [`examples/headless.rs`](examples/headless.rs) drives one `Session` with
+  `libc::poll` and no host terminal or UI. Run it with
+  `cargo run --quiet --example headless </dev/null`.
+- [`examples/tuinix.rs`](examples/tuinix.rs) runs two sessions behind a host
+  terminal built with [`tuinix`](https://crates.io/crates/tuinix), and shows
+  how to bridge a snapshot into a host frame buffer.
 
 ## Roadmap
 

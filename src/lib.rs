@@ -30,3 +30,11 @@ pub use snapshot::{ScrollbackLine, TerminalSnapshot};
 pub use terminal::{
     Cell, Color, MouseReporting, Position, Style, TerminalAction, TerminalModes, TerminalState,
 };
+
+/// Compiles the code example in `README.md` as a doctest so it cannot drift
+/// away from the API.
+///
+/// The example is marked `no_run`: it needs a live PTY.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

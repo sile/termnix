@@ -3,7 +3,14 @@ name = "termnix"
 version = "0.0.1"
 edition = "2024"
 rust-version = "1.97"
-publish = false
+authors = ["Takeru Ohta <phjgt308@gmail.com>"]
+description = "A Unix-only foundation for building terminal multiplexers"
+license = "MIT"
+homepage = "https://github.com/sile/termnix"
+repository = "https://github.com/sile/termnix"
+readme = "README.md"
+keywords = ["terminal", "multiplexer", "pty", "unix"]
+categories = ["command-line-interface"]
 
 [dependencies]
 libc = "0.2"
