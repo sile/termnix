@@ -40,14 +40,8 @@ impl TerminalLine {
 
 /// Owned copy of the terminal state at snapshot time.
 ///
-/// Construction copies the visible screen, cursor, modes, current style,
-/// title, whether the alternate screen was active, primary-derived
-/// scrollback, and the source revision. Time and allocation scale with the
-/// number of visible cells, retained scrollback cells, and title bytes.
-/// Snapshot payloads never
-/// include session or pane identity, child process status, file descriptors,
-/// parser state, or undrained
-/// [`TerminalAction`](crate::terminal_types::TerminalAction)s.
+/// See [`TerminalState::snapshot()`](crate::TerminalState::snapshot) for what is
+/// copied, how the cost scales, and what is deliberately left out.
 #[derive(Debug, Clone)]
 pub struct TerminalSnapshot {
     size: Size,
@@ -116,7 +110,7 @@ impl TerminalSnapshot {
 
     /// Returns the source terminal's visible-state revision at capture time.
     ///
-    /// See [`TerminalState::revision`](crate::TerminalState::revision) for what
+    /// See [`TerminalState::revision()`](crate::TerminalState::revision) for what
     /// the value tracks. Two snapshots with equal revisions were taken while
     /// the visible state had not changed in between.
     pub fn revision(&self) -> u64 {
@@ -144,8 +138,7 @@ impl TerminalSnapshot {
 
     /// Returns the visible row at `row` as a cell slice, if in range.
     ///
-    /// Equivalent to indexing the [`rows`](Self::rows) iterator by row
-    /// number; out-of-range rows return `None`.
+    /// Rows outside `0..`[`Size::rows`](crate::size::Size::rows) return `None`.
     pub fn row(&self, row: u16) -> Option<&[Cell]> {
         if row >= self.size.rows.get() {
             return None;

@@ -28,8 +28,8 @@ use crate::size::Size;
 /// # Drop behavior
 ///
 /// Dropping a [`PtyProcess`] closes the master file descriptor, but does **not**
-/// wait for or signal the child. Callers should use [`PtyProcess::try_wait`],
-/// [`PtyProcess::wait`], or [`PtyProcess::into_closing`] followed by
+/// wait for or signal the child. Callers should use [`PtyProcess::try_wait()`],
+/// [`PtyProcess::wait()`], or [`PtyProcess::into_closing()`] followed by
 /// [`ClosingPtyProcess::wait_and_reap`] to reap the child. An unreaped child may
 /// become a zombie until the parent process exits or later waits on it.
 ///
@@ -159,8 +159,8 @@ impl PtyProcess {
     ///
     /// This does not wait for the child, does not send signals, and does not
     /// probe unreaped children with `try_wait` / `waitpid` / `waitid`. If the
-    /// child was already reaped through [`PtyProcess::try_wait`] or
-    /// [`PtyProcess::wait`], the closing value starts in the reaped state.
+    /// child was already reaped through [`PtyProcess::try_wait()`] or
+    /// [`PtyProcess::wait()`], the closing value starts in the reaped state.
     pub(crate) fn into_closing(self) -> ClosingPtyProcess {
         let Self {
             master,
@@ -251,16 +251,24 @@ impl ObservedExit {
 }
 
 /// Result of delivering a signal to the original process group.
+///
+/// A signal is only attempted while the direct child is still owned and
+/// unreaped. Every variant other than [`SignalOutcome::Sent`] means the
+/// signal cannot be delivered by this session any more, and the caller should
+/// stop retrying rather than waiting for the process group to reappear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SignalOutcome {
-    /// `kill(-pgid, signal)` returned success.
+    /// The signal was delivered to the process group.
     Sent,
-    /// `kill` returned `ESRCH` (no such process group).
+    /// No process group remained to deliver the signal to: every process in
+    /// it had already exited by the time the signal was sent.
     GroupMissing,
-    /// The direct child was already reaped; no signal syscall was performed.
+    /// The signal was not sent because the direct child had already been
+    /// reaped. Waiting on the child is the caller's next step, not signalling.
     AlreadyReaped,
-    /// Direct-child ownership was lost (`ECHILD`); no signal syscall was
-    /// performed.
+    /// The signal was not sent because this session no longer owns the direct
+    /// child. Ownership can only pass to another wait, as when the child was
+    /// reaped through another handle.
     OwnershipLost,
 }
 

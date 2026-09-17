@@ -163,7 +163,7 @@ impl<'a> Input<'a> {
     /// Returns how many bytes this input would add to the write queue.
     ///
     /// For `Key` and `Paste`, `modes` selects the same sequences
-    /// [`Session::enqueue_input`](crate::Session::enqueue_input) would write.
+    /// [`Session::enqueue_input()`](crate::Session::enqueue_input) would write.
     /// For `Raw`, the slice length is returned and `modes` is ignored.
     pub fn byte_len(self, modes: TerminalModes) -> usize {
         match self {

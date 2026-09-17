@@ -132,6 +132,9 @@ pub struct Cell {
 
 impl Cell {
     /// An empty single-column cell with default style.
+    ///
+    /// Identical to [`Cell::CONTINUATION`] except for [`Cell::width`], which is
+    /// `1` here and `0` there.
     pub const EMPTY: Self = Self {
         ch: ' ',
         width: 1,
@@ -146,6 +149,9 @@ impl Cell {
     };
 
     /// Trailing half of a width-2 glyph.
+    ///
+    /// Identical to [`Cell::EMPTY`] except for [`Cell::width`], which is `0`
+    /// here and `1` there. Choose between the two by width, not by the glyph.
     pub const CONTINUATION: Self = Self {
         ch: ' ',
         width: 0,

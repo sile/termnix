@@ -1,6 +1,6 @@
 //! I/O-free terminal emulator state.
 //!
-//! [`TerminalState`] accepts PTY output through [`TerminalState::feed`] and
+//! [`TerminalState`] accepts PTY output through [`TerminalState::feed()`] and
 //! updates cells, styles, cursor, and modes. Query replies are returned as
 //! [`TerminalAction`] values; this type never writes to a file descriptor.
 //!
@@ -161,7 +161,7 @@ impl TerminalState {
 
     /// Returns a fingerprint of the fields that make up the visible state.
     ///
-    /// Used by [`TerminalState::feed`] to detect whether a feed changed
+    /// Used by [`TerminalState::feed()`] to detect whether a feed changed
     /// anything the caller can see; scrollback and parser state are excluded.
     fn visible_fingerprint(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -179,13 +179,13 @@ impl TerminalState {
     ///
     /// Bytes may end mid-sequence or mid-UTF-8 code unit; state is kept until
     /// a later `feed` completes the sequence. Query replies are appended to
-    /// the action queue; call [`TerminalState::drain_actions`] to collect them.
+    /// the action queue; call [`TerminalState::drain_actions()`] to collect them.
     pub fn feed(&mut self, bytes: &[u8]) {
         feed_bytes(self, bytes);
         self.refresh_revision();
     }
 
-    /// Bumps [`revision`](Self::revision) when the visible state changed.
+    /// Bumps [`revision`](Self::revision()) when the visible state changed.
     fn refresh_revision(&mut self) {
         let fingerprint = self.visible_fingerprint();
         if fingerprint != self.last_visible {
@@ -217,10 +217,12 @@ impl TerminalState {
     /// Returns each visible row as a left-to-right cell slice, top to bottom.
     ///
     /// The number of rows equals [`Size::rows`](crate::size::Size::rows) and
-    /// every slice has exactly [`Size::cols`](crate::size::Size::cols) cells.
-    /// As with [`TerminalLine::cells`](crate::TerminalLine::cells), a row slice
-    /// keeps the width it had when it was last written and is never reflowed by
-    /// later resizes.
+    /// every slice has exactly [`Size::cols`](crate::size::Size::cols) cells for
+    /// the current size. Unlike the cells saved into scrollback, the visible
+    /// rows are re-laid out by [`TerminalState::resize()`], so slices obtained
+    /// before a resize may differ in length from slices obtained after it. The
+    /// slices borrow the live screen; call [`TerminalState::snapshot()`] to keep
+    /// the contents once the state moves on.
     pub fn rows(&self) -> impl Iterator<Item = &[Cell]> {
         let cols = self.size.cols.get() as usize;
         self.active().cells().chunks(cols)
@@ -228,8 +230,7 @@ impl TerminalState {
 
     /// Returns the visible row at `row` as a cell slice, if in range.
     ///
-    /// Equivalent to indexing the [`rows`](Self::rows) iterator by row
-    /// number; out-of-range rows return `None`.
+    /// Rows outside `0..`[`Size::rows`](crate::size::Size::rows) return `None`.
     pub fn row(&self, row: u16) -> Option<&[Cell]> {
         if row >= self.size.rows.get() {
             return None;
@@ -259,12 +260,9 @@ impl TerminalState {
 
     /// Returns an owned copy of the visible state and primary scrollback.
     ///
-    /// No I/O is performed. The payload copies the active screen's cells,
-    /// cursor, modes, current style, title, whether the alternate screen is
-    /// active, and primary-derived scrollback. Time and allocation scale with
-    /// the number of visible cells, retained scrollback cells, and title
-    /// bytes. Session identity, child status, file descriptors, parser state,
-    /// and undrained actions are never included; retaining several snapshots
+    /// No I/O is performed. Callers that want to keep the visible state after
+    /// the state moves on should take a snapshot rather than holding the
+    /// borrow returned by [`TerminalState::rows()`]; retaining several snapshots
     /// long-term is the caller's concern.
     pub fn snapshot(&self) -> TerminalSnapshot {
         let active = self.active();
@@ -349,7 +347,7 @@ impl TerminalState {
     /// A full-screen scroll on the primary screen pushes the displaced rows
     /// into scrollback (top-to-bottom); partial regions, scroll-downs, line
     /// edits, and the alternate screen never do. History grows without a
-    /// built-in bound; the caller trims it with [`Self::trim_scrollback`].
+    /// built-in bound; the caller trims it with [`Self::trim_scrollback()`].
     pub(crate) fn scroll_up_screen(&mut self, count: u16) {
         let top = self.scroll_top;
         let bottom = self.scroll_bottom;

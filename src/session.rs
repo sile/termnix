@@ -1,9 +1,9 @@
 //! Single PTY-backed terminal session with runtime-free I/O.
 //!
 //! [`Session`] owns one PTY-backed terminal session. The caller drives it
-//! from its own poll loop: read [`Session::fd`] and [`Session::interests`],
-//! call [`Session::pump_io`] whenever the fd is ready or after any call that
-//! changes the session, and repeat while [`Session::needs_pump`] reports
+//! from its own poll loop: read [`Session::fd()`] and [`Session::interests()`],
+//! call [`Session::pump_io()`] whenever the fd is ready or after any call that
+//! changes the session, and repeat while [`Session::needs_pump()`] reports
 //! that more work is available without waiting for a new readiness edge.
 //!
 //! The session never owns a poll loop and takes no readiness flags: the fd is
@@ -57,7 +57,7 @@ const OUTBOUND_COMPACT_THRESHOLD: usize = 4096;
 /// Drop already-decoded `read_buffer` prefix once it reaches this size.
 const READ_COMPACT_THRESHOLD: usize = 4096;
 
-/// Ceiling on the work a single [`Session::pump_io`] call performs.
+/// Ceiling on the work a single [`Session::pump_io()`] call performs.
 ///
 /// One `pump_io` call is the scheduling quantum at the caller's level: the
 /// caller decides, by rotating among sessions, how the work is interleaved.
@@ -146,7 +146,7 @@ pub struct SessionMetrics {
     /// Cumulative pumps that ended with their [`PumpBudget`] exhausted.
     ///
     /// A pump that exhausts its budget stopped with work still pending, so
-    /// [`Session::needs_pump`] stays true. Callers can use a delta of this
+    /// [`Session::needs_pump()`] stays true. Callers can use a delta of this
     /// counter as an oracle that a single pump did not finish the backlog,
     /// without knowing the budget's numeric value.
     pub pump_budget_exhaustions: u64,
@@ -224,7 +224,7 @@ impl Direction {
 /// Lifecycle phase of one session.
 ///
 /// Tracks I/O and logical close. Child exit is stored separately in
-/// [`Session::exit_status`]; reaping alone does not enter [`Phase::Reaped`].
+/// [`Session::exit_status()`]; reaping alone does not enter [`Phase::Reaped`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Live,
@@ -276,9 +276,9 @@ struct Cumulative {
 ///
 /// The session owns the PTY master fd, the emulator state, a bounded read
 /// buffer, an unbounded write queue, and the child-process lifecycle, but
-/// never owns a poll loop. Register [`Session::fd`] with
-/// [`Session::interests`], call [`Session::pump_io`] when the fd is ready (or
-/// after any state change), and repeat while [`Session::needs_pump`] returns
+/// never owns a poll loop. Register [`Session::fd()`] with
+/// [`Session::interests()`], call [`Session::pump_io()`] when the fd is ready (or
+/// after any state change), and repeat while [`Session::needs_pump()`] returns
 /// `true` before waiting in the poll loop. With several sessions, treat each
 /// `pump_io` as one quantum and rotate among runnable sessions; pass a
 /// [`PumpBudget`] to bound how much work one quantum does.
@@ -287,7 +287,7 @@ struct Cumulative {
 ///
 /// Dropping the session performs best-effort cleanup: the remaining child is
 /// force-killed and reaped, which may block. Failures cannot be reported from
-/// `Drop`; call [`Session::shutdown`] to observe the result.
+/// `Drop`; call [`Session::shutdown()`] to observe the result.
 pub struct Session {
     pty: Option<Pty>,
     term: TerminalState,
@@ -391,7 +391,7 @@ impl Session {
     ///
     /// Returns `false` when the last pump stopped because a `read` or `write`
     /// returned `WouldBlock`; the caller should then wait for the interest
-    /// reported by [`Session::interests`]. Returns `true` when internal work
+    /// reported by [`Session::interests()`]. Returns `true` when internal work
     /// (buffered decoding, a pending reply, or a pump interrupted by its
     /// [`PumpBudget`]) is still executable immediately, which an
     /// edge-triggered loop must drain before blocking. With several sessions,
@@ -416,11 +416,11 @@ impl Session {
     /// The fd is non-blocking, so no readiness flags are taken; `WouldBlock`
     /// results decide how far a single call goes. A call stops early when
     /// `budget` is exhausted, which [`SessionMetrics::pump_budget_exhaustions`]
-    /// counts; [`needs_pump`](Self::needs_pump) then stays true so the caller
+    /// counts; [`needs_pump`](Self::needs_pump()) then stays true so the caller
     /// can return to this session on a later rotation. After a logical close
     /// this is a successful no-op.
     ///
-    /// Pass [`PumpBudget::default`] for the customary 64 KiB / 64 syscall
+    /// Pass [`PumpBudget::default()`] for the customary 64 KiB / 64 syscall
     /// ceiling.
     pub fn pump_io(&mut self, budget: PumpBudget) -> io::Result<()> {
         if self.phase == Phase::Closing || self.phase == Phase::Reaped {
@@ -583,7 +583,7 @@ impl Session {
     /// Blocks until the child exits and returns its status.
     ///
     /// After a successful reap the status is cached and later calls return it.
-    /// As with [`Session::try_wait`], reaping alone does not disable PTY I/O.
+    /// As with [`Session::try_wait()`], reaping alone does not disable PTY I/O.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
         if let Some(status) = self.exit_status {
             return Ok(status);
@@ -612,7 +612,7 @@ impl Session {
     /// Available in every phase, including after the child has been reaped.
     /// The returned reference exposes the live state directly, so a caller
     /// that keeps the data after the session moves on should call
-    /// [`TerminalState::snapshot`] for an owned copy.
+    /// [`TerminalState::snapshot()`] for an owned copy.
     pub fn terminal_state(&self) -> &TerminalState {
         &self.term
     }
@@ -652,7 +652,7 @@ impl Session {
 
     /// Removes the oldest scrollback lines until both limits hold.
     ///
-    /// Delegates to [`TerminalState::trim_scrollback`]; lines are removed
+    /// Delegates to [`TerminalState::trim_scrollback()`]; lines are removed
     /// whole, oldest first, and either limit at zero clears the history.
     pub fn trim_scrollback(&mut self, max_lines: usize, max_cells: usize) {
         self.term.trim_scrollback(max_lines, max_cells);
