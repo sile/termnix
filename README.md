@@ -18,9 +18,9 @@ primitives, not the scope of the crate.
 
 The boundaries are the design:
 
-- **No event loop.** The caller registers `Session::fd` with the interests from
-  `Session::interests`, and calls `Session::pump_io` when the fd is ready.
-  `termnix` never blocks on a poll.
+- **No event loop.** The caller registers `Session::fd()` with the interests
+  from `Session::interests()`, and calls `Session::pump_io()` when the fd is
+  ready. `termnix` never blocks on a poll.
 - **No async runtime.** The fd is non-blocking; `pump_io` discovers what is
   possible from its own `WouldBlock` results, which keeps edge-triggered loops
   correct.
@@ -56,14 +56,14 @@ payloads, which are ignored without becoming visible text.
 ## Input and backpressure
 
 `Input` carries raw PTY bytes, a `KeyEvent`, or paste text.
-`Session::enqueue_input` turns `Key` / `Paste` into bytes using the session's
+`Session::enqueue_input()` turns `Key` / `Paste` into bytes using the session's
 current `TerminalModes` and appends them to the write queue; `Raw` is appended
 unchanged.
 
 Application input and terminal replies share one FIFO write queue, so a reply
 never overtakes previously accepted input and at most one bounded reply is
 pending. The queue itself is unbounded: the session applies no backpressure
-policy. Compare `Input::byte_len` with
+policy. Compare `Input::byte_len()` with
 `Session::metrics().pending_write_bytes` to decide whether to enqueue, hold, or
 drop. Mouse report bytes are not produced yet—only `MouseButton` is defined, so
 application-side routing can share button identity.
@@ -79,20 +79,19 @@ values for the read buffer, the write queue, and scrollback.
 ## Example
 
 ```rust,no_run
-use termnix::{Input, KeyCode, KeyEvent, PumpBudget, Session};
-
-fn pump(session: &mut Session) -> std::io::Result<()> {
+fn pump(session: &mut termnix::Session) -> std::io::Result<()> {
     // Drain work before blocking in the caller's poll loop.
-    session.pump_io(PumpBudget::default())?;
+    session.pump_io(termnix::PumpBudget::default())?;
     while session.needs_pump() {
-        session.pump_io(PumpBudget::default())?;
+        session.pump_io(termnix::PumpBudget::default())?;
     }
 
     // Register the fd with these interests, then poll it outside this crate.
     let _ = (session.fd(), session.interests());
 
     if session.metrics().pending_write_bytes < 4096 {
-        session.enqueue_input(Input::Key(KeyEvent::new(KeyCode::Enter)))?;
+        let enter = termnix::KeyEvent::new(termnix::KeyCode::Enter);
+        session.enqueue_input(termnix::Input::Key(enter))?;
     }
     Ok(())
 }
