@@ -132,13 +132,18 @@ pub struct Interests {
     pub writable: bool,
 }
 
-/// One snapshot of a session's activity counters.
+/// One snapshot of a session's own activity counters.
 ///
 /// `metrics()` returns a value snapshot, so callers can hold values taken
 /// before and after a `pump_io` and diff them. Cumulative counters are never
 /// reset for the lifetime of the session; current values are derived from the
-/// live buffers at snapshot time. Maximum fields record peaks observed when
-/// the corresponding buffers grow, not only at pump boundaries.
+/// session's own buffers at snapshot time. Maximum fields record peaks
+/// observed when the corresponding buffers grow, not only at pump boundaries.
+///
+/// Everything here describes the session's PTY and pump bookkeeping. Quantities
+/// owned by the terminal emulator, such as the current scrollback size, are
+/// reached through [`Session::terminal_state()`] instead, so this type never
+/// mixes the two observation subjects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionMetrics {
     /// Cumulative `pump_io` calls.
@@ -179,10 +184,6 @@ pub struct SessionMetrics {
     pub pending_input_bytes: usize,
     /// Current unsent terminal reply bytes.
     pub pending_reply_bytes: usize,
-    /// Current retained scrollback lines.
-    pub scrollback_lines: usize,
-    /// Current retained scrollback cells.
-    pub scrollback_cells: usize,
 
     /// Highest observed `buffered_read_bytes`.
     pub max_buffered_read_bytes: usize,
@@ -625,8 +626,6 @@ impl Session {
         let pending_write_bytes = self.unsent();
         let pending_reply_bytes = self.pending_reply_unsent();
         let pending_input_bytes = pending_write_bytes.saturating_sub(pending_reply_bytes);
-        let scrollback_lines = self.term.scrollback_len();
-        let scrollback_cells = self.term.scrollback_cells();
         SessionMetrics {
             pump_calls: self.cumulative.pump_calls,
             pump_budget_exhaustions: self.cumulative.pump_budget_exhaustions,
@@ -643,8 +642,6 @@ impl Session {
             pending_write_bytes,
             pending_input_bytes,
             pending_reply_bytes,
-            scrollback_lines,
-            scrollback_cells,
             max_buffered_read_bytes: self.cumulative.max_buffered_read_bytes,
             max_pending_write_bytes: self.cumulative.max_pending_write_bytes,
             max_scrollback_lines: self.cumulative.max_scrollback_lines,

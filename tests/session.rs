@@ -588,20 +588,22 @@ fn trim_scrollback_via_session_matches_terminal_state() {
     let mut session =
         spawn_session("for i in $(seq 1 40); do printf 'line-%02d\\n' \"$i\"; done; sleep 0.2");
     pump_until(std::slice::from_mut(&mut session), |sessions| {
-        sessions[0].metrics().scrollback_lines >= 10
+        sessions[0].terminal_state().scrollback_len() >= 10
     });
     let before = session.metrics();
-    assert!(before.scrollback_lines > 0);
-    assert_eq!(before.scrollback_lines, before.max_scrollback_lines);
-    assert!(before.scrollback_cells > 0);
+    let before_len = session.terminal_state().scrollback_len();
+    let before_cells = session.terminal_state().scrollback_cells();
+    assert!(before_len > 0);
+    assert_eq!(before_len, before.max_scrollback_lines);
+    assert!(before_cells > 0);
 
     session.trim_scrollback(5, usize::MAX);
-    let after = session.metrics();
-    assert_eq!(after.scrollback_lines, 5);
+    let after_len = session.terminal_state().scrollback_len();
+    assert_eq!(after_len, 5);
     // Each retained row keeps its full 80-cell width.
-    assert_eq!(after.scrollback_cells, 5 * 80);
+    assert_eq!(session.terminal_state().scrollback_cells(), 5 * 80);
 
     session.trim_scrollback(usize::MAX, 0);
-    assert_eq!(session.metrics().scrollback_lines, 0);
-    assert_eq!(session.metrics().scrollback_cells, 0);
+    assert_eq!(session.terminal_state().scrollback_len(), 0);
+    assert_eq!(session.terminal_state().scrollback_cells(), 0);
 }
