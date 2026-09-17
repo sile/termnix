@@ -305,7 +305,7 @@ impl App {
                 return Ok(());
             };
             let need = input.byte_len(session.terminal_state().modes());
-            if session.metrics().pending_write_bytes.saturating_add(need) > WRITE_SOFT_LIMIT {
+            if session.pending_bytes().unwritten_total.saturating_add(need) > WRITE_SOFT_LIMIT {
                 true
             } else {
                 match session.enqueue_input(input) {
@@ -347,7 +347,7 @@ impl App {
             .map_err(AppError::io)?;
         let input = termnix::Input::Key(pending.event);
         let need = input.byte_len(session.terminal_state().modes());
-        if session.metrics().pending_write_bytes.saturating_add(need) > WRITE_SOFT_LIMIT {
+        if session.pending_bytes().unwritten_total.saturating_add(need) > WRITE_SOFT_LIMIT {
             return Ok(());
         }
         match session.enqueue_input(input) {

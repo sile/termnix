@@ -117,7 +117,7 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
         |sessions| {
             let a = &sessions[0];
             a.status() == SessionStatus::Live
-                && a.metrics().buffered_read_bytes == 0
+                && a.pending_bytes().undecoded_read == 0
                 && !a.needs_pump()
         },
     );
@@ -206,7 +206,7 @@ fn assert_stale_fd_does_not_drive(c: &mut Session, stale_fd: RawFd) {
         }
         // C produces no output of its own, so a bounded number of idle
         // rotations is enough: the point is that nothing arrives unprompted.
-        if c.metrics().pump_calls > 40 {
+        if c.counters().pump_calls > 40 {
             break;
         }
     }

@@ -19,7 +19,7 @@
 //! is appended in chronological order and decoding pauses until that reply is
 //! fully written, so at most one reply (bounded by a fixed internal size) is
 //! ever pending and replies never overtake previously accepted input. The
-//! write queue itself is unbounded; callers apply backpressure via metrics.
+//! write queue itself is unbounded; callers apply backpressure via [`Session::pending_bytes()`].
 //!
 //! Child exit and PTY EOF are tracked separately: reaping the child does not
 //! disable I/O, so any remaining master-side output can still be drained until
@@ -66,7 +66,7 @@ const READ_COMPACT_THRESHOLD: usize = 4096;
 /// that never stops writing could hold the PTY in one call forever, starving
 /// the other sessions. The ceiling is a defaulted, inspectable value rather
 /// than a hidden constant so callers can tighten it, for example to observe
-/// [`SessionMetrics::pump_budget_exhaustions`] with a small fixture, or widen
+/// [`SessionCounters::pump_budget_exhaustions`] with a small fixture, or widen
 /// it to drain a single session in one call.
 ///
 /// The ceiling counts both bytes moved (read + decoded + written) and
@@ -132,20 +132,18 @@ pub struct Interests {
     pub writable: bool,
 }
 
-/// One snapshot of a session's own activity counters.
+/// Cumulative counters tracked by a session, returned by [`Session::counters()`].
 ///
-/// `metrics()` returns a value snapshot, so callers can hold values taken
-/// before and after a `pump_io` and diff them. Cumulative counters are never
-/// reset for the lifetime of the session; current values are derived from the
-/// session's own buffers at snapshot time. Maximum fields record peaks
-/// observed when the corresponding buffers grow, not only at pump boundaries.
+/// The returned reference exposes the session's running totals, which are never
+/// reset for the lifetime of the session. Peak fields record the highest value
+/// observed when the corresponding buffer grew, not only at pump boundaries.
 ///
 /// Everything here describes the session's PTY and pump bookkeeping. Quantities
 /// owned by the terminal emulator, such as the current scrollback size, are
 /// reached through [`Session::terminal_state()`] instead, so this type never
 /// mixes the two observation subjects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct SessionMetrics {
+pub struct SessionCounters {
     /// Cumulative `pump_io` calls.
     pub pump_calls: u64,
     /// Cumulative pumps that ended with their [`PumpBudget`] exhausted.
@@ -173,26 +171,34 @@ pub struct SessionMetrics {
     pub read_would_block: u64,
     /// Cumulative `write` syscalls that returned `WouldBlock`.
     pub write_would_block: u64,
-
-    /// Current raw bytes read from the PTY but not yet decoded.
-    pub buffered_read_bytes: usize,
-    /// Current bytes not yet written to the PTY (input plus reply).
-    ///
-    /// Always equals `pending_input_bytes + pending_reply_bytes`.
-    pub pending_write_bytes: usize,
-    /// Current unsent application input bytes.
-    pub pending_input_bytes: usize,
-    /// Current unsent terminal reply bytes.
-    pub pending_reply_bytes: usize,
-
-    /// Highest observed `buffered_read_bytes`.
+    /// Highest observed undecoded read bytes.
     pub max_buffered_read_bytes: usize,
-    /// Highest observed `pending_write_bytes`.
+    /// Highest observed unwritten write bytes.
     pub max_pending_write_bytes: usize,
-    /// Highest observed `scrollback_lines`.
+    /// Highest observed scrollback lines.
     pub max_scrollback_lines: usize,
-    /// Highest observed `scrollback_cells`.
+    /// Highest observed scrollback cells.
     pub max_scrollback_cells: usize,
+}
+
+/// Bytes buffered inside one [`Session`] at a single instant.
+///
+/// The session buffers bytes in two directions, and this type reports how much
+/// is held on each side. The read side holds bytes accepted from the PTY but
+/// not yet decoded; the write side holds bytes decoded but not yet accepted by
+/// the PTY, split into the application input and the terminal's replies.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PendingBytes {
+    /// Bytes read from the PTY but not yet decoded by the emulator.
+    pub undecoded_read: usize,
+    /// Bytes held for writing to the PTY, both directions combined.
+    ///
+    /// Always equals `unwritten_input + unwritten_reply`.
+    pub unwritten_total: usize,
+    /// Unwritten bytes that came from [`Session::enqueue_input()`].
+    pub unwritten_input: usize,
+    /// Unwritten bytes that the emulator generated in reply to queries.
+    pub unwritten_reply: usize,
 }
 
 /// Observable lifecycle phase of a session.
@@ -255,26 +261,6 @@ impl Pty {
     }
 }
 
-/// Cumulative counters that never reset.
-#[derive(Default)]
-struct Cumulative {
-    pump_calls: u64,
-    pump_budget_exhaustions: u64,
-    pty_bytes_read: u64,
-    pty_bytes_written: u64,
-    terminal_bytes_processed: u64,
-    terminal_reply_bytes_generated: u64,
-    input_bytes_enqueued: u64,
-    read_syscalls: u64,
-    write_syscalls: u64,
-    read_would_block: u64,
-    write_would_block: u64,
-    max_buffered_read_bytes: usize,
-    max_pending_write_bytes: usize,
-    max_scrollback_lines: usize,
-    max_scrollback_cells: usize,
-}
-
 /// A single PTY-backed terminal session.
 ///
 /// The session owns the PTY master fd, the emulator state, a bounded read
@@ -319,7 +305,7 @@ pub struct Session {
     read_would_block: bool,
     /// Whether the most recent pump stopped writing on `WouldBlock`.
     write_would_block: bool,
-    cumulative: Cumulative,
+    counters: SessionCounters,
 }
 
 impl Session {
@@ -350,7 +336,7 @@ impl Session {
             direction: Direction::Write,
             read_would_block: false,
             write_would_block: false,
-            cumulative: Cumulative::default(),
+            counters: SessionCounters::default(),
         })
     }
 
@@ -418,7 +404,7 @@ impl Session {
     ///
     /// The fd is non-blocking, so no readiness flags are taken; `WouldBlock`
     /// results decide how far a single call goes. A call stops early when
-    /// `budget` is exhausted, which [`SessionMetrics::pump_budget_exhaustions`]
+    /// `budget` is exhausted, which [`SessionCounters::pump_budget_exhaustions`]
     /// counts; [`needs_pump`](Self::needs_pump()) then stays true so the caller
     /// can return to this session on a later rotation. After a logical close
     /// this is a successful no-op.
@@ -429,7 +415,7 @@ impl Session {
         if self.phase == Phase::Closing || self.phase == Phase::Reaped {
             return Ok(());
         }
-        self.cumulative.pump_calls = self.cumulative.pump_calls.saturating_add(1);
+        self.counters.pump_calls = self.counters.pump_calls.saturating_add(1);
         self.read_would_block = false;
         self.write_would_block = false;
         let mut budget = budget;
@@ -469,8 +455,8 @@ impl Session {
         }
         self.direction = direction;
         if budget.exhausted() {
-            self.cumulative.pump_budget_exhaustions =
-                self.cumulative.pump_budget_exhaustions.saturating_add(1);
+            self.counters.pump_budget_exhaustions =
+                self.counters.pump_budget_exhaustions.saturating_add(1);
         }
         Ok(())
     }
@@ -480,8 +466,8 @@ impl Session {
     /// `Key` and `Paste` are turned into bytes with the session's current
     /// terminal modes; `Raw` is appended unchanged. All accepted bytes join
     /// the write queue in chronological order. The session applies no
-    /// backpressure policy; compare [`Input::byte_len`] against
-    /// `metrics().pending_write_bytes` to decide whether to enqueue, hold the
+    /// backpressure policy; compare [`Input::byte_len()`] against
+    /// [`Session::pending_bytes()`] to decide whether to enqueue, hold the
     /// input on the caller side, or drop it. A closed session returns
     /// [`ErrorKind::BrokenPipe`].
     pub fn enqueue_input(&mut self, input: Input<'_>) -> io::Result<()> {
@@ -492,10 +478,8 @@ impl Session {
         let before = self.outbound.len();
         input.write_to(modes, &mut self.outbound);
         let n = self.outbound.len() - before;
-        self.cumulative.input_bytes_enqueued = self
-            .cumulative
-            .input_bytes_enqueued
-            .saturating_add(n as u64);
+        self.counters.input_bytes_enqueued =
+            self.counters.input_bytes_enqueued.saturating_add(n as u64);
         self.write_would_block = false;
         self.update_maxes();
         Ok(())
@@ -528,7 +512,7 @@ impl Session {
     /// bytes, and closes the PTY master. The child is kept in a private
     /// closing state until reaped. After closing, `pump_io` is a successful
     /// no-op, `enqueue_input` and `resize` return [`ErrorKind::BrokenPipe`],
-    /// while the final terminal state, metrics, process polling and signal
+    /// while the final terminal state, counters, process polling and signal
     /// delivery remain available until the child is reaped. Idempotent.
     pub fn close(&mut self) {
         if self.phase == Phase::Reaped {
@@ -620,32 +604,30 @@ impl Session {
         &self.term
     }
 
-    /// Returns a snapshot of the session's activity counters.
-    pub fn metrics(&self) -> SessionMetrics {
-        let buffered_read_bytes = self.buffered_read_len();
-        let pending_write_bytes = self.unsent();
-        let pending_reply_bytes = self.pending_reply_unsent();
-        let pending_input_bytes = pending_write_bytes.saturating_sub(pending_reply_bytes);
-        SessionMetrics {
-            pump_calls: self.cumulative.pump_calls,
-            pump_budget_exhaustions: self.cumulative.pump_budget_exhaustions,
-            pty_bytes_read: self.cumulative.pty_bytes_read,
-            pty_bytes_written: self.cumulative.pty_bytes_written,
-            terminal_bytes_processed: self.cumulative.terminal_bytes_processed,
-            terminal_reply_bytes_generated: self.cumulative.terminal_reply_bytes_generated,
-            input_bytes_enqueued: self.cumulative.input_bytes_enqueued,
-            read_syscalls: self.cumulative.read_syscalls,
-            write_syscalls: self.cumulative.write_syscalls,
-            read_would_block: self.cumulative.read_would_block,
-            write_would_block: self.cumulative.write_would_block,
-            buffered_read_bytes,
-            pending_write_bytes,
-            pending_input_bytes,
-            pending_reply_bytes,
-            max_buffered_read_bytes: self.cumulative.max_buffered_read_bytes,
-            max_pending_write_bytes: self.cumulative.max_pending_write_bytes,
-            max_scrollback_lines: self.cumulative.max_scrollback_lines,
-            max_scrollback_cells: self.cumulative.max_scrollback_cells,
+    /// Returns the session's cumulative activity counters.
+    ///
+    /// The reference exposes the live counters directly, and they are never
+    /// reset for the lifetime of the session. A caller that keeps the values
+    /// after the session moves on can copy them, since [`SessionCounters`] is
+    /// `Copy`.
+    pub fn counters(&self) -> &SessionCounters {
+        &self.counters
+    }
+
+    /// Returns how many bytes the session currently holds in its buffers.
+    ///
+    /// The returned value is a snapshot of both directions: the read side that
+    /// is waiting to be decoded and the write side that is waiting to reach the
+    /// PTY. Unlike [`Session::counters()`], these are current amounts, not
+    /// running totals.
+    pub fn pending_bytes(&self) -> PendingBytes {
+        let unwritten_total = self.unsent();
+        let unwritten_reply = self.pending_reply_unsent();
+        PendingBytes {
+            undecoded_read: self.buffered_read_len(),
+            unwritten_total,
+            unwritten_input: unwritten_total.saturating_sub(unwritten_reply),
+            unwritten_reply,
         }
     }
 
@@ -765,20 +747,20 @@ impl Session {
         pending_reply_unsent_len(self.write_offset, self.pending_reply_range.as_ref())
     }
 
-    /// Updates the running maxima tracked in the cumulative counters.
+    /// Updates the running maxima tracked in the session counters.
     fn update_maxes(&mut self) {
-        self.cumulative.max_buffered_read_bytes = self
-            .cumulative
+        self.counters.max_buffered_read_bytes = self
+            .counters
             .max_buffered_read_bytes
             .max(self.buffered_read_len());
-        self.cumulative.max_pending_write_bytes =
-            self.cumulative.max_pending_write_bytes.max(self.unsent());
-        self.cumulative.max_scrollback_lines = self
-            .cumulative
+        self.counters.max_pending_write_bytes =
+            self.counters.max_pending_write_bytes.max(self.unsent());
+        self.counters.max_scrollback_lines = self
+            .counters
             .max_scrollback_lines
             .max(self.term.scrollback_len());
-        self.cumulative.max_scrollback_cells = self
-            .cumulative
+        self.counters.max_scrollback_cells = self
+            .counters
             .max_scrollback_cells
             .max(self.term.scrollback_cells());
     }
@@ -856,20 +838,20 @@ impl Session {
             let result = pty.write(&self.outbound[start..start + cap]);
             self.pty = Some(Pty::Live(pty));
             budget.consume(0, 1);
-            self.cumulative.write_syscalls = self.cumulative.write_syscalls.saturating_add(1);
+            self.counters.write_syscalls = self.counters.write_syscalls.saturating_add(1);
             match result {
                 Ok(0) => break,
                 Ok(n) => {
                     self.write_offset += n;
                     budget.consume(n, 0);
-                    self.cumulative.pty_bytes_written =
-                        self.cumulative.pty_bytes_written.saturating_add(n as u64);
+                    self.counters.pty_bytes_written =
+                        self.counters.pty_bytes_written.saturating_add(n as u64);
                     self.compact_outbound_if_needed();
                     progressed = true;
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
-                    self.cumulative.write_would_block =
-                        self.cumulative.write_would_block.saturating_add(1);
+                    self.counters.write_would_block =
+                        self.counters.write_would_block.saturating_add(1);
                     self.write_would_block = true;
                     break;
                 }
@@ -920,7 +902,7 @@ impl Session {
             let result = pty.read(&mut self.read_buffer[start..]);
             self.pty = Some(Pty::Live(pty));
             budget.consume(0, 1);
-            self.cumulative.read_syscalls = self.cumulative.read_syscalls.saturating_add(1);
+            self.counters.read_syscalls = self.counters.read_syscalls.saturating_add(1);
             match result {
                 Ok(0) => {
                     self.read_buffer.truncate(start);
@@ -930,8 +912,8 @@ impl Session {
                 Ok(n) => {
                     self.read_buffer.truncate(start + n);
                     budget.consume(n, 0);
-                    self.cumulative.pty_bytes_read =
-                        self.cumulative.pty_bytes_read.saturating_add(n as u64);
+                    self.counters.pty_bytes_read =
+                        self.counters.pty_bytes_read.saturating_add(n as u64);
                     self.update_maxes();
                     progressed = true;
                     self.decode_buffered(budget)?;
@@ -941,8 +923,8 @@ impl Session {
                 }
                 Err(err) if err.kind() == ErrorKind::WouldBlock => {
                     self.read_buffer.truncate(start);
-                    self.cumulative.read_would_block =
-                        self.cumulative.read_would_block.saturating_add(1);
+                    self.counters.read_would_block =
+                        self.counters.read_would_block.saturating_add(1);
                     self.read_would_block = true;
                     break;
                 }
@@ -980,8 +962,8 @@ impl Session {
             let byte = self.read_buffer[self.read_offset];
             self.read_offset += 1;
             budget.consume(1, 0);
-            self.cumulative.terminal_bytes_processed =
-                self.cumulative.terminal_bytes_processed.saturating_add(1);
+            self.counters.terminal_bytes_processed =
+                self.counters.terminal_bytes_processed.saturating_add(1);
             self.decode_byte(byte)?;
             decoded += 1;
         }
@@ -1016,8 +998,8 @@ impl Session {
         }
         let start = self.outbound.len();
         self.outbound.extend_from_slice(&reply);
-        self.cumulative.terminal_reply_bytes_generated = self
-            .cumulative
+        self.counters.terminal_reply_bytes_generated = self
+            .counters
             .terminal_reply_bytes_generated
             .saturating_add(reply.len() as u64);
         self.pending_reply_range = Some(start..start + reply.len());

@@ -229,7 +229,7 @@ fn pump_io_flushes_input_after_read_would_block() {
         .pump_io(termnix::PumpBudget::default())
         .expect("pump after enter");
     assert_eq!(
-        session.metrics().pending_write_bytes,
+        session.pending_bytes().unwritten_total,
         0,
         "Enter must flush even when the prior pump ended on a read WouldBlock"
     );
@@ -306,21 +306,21 @@ fn reply_flood_is_bounded_and_nothing_is_dropped() {
     );
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         let session = &sessions[0];
-        let metrics = session.metrics();
+        let pending = session.pending_bytes();
         assert!(
-            metrics.pending_reply_bytes <= 14,
+            pending.unwritten_reply <= 14,
             "pending reply exceeded the internal bound: {}",
-            metrics.pending_reply_bytes
+            pending.unwritten_reply
         );
         assert_eq!(
-            metrics.pending_input_bytes + metrics.pending_reply_bytes,
-            metrics.pending_write_bytes,
+            pending.unwritten_input + pending.unwritten_reply,
+            pending.unwritten_total,
             "reply/input split must partition the write queue"
         );
         visible_text(session).contains("GOT:")
     });
     assert_eq!(
-        session.metrics().terminal_reply_bytes_generated,
+        session.counters().terminal_reply_bytes_generated,
         250,
         "a reply was dropped"
     );
@@ -335,27 +335,29 @@ fn reply_flood_is_bounded_and_nothing_is_dropped() {
 }
 
 #[test]
-fn metrics_reflect_pending_and_cumulative_state() {
+fn counters_and_pending_bytes_reflect_state() {
     let mut session =
         spawn_session("stty -echo; while IFS= read -r line; do printf 'X:%s\\n' \"$line\"; done");
     session
         .enqueue_input(termnix::Input::Raw(b"hello\n"))
         .expect("enqueue");
 
-    let before = session.metrics();
-    assert_eq!(before.input_bytes_enqueued, 6);
-    assert_eq!(before.pending_write_bytes, 6);
-    assert_eq!(before.pending_input_bytes, 6);
-    assert_eq!(before.pending_reply_bytes, 0);
+    let before_counters = *session.counters();
+    let before_pending = session.pending_bytes();
+    assert_eq!(before_counters.input_bytes_enqueued, 6);
+    assert_eq!(before_pending.unwritten_total, 6);
+    assert_eq!(before_pending.unwritten_input, 6);
+    assert_eq!(before_pending.unwritten_reply, 0);
     assert!(session.interests().writable, "writable interest missing");
     assert!(session.needs_pump(), "queued input should need a pump");
 
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         visible_text(&sessions[0]).contains("X:hello")
     });
-    let after = session.metrics();
-    assert!(after.pty_bytes_written >= 6, "bytes not written");
-    assert_eq!(after.pending_write_bytes, 0);
+    let after_counters = *session.counters();
+    let after_pending = session.pending_bytes();
+    assert!(after_counters.pty_bytes_written >= 6, "bytes not written");
+    assert_eq!(after_pending.unwritten_total, 0);
     assert!(!session.interests().writable, "stale writable interest");
     // With nothing queued and the fd drained to WouldBlock, no immediate
     // re-pump is requested.
@@ -399,11 +401,11 @@ fn try_wait_reaps_and_keeps_state_readable() {
     assert_eq!(status.code(), Some(7), "status={status:?}");
     assert_eq!(session.status(), termnix::SessionStatus::Reaped);
 
-    // After the reap the state, snapshot, and metrics remain accessible.
+    // After the reap the state, snapshot, and counters remain accessible.
     assert!(session.terminal_state().size().rows.get() > 0);
     assert!(visible_text(&session).contains("bye"));
-    let metrics = session.metrics();
-    assert!(metrics.pty_bytes_read > 0);
+    let counters = session.counters();
+    assert!(counters.pty_bytes_read > 0);
     assert!(session.fd().is_none(), "fd should be gone after reap");
 }
 
@@ -530,12 +532,12 @@ fn pump_budget_bounds_work_per_call() {
     assert_eq!(tiny.bytes(), 0);
     assert_eq!(tiny.syscalls(), 1);
 
-    let before = session.metrics().pump_budget_exhaustions;
+    let before = session.counters().pump_budget_exhaustions;
     session
         .enqueue_input(termnix::Input::Raw(b"hello\n"))
         .expect("enqueue");
     session.pump_io(tiny).expect("pump with tiny budget");
-    let after = session.metrics().pump_budget_exhaustions;
+    let after = session.counters().pump_budget_exhaustions;
     assert!(
         after > before,
         "tiny budget should report exhaustion: {before} -> {after}"
@@ -590,7 +592,7 @@ fn trim_scrollback_via_session_matches_terminal_state() {
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         sessions[0].terminal_state().scrollback_len() >= 10
     });
-    let before = session.metrics();
+    let before = *session.counters();
     let before_len = session.terminal_state().scrollback_len();
     let before_cells = session.terminal_state().scrollback_cells();
     assert!(before_len > 0);
