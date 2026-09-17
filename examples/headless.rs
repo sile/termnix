@@ -305,7 +305,7 @@ fn poll_timeout_ms(deadline: Instant, next_process_poll: Instant) -> i32 {
 /// Builds normalized row strings from scrollback and the visible screen.
 fn visible_rows(state: &termnix::TerminalState) -> Vec<String> {
     let mut rows = Vec::new();
-    for line in state.scrollback().iter() {
+    for line in state.scrollback_lines().iter() {
         rows.push(normalize_cells(line.cells()));
     }
     let size = state.size();

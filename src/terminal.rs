@@ -49,9 +49,9 @@ use crate::terminal_types::SavedCursor;
 ///
 /// Feed PTY bytes with [`feed()`](TerminalState::feed), then read the screen
 /// grid through [`rows()`](TerminalState::rows) and the retained history with
-/// [`scrollback()`](TerminalState::scrollback). Query replies are queued as
-/// [`TerminalAction`] values for the caller to write, so this type never
-/// touches a file descriptor.
+/// [`scrollback_lines()`](TerminalState::scrollback_lines). Query replies are
+/// queued as [`TerminalAction`] values for the caller to write, so this type
+/// never touches a file descriptor.
 ///
 /// The supported sequences are:
 ///
@@ -287,7 +287,7 @@ impl TerminalState {
     /// [`TerminalState::rows()`], they are never reflowed by a later resize.
     /// The deque is exposed directly so callers can index, iterate, or measure
     /// the history without cloning it.
-    pub fn scrollback(&self) -> &VecDeque<ScrollbackLine> {
+    pub fn scrollback_lines(&self) -> &VecDeque<ScrollbackLine> {
         &self.scrollback
     }
 

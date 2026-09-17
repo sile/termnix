@@ -763,7 +763,7 @@ impl Session {
         self.counters.max_scrollback_lines = self
             .counters
             .max_scrollback_lines
-            .max(self.term.scrollback().len());
+            .max(self.term.scrollback_lines().len());
         self.counters.max_scrollback_cells = self
             .counters
             .max_scrollback_cells

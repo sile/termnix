@@ -48,7 +48,7 @@ pub fn spawn(script: &str, size: Size) -> Session {
 pub fn snapshot_text(session: &Session) -> String {
     let state = session.terminal_state();
     let mut out = String::new();
-    for line in state.scrollback().iter() {
+    for line in state.scrollback_lines().iter() {
         out.push_str(&render_row(line.cells()));
     }
     for row in state.rows() {

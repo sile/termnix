@@ -301,11 +301,11 @@ fn compare_snapshot_to_reference(
         }
     }
     assert_eq!(
-        snap.scrollback().len(),
+        snap.scrollback_lines().len(),
         reference.scrollback.len(),
         "{desc}; scrollback length mismatch"
     );
-    for (actual_line, expected_line) in snap.scrollback().iter().zip(&reference.scrollback) {
+    for (actual_line, expected_line) in snap.scrollback_lines().iter().zip(&reference.scrollback) {
         assert_eq!(
             actual_line.cells().len(),
             expected_line.len(),
@@ -324,8 +324,12 @@ fn assert_within_bounds(
     max_cells: usize,
     desc: &str,
 ) {
-    let lines = snap.scrollback().len();
-    let cells: usize = snap.scrollback().iter().map(|l| l.cells().len()).sum();
+    let lines = snap.scrollback_lines().len();
+    let cells: usize = snap
+        .scrollback_lines()
+        .iter()
+        .map(|l| l.cells().len())
+        .sum();
     if max_lines == 0 || max_cells == 0 {
         assert_eq!(lines, 0, "{desc}; zero bound did not clear scrollback");
     } else {
@@ -384,7 +388,7 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
         compare_snapshot_to_reference(snap_whole, &reference, rows, cols, &desc);
 
         // Trimming must match the reference model and satisfy the bounds.
-        let pre_trim_len = whole.scrollback().len();
+        let pre_trim_len = whole.scrollback_lines().len();
         whole.trim_scrollback(max_lines, max_cells);
         ref_trim_scrollback(&mut reference, max_lines, max_cells);
         let snap_trimmed = &whole;
@@ -392,7 +396,7 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
         assert_within_bounds(snap_trimmed, max_lines, max_cells, &desc);
         // The cell counter stays consistent with the retained lines.
         let cells: usize = snap_trimmed
-            .scrollback()
+            .scrollback_lines()
             .iter()
             .map(|l| l.cells().len())
             .sum();
@@ -402,8 +406,8 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
             "{desc}; scrollback_cells mismatch"
         );
         assert_eq!(
-            whole.scrollback().len(),
-            snap_trimmed.scrollback().len(),
+            whole.scrollback_lines().len(),
+            snap_trimmed.scrollback_lines().len(),
             "{desc}; scrollback_len mismatch"
         );
 
@@ -425,7 +429,7 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
 
         saw_scroll.set(saw_scroll.get() || reference.scrolls > 0);
         saw_wrap.set(saw_wrap.get() || reference.wraps > 0);
-        saw_trim.set(saw_trim.get() || whole.scrollback().len() < pre_trim_len);
+        saw_trim.set(saw_trim.get() || whole.scrollback_lines().len() < pre_trim_len);
         saw_clear.set(saw_clear.get() || max_lines == 0 || max_cells == 0);
 
         Ok(())
@@ -567,7 +571,7 @@ fn snapshot_owns_size_cells_cursor_modes_style_title_and_active() {
     assert_eq!(snap.title(), t.title());
     assert_eq!(snap.title(), "snap-title");
     assert!(!snap.is_on_alternate_screen());
-    assert!(snap.scrollback().is_empty());
+    assert!(snap.scrollback_lines().is_empty());
 }
 
 #[test]
@@ -590,8 +594,8 @@ fn wide_character_lead_and_continuation_survive_in_snapshot() {
     t.feed("あ".as_bytes());
     t.feed(b"\r\n\r\n"); // cursor to bottom, then scrolls row 0 out
     let snap = &t;
-    assert_eq!(snap.scrollback().len(), 1);
-    let line = snap.scrollback().front().expect("scrollback line");
+    assert_eq!(snap.scrollback_lines().len(), 1);
+    let line = snap.scrollback_lines().front().expect("scrollback line");
     assert_eq!(line.cells()[0].ch, 'あ');
     assert_eq!(line.cells()[0].width, 2);
     assert_eq!(line.cells()[1].ch, ' ');
@@ -604,12 +608,12 @@ fn only_full_screen_primary_scroll_adds_history() {
     // Bottom-row LF with a full-screen region adds the displaced row.
     let mut t = term(2, 4);
     t.feed(b"top\r\n");
-    assert!(t.scrollback().is_empty());
+    assert!(t.scrollback_lines().is_empty());
     t.feed(b"x\r\n");
     let snap = &t;
-    assert_eq!(snap.scrollback().len(), 1);
+    assert_eq!(snap.scrollback_lines().len(), 1);
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "top"
     );
 }
@@ -621,7 +625,7 @@ fn partial_scroll_region_is_not_added_to_history() {
     t.feed(b"\x1b[2;3r"); // scroll region rows 2-3
     t.feed(b"\x1b[3;1H\n"); // LF at region bottom scrolls within the region
     let snap = &t;
-    assert!(snap.scrollback().is_empty());
+    assert!(snap.scrollback_lines().is_empty());
     assert_eq!(text_at(snap, 0), "aaaa");
 }
 
@@ -631,13 +635,13 @@ fn insert_lines_delete_lines_and_scroll_down_are_not_added() {
     t.feed(b"aaaa\r\nbbbb\r\ncccc\r\ndddd");
     t.feed(b"\x1b[2;4r"); // region rows 2-4
     t.feed(b"\x1b[2;1H\x1b[L"); // IL at row 1 within the region
-    assert!(t.scrollback().is_empty());
+    assert!(t.scrollback_lines().is_empty());
     t.feed(b"\x1b[2;1H\x1b[M"); // DL at row 1 within the region
-    assert!(t.scrollback().is_empty());
+    assert!(t.scrollback_lines().is_empty());
     t.feed(b"\x1b[2;1H\x1b[T"); // SD scrolls the region down
-    assert!(t.scrollback().is_empty());
+    assert!(t.scrollback_lines().is_empty());
     t.feed(b"\x1b[2;1H\x1bM"); // RI scrolls the region down
-    assert!(t.scrollback().is_empty());
+    assert!(t.scrollback_lines().is_empty());
 }
 
 #[test]
@@ -645,17 +649,17 @@ fn resize_does_not_add_or_reflow_history() {
     let mut t = term(3, 4);
     t.feed(b"aaaa\r\nbbbb\r\ncccc\r\ndddd");
     // After the fourth line the top row "aaaa" scrolled out.
-    let before = t.scrollback().len();
+    let before = t.scrollback_lines().len();
     assert_eq!(before, 1);
     t.resize(termnix::Size::new(2, 4).expect("nonzero size"));
     let snap = &t;
-    assert_eq!(snap.scrollback().len(), 1);
+    assert_eq!(snap.scrollback_lines().len(), 1);
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "aaaa"
     );
     assert_eq!(
-        snap.scrollback()
+        snap.scrollback_lines()
             .front()
             .expect("scrollback line")
             .cells()
@@ -669,36 +673,36 @@ fn alternate_screen_scrolls_into_visible_not_history() {
     let mut t = term(3, 4);
     t.feed(b"aaaa\r\nbbbb\r\ncccc\r\ndddd");
     // Scrollback holds "aaaa" from the primary screen scroll.
-    assert_eq!(t.scrollback().len(), 1);
+    assert_eq!(t.scrollback_lines().len(), 1);
     t.feed(b"\x1b[?1049h");
     t.feed(b"xy\r\nzz\r\n");
     let snap = &t;
     assert!(snap.is_on_alternate_screen());
     assert_eq!(text_at(snap, 0), "xy");
-    assert_eq!(snap.scrollback().len(), 1);
+    assert_eq!(snap.scrollback_lines().len(), 1);
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "aaaa"
     );
     // Leaving the alternate screen does not move its rows into history.
     t.feed(b"\x1b[?1049l");
     let snap = &t;
     assert!(!snap.is_on_alternate_screen());
-    assert_eq!(snap.scrollback().len(), 1);
+    assert_eq!(snap.scrollback_lines().len(), 1);
 }
 
 #[test]
 fn ed2_clears_visible_keeps_scrollback() {
     let mut t = term(2, 4);
     t.feed(b"aaaa\r\nbbbb\r\ndddd"); // "aaaa" scrolled out
-    assert_eq!(t.scrollback().len(), 1);
+    assert_eq!(t.scrollback_lines().len(), 1);
     t.feed(b"\x1b[2J");
     let snap = &t;
     assert_eq!(text_at(snap, 0), "");
     assert_eq!(text_at(snap, 1), "");
-    assert_eq!(snap.scrollback().len(), 1);
+    assert_eq!(snap.scrollback_lines().len(), 1);
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "aaaa"
     );
 }
@@ -707,11 +711,11 @@ fn ed2_clears_visible_keeps_scrollback() {
 fn ed3_clears_scrollback_keeps_visible_and_resets_cell_count() {
     let mut t = term(2, 4);
     t.feed(b"aaaa\r\nbbbb\r\ndddd"); // "aaaa" scrolled out; row0=bbbb,row1=dddd
-    assert_eq!(t.scrollback().len(), 1);
+    assert_eq!(t.scrollback_lines().len(), 1);
     assert_eq!(t.scrollback_cells(), 4);
     t.feed(b"\x1b[3J");
     let snap = &t;
-    assert!(snap.scrollback().is_empty());
+    assert!(snap.scrollback_lines().is_empty());
     assert_eq!(t.scrollback_cells(), 0);
     assert_eq!(text_at(snap, 0), "bbbb");
     assert_eq!(text_at(snap, 1), "dddd");
@@ -722,10 +726,10 @@ fn ris_clears_screen_and_scrollback() {
     let mut t = term(2, 4);
     t.feed(b"aaaa\r\nbbbb\r\ndddd");
     t.feed(b"\x1b]2;gone\x07\x1b[?25l");
-    assert_eq!(t.scrollback().len(), 1);
+    assert_eq!(t.scrollback_lines().len(), 1);
     t.feed(b"\x1bc");
     let snap = &t;
-    assert!(snap.scrollback().is_empty());
+    assert!(snap.scrollback_lines().is_empty());
     assert_eq!(t.scrollback_cells(), 0);
     assert_eq!(text_at(snap, 0), "");
     assert_eq!(text_at(snap, 1), "");
@@ -740,13 +744,13 @@ fn csi_su_with_count_saves_displaced_rows_top_to_bottom() {
     t.feed(b"aaaa\r\nbbbb\r\ncccc");
     t.feed(b"\x1b[2S");
     let snap = &t;
-    assert_eq!(snap.scrollback().len(), 2);
+    assert_eq!(snap.scrollback_lines().len(), 2);
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "aaaa"
     );
     assert_eq!(
-        line_text(snap.scrollback().get(1).expect("scrollback line")),
+        line_text(snap.scrollback_lines().get(1).expect("scrollback line")),
         "bbbb"
     );
     // The remaining row moved to the top.
@@ -759,17 +763,17 @@ fn csi_su_count_at_least_screen_height_saves_all_rows_once() {
     t.feed(b"aaaa\r\nbbbb\r\ncccc");
     t.feed(b"\x1b[5S");
     let snap = &t;
-    assert_eq!(snap.scrollback().len(), 3);
+    assert_eq!(snap.scrollback_lines().len(), 3);
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "aaaa"
     );
     assert_eq!(
-        line_text(snap.scrollback().get(1).expect("scrollback line")),
+        line_text(snap.scrollback_lines().get(1).expect("scrollback line")),
         "bbbb"
     );
     assert_eq!(
-        line_text(snap.scrollback().get(2).expect("scrollback line")),
+        line_text(snap.scrollback_lines().get(2).expect("scrollback line")),
         "cccc"
     );
     assert_eq!(text_at(snap, 0), "");
@@ -782,17 +786,17 @@ fn history_is_retained_without_a_built_in_limit() {
     let mut t = term(2, 4);
     t.feed(b"aaaa\r\nbbbb\r\ncccc\r\ndddd\r\neeee");
     let snap = &t;
-    assert_eq!(snap.scrollback().len(), 3);
+    assert_eq!(snap.scrollback_lines().len(), 3);
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "aaaa"
     );
     assert_eq!(
-        line_text(snap.scrollback().get(1).expect("scrollback line")),
+        line_text(snap.scrollback_lines().get(1).expect("scrollback line")),
         "bbbb"
     );
     assert_eq!(
-        line_text(snap.scrollback().get(2).expect("scrollback line")),
+        line_text(snap.scrollback_lines().get(2).expect("scrollback line")),
         "cccc"
     );
 }
@@ -801,16 +805,16 @@ fn history_is_retained_without_a_built_in_limit() {
 fn trim_scrollback_removes_oldest_lines_to_line_bound() {
     let mut t = term(2, 4);
     t.feed(b"aaaa\r\nbbbb\r\ncccc\r\ndddd\r\neeee");
-    assert_eq!(t.scrollback().len(), 3);
+    assert_eq!(t.scrollback_lines().len(), 3);
     t.trim_scrollback(2, usize::MAX);
-    assert_eq!(t.scrollback().len(), 2);
+    assert_eq!(t.scrollback_lines().len(), 2);
     let snap = &t;
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "bbbb"
     );
     assert_eq!(
-        line_text(snap.scrollback().get(1).expect("scrollback line")),
+        line_text(snap.scrollback_lines().get(1).expect("scrollback line")),
         "cccc"
     );
 }
@@ -821,11 +825,11 @@ fn trim_scrollback_removes_oldest_lines_to_cell_bound() {
     t.feed(b"aaaa\r\nbbbb\r\ncccc\r\ndddd\r\neeee");
     // Each line is 4 cells; max_cells 6 keeps exactly one line.
     t.trim_scrollback(usize::MAX, 6);
-    assert_eq!(t.scrollback().len(), 1);
+    assert_eq!(t.scrollback_lines().len(), 1);
     assert_eq!(t.scrollback_cells(), 4);
     let snap = &t;
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "cccc"
     );
 }
@@ -835,11 +839,11 @@ fn trim_scrollback_satisfies_both_bounds_and_keeps_cell_count_consistent() {
     let mut t = term(2, 4);
     t.feed(b"aaaa\r\nbbbb\r\ncccc\r\ndddd\r\neeee");
     t.trim_scrollback(1, 6);
-    assert_eq!(t.scrollback().len(), 1);
+    assert_eq!(t.scrollback_lines().len(), 1);
     assert_eq!(t.scrollback_cells(), 4);
     let snap = &t;
     assert_eq!(
-        line_text(snap.scrollback().front().expect("scrollback line")),
+        line_text(snap.scrollback_lines().front().expect("scrollback line")),
         "cccc"
     );
 }
@@ -849,11 +853,11 @@ fn trim_scrollback_with_zero_clears_everything() {
     let mut t = term(2, 4);
     t.feed(b"aaaa\r\nbbbb\r\ncccc");
     t.trim_scrollback(0, usize::MAX);
-    assert!(t.scrollback().is_empty());
+    assert!(t.scrollback_lines().is_empty());
     assert_eq!(t.scrollback_cells(), 0);
     t.feed(b"xxxx\r\nyyyy");
     t.trim_scrollback(usize::MAX, 0);
-    assert!(t.scrollback().is_empty());
+    assert!(t.scrollback_lines().is_empty());
     assert_eq!(t.scrollback_cells(), 0);
 }
 
@@ -865,7 +869,7 @@ fn trim_scrollback_keeps_newest_lines_whole() {
     let snap = &t;
     // Newest content survives; no line is partially retained.
     assert_eq!(
-        snap.scrollback()
+        snap.scrollback_lines()
             .front()
             .expect("scrollback line")
             .cells()
@@ -873,7 +877,7 @@ fn trim_scrollback_keeps_newest_lines_whole() {
         4
     );
     assert_eq!(
-        snap.scrollback()
+        snap.scrollback_lines()
             .get(1)
             .expect("scrollback line")
             .cells()
@@ -888,8 +892,8 @@ fn scrollback_lines_keep_full_row_width() {
     let mut t = term(2, 6);
     t.feed(b"ab\r\n\r\n");
     let snap = &t;
-    assert_eq!(snap.scrollback().len(), 1);
-    let line = snap.scrollback().front().expect("scrollback line");
+    assert_eq!(snap.scrollback_lines().len(), 1);
+    let line = snap.scrollback_lines().front().expect("scrollback line");
     assert_eq!(line.cells().len(), 6);
     assert_eq!(line.len(), 6);
     assert!(!line.is_empty());
