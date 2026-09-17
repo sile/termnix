@@ -7,10 +7,16 @@ Status: draft
 
 ## Summary
 
-Delete `Size::new(rows: u16, cols: u16) -> Option<Size>`. `Size` already has
-`pub rows: NonZeroU16` and `pub cols: NonZeroU16`, so call sites construct it
-with a struct literal. Callers with a `u16` convert through `NonZeroU16` at the
-point where they know the value is non-zero.
+Consider deleting `Size::new(rows: u16, cols: u16) -> Option<Size>`. `Size`
+already has `pub rows: NonZeroU16` and `pub cols: NonZeroU16`, so call sites
+could construct it with a struct literal instead.
+
+The case for removing it is the argument order: two `u16` values sit next to
+each other, so a swapped call compiles, while a struct literal's field names
+would not allow it. The case against is that removing `new` makes callers reach
+for `NonZeroU16` themselves, while the `Option` it carries is what the 39 call
+sites unwrap — and that unwrapping does not go away with `new`; a local test
+helper removes it either way.
 
 ## Motivation
 
@@ -43,21 +49,40 @@ sites. Exactly one site — the host-terminal size conversion in
 `examples/tuinix.rs` — takes a value it does not control, and it already turns
 the `Option` into its own error there.
 
-There is also a construction-side problem the constructor does not solve. In
-tests, a helper like this is the common shape:
+There are two problems here, and it matters that they are separate. The first is
+the argument order: `Size::new(rows, cols)` puts two `u16` values next to each
+other, so a call that swaps them still compiles, and the struct literal's field
+names are the only thing that would have caught it. The second is the
+boilerplate: `Size::new` returns `Option`, so every call site unwraps it.
+
+Removing `new` only fixes the first. Callers with a `u16` still have to convert
+through `NonZeroU16`, and they still have to decide what to do when it is zero —
+so the `expect` does not disappear, it moves into the struct literal and, worse,
+repeats per field:
 
 ```rust
-fn term(rows: u16, cols: u16) -> TerminalState {
-    TerminalState::new(Size::new(rows, cols).expect("nonzero size"))
+// with `new`
+Size::new(rows, cols).expect("nonzero size")
+
+// without `new`, the same call site
+Size {
+    rows: NonZeroU16::new(rows).expect("nonzero rows"),
+    cols: NonZeroU16::new(cols).expect("nonzero cols"),
 }
 ```
 
 The `expect` is not protecting the test; it is restating "these are non-zero",
-which the test's own literal already says. The same intent is expressed more
-directly by a small helper local to the test that takes `u16` and unwraps the
-`NonZeroU16` conversion in one place:
+which the test's own literal already says. What actually removes the repetition
+is a small helper local to the test that takes `u16` and unwraps the conversion
+in one place:
 
 ```rust
+// with `new`
+fn size(rows: u16, cols: u16) -> Size {
+    Size::new(rows, cols).expect("nonzero size")
+}
+
+// without `new`
 fn size(rows: u16, cols: u16) -> Size {
     Size {
         rows: NonZeroU16::new(rows).expect("rows is non-zero"),
@@ -66,8 +91,10 @@ fn size(rows: u16, cols: u16) -> Size {
 }
 ```
 
-That helper is where the assumption lives, it names the field it is checking,
-and the test body reads as `size(24, 80)` instead of the conversion chain.
+That helper is where the assumption lives, and the test body reads as
+`size(24, 80)` instead of the conversion chain. Note that it works either way:
+the helper does not depend on whether `Size::new` exists. So the honest
+motivation for removing `new` is the argument order, not the `expect`s.
 
 ## Proposal
 
@@ -105,13 +132,34 @@ If a checked constructor turns out to be worth keeping for the dynamic case, it
 belongs on the caller's side (a conversion from the host size), not as a
 `u16`-taking constructor on `Size` itself.
 
+### Scope
+
+This proposal is only about the argument order. Reducing the number of
+`.expect()` call sites in the tests is a separate change that does not depend on
+removing `new`: a local `fn size(rows, cols) -> Size` helper achieves it whether
+or not `Size::new` exists. If the `expect` boilerplate is the only complaint,
+the helper is the whole fix and `Size::new` can stay.
+
+That is the trade-off to decide. Removing `new` buys field-name-checked
+construction, at the cost of making callers reach for `NonZeroU16` themselves.
+Keeping `new` and adding a local test helper buys the same reduction in noise
+with no API change, but leaves the positional argument. The choice is between
+the positional argument and the `NonZeroU16` reach, not between changing and
+not changing the API.
+
 ## Alternatives
 
-### Keep `Size::new`
+### Keep `Size::new`, add a local test helper
 
-Rejected. The fields are already public, so the constructor enforces nothing
-that a struct literal does not. Its only effect across the repository is 39
-`.expect()` call sites.
+The strongest alternative, and the one the current draft is undecided against.
+Keep `new` as sugar over the `u16` -> `NonZeroU16` conversion, and add a
+`fn size(rows: u16, cols: u16) -> Size` helper in the tests. That removes the
+`.expect()` repetition — the part that is actually noisy — with no API change,
+and `new` still centralizes the `Option` for the one dynamic site.
+
+What it does not fix is the positional `rows, cols` arguments: a swapped call
+still compiles. Whether that risk is worth calling `NonZeroU16` at the
+construction site is the question this RFC should answer.
 
 ### Make the fields private and keep `new`
 
@@ -137,20 +185,31 @@ impossible-failure problem in the tuple. A struct literal names the fields.
 
 ## Drawbacks
 
+If `new` is removed:
+
 - Callers must reach for `NonZeroU16` directly. That is one import, and it is
 the type the fields actually hold.
-- Removing a public constructor is a breaking change for the crate's users.
-  `termnix` is at `0.1.0` and the type is unlikely to be constructed by anyone
-  who is not already holding `NonZeroU16` (a caller who got a `Size` from
-  `Session` or `TerminalState` never calls `new` at all).
+- A caller who got a `Size` from `Session` or `TerminalState` never calls
+  `new`, so the change is confined to code that constructs a `Size` itself.
 - A caller with `u16` from an untrusted source now writes the conversion
   themselves. That is unavoidable: the conversion has to happen somewhere, and
   only the caller knows what to do when a dimension is zero.
 
+If `new` is kept:
+
+- The positional `rows, cols` risk stays. A swapped call compiles. In practice
+  the 39 call sites are literals in tests and examples, where a swap is caught
+  the first time the test runs, so the risk is concentrated in the one dynamic
+  site.
+
 ## Open questions
 
-- Whether to keep a `pub(crate)` helper for the test and example literals, or
-  to let each test file define its own. A per-file helper is the proposal;
-  a shared one would need a home that is not the public API.
-- Whether the error message for the dynamic conversion should name the failing
-  dimension (rows or cols) rather than repeating the whole size.
+- Is the positional-argument risk worth making callers reach for `NonZeroU16`?
+  If the answer is no, this RFC becomes "keep `new`, add a test-side `size`
+  helper" and the removal is dropped.
+- If `new` is kept, does the local helper belong in each test file or in a
+  shared test module? A per-file helper is the current proposal; a shared one
+  would need a home that is not the public API.
+- If `new` is removed, should the dynamic conversion in `examples/tuinix.rs`
+  name the failing dimension (rows or cols) rather than repeating the whole
+  size?
