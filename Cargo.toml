@@ -2,6 +2,7 @@
 name = "termnix"
 version = "0.1.0"
 edition = "2024"
+exclude = ["backlog/"]
 rust-version = "1.97"
 authors = ["Takeru Ohta <phjgt308@gmail.com>"]
 description = "A Unix-only library for PTY-backed child processes and terminal emulation"
