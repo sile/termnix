@@ -8,11 +8,11 @@ termnix
 
 A Unix-only library for PTY-backed child processes and terminal emulation.
 
-`termnix` provides three things: sessions that own a child's pseudo-terminal,
-an I/O-free terminal emulator that turns its bytes into a screen grid, and an
-I/O model driven entirely from the caller's poll loop without an async
-runtime. Multiplexing several sessions is one use of these primitives, not the
-scope of the crate.
+The crate owns three things: the pseudo-terminal of each child process, an
+I/O-free emulator that turns its bytes into a screen grid, and an I/O model
+driven from the caller's own poll loop. What it leaves to the caller is just
+as much a part of the design. Multiplexing several sessions is one use of
+these primitives, not the scope of the crate.
 
 ## What it does not own
 
