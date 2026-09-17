@@ -9,6 +9,11 @@ pub struct Position {
     pub col: u16,
 }
 
+impl Position {
+    /// The origin of the screen, `row` and `col` both zero.
+    pub const ORIGIN: Self = Self { row: 0, col: 0 };
+}
+
 /// Cell color.
 ///
 /// Indexed values use the usual ANSI/xterm numbering: 0–15 are the system

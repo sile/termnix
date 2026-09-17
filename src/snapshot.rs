@@ -135,8 +135,8 @@ impl TerminalSnapshot {
     ///
     /// The number of rows equals [`Size::rows`](crate::size::Size::rows) and
     /// every slice has exactly [`Size::cols`](crate::size::Size::cols) cells.
-    /// As with [`TerminalLine::cells`], a row slice keeps the width it had at
-    /// snapshot time and is never reflowed by later resizes.
+    /// A row slice keeps the width it had at snapshot time and is never
+    /// reflowed by later resizes.
     pub fn rows(&self) -> impl Iterator<Item = &[Cell]> {
         let cols = self.size.cols.get() as usize;
         self.cells.chunks(cols)

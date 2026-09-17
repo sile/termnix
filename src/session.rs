@@ -610,8 +610,9 @@ impl Session {
     /// Returns read-only access to the session's terminal state.
     ///
     /// Available in every phase, including after the child has been reaped.
-    /// Call [`TerminalState::snapshot`] on the returned reference for an owned
-    /// copy.
+    /// The returned reference exposes the live state directly, so a caller
+    /// that keeps the data after the session moves on should call
+    /// [`TerminalState::snapshot`] for an owned copy.
     pub fn terminal_state(&self) -> &TerminalState {
         &self.term
     }

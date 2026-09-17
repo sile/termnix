@@ -1273,3 +1273,83 @@ fn identical_feeds_reach_the_same_revision() {
     b.feed(b"hello\r\nworld");
     assert_eq!(a.revision(), b.revision());
 }
+
+#[test]
+fn origin_is_row_and_column_zero() {
+    let origin = termnix::Position::ORIGIN;
+    assert_eq!(origin.row, 0);
+    assert_eq!(origin.col, 0);
+    assert_eq!(
+        origin,
+        termnix::Position { row: 0, col: 0 },
+        "ORIGIN must equal the literal zero position"
+    );
+}
+
+#[test]
+fn rows_match_size_and_cell_access() {
+    let mut t = term(3, 4);
+    t.feed(b"ab\x1b[1;31mZ\r\ncd\r\nef");
+
+    let rows: Vec<&[termnix::Cell]> = t.rows().collect();
+    assert_eq!(rows.len(), t.size().rows.get() as usize);
+    for row in &rows {
+        assert_eq!(row.len(), t.size().cols.get() as usize);
+    }
+
+    // Every cell reachable by `rows()` matches `cell(Position)`.
+    for (r, row) in rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            let at = termnix::Position {
+                row: r as u16,
+                col: c as u16,
+            };
+            assert_eq!(*cell, t.cell(at).expect("cell in range"));
+        }
+    }
+}
+
+#[test]
+fn row_returns_the_same_slice_as_rows_and_rejects_out_of_range() {
+    let mut t = term(2, 4);
+    t.feed(b"ab\r\ncd");
+
+    assert_eq!(t.row(0), t.rows().next());
+    assert_eq!(t.row(1), t.rows().nth(1));
+    assert_eq!(t.row(0).expect("row 0")[0].ch, 'a');
+    assert_eq!(t.row(1).expect("row 1")[0].ch, 'c');
+    assert_eq!(t.row(2), None);
+    assert_eq!(t.row(u16::MAX), None);
+}
+
+#[test]
+fn rows_work_for_a_single_cell_screen() {
+    let mut t = term(1, 1);
+    t.feed(b"x");
+
+    let rows: Vec<&[termnix::Cell]> = t.rows().collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].len(), 1);
+    assert_eq!(rows[0][0].ch, 'x');
+    assert_eq!(t.row(0), Some(&[rows[0][0]][..]));
+    assert_eq!(t.row(1), None);
+}
+
+#[test]
+fn rows_follow_the_active_screen_through_resize_and_alternate_screen() {
+    let mut t = term(2, 4);
+    t.feed(b"ab\r\ncd");
+    let before = text_at(&t, 0);
+    assert_eq!(before, "ab");
+
+    // Resizing re-lays the cells; the first row is still reachable through
+    // the same accessor.
+    t.resize(termnix::Size::new(2, 6).expect("nonzero size"));
+    assert_eq!(t.row(0).expect("row 0").len(), 6);
+    assert_eq!(text_at(&t, 0), "ab");
+
+    // The alternate screen is what `rows()` reports once it is active.
+    t.feed(b"\x1b[?1049h\x1b[1;1HZZ");
+    assert!(t.is_on_alternate_screen());
+    assert_eq!(text_at(&t, 0), "ZZ");
+}

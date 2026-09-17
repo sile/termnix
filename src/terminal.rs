@@ -214,6 +214,29 @@ impl TerminalState {
         self.active().get(at)
     }
 
+    /// Returns each visible row as a left-to-right cell slice, top to bottom.
+    ///
+    /// The number of rows equals [`Size::rows`](crate::size::Size::rows) and
+    /// every slice has exactly [`Size::cols`](crate::size::Size::cols) cells.
+    /// As with [`TerminalLine::cells`](crate::TerminalLine::cells), a row slice
+    /// keeps the width it had when it was last written and is never reflowed by
+    /// later resizes.
+    pub fn rows(&self) -> impl Iterator<Item = &[Cell]> {
+        let cols = self.size.cols.get() as usize;
+        self.active().cells().chunks(cols)
+    }
+
+    /// Returns the visible row at `row` as a cell slice, if in range.
+    ///
+    /// Equivalent to indexing the [`rows`](Self::rows) iterator by row
+    /// number; out-of-range rows return `None`.
+    pub fn row(&self, row: u16) -> Option<&[Cell]> {
+        if row >= self.size.rows.get() {
+            return None;
+        }
+        self.rows().nth(row as usize)
+    }
+
     /// Returns a copy of the current terminal modes.
     pub fn modes(&self) -> TerminalModes {
         self.modes
