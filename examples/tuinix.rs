@@ -276,15 +276,17 @@ impl App {
     }
 
     /// Forwards one host input: commands first, then a key to the selected
-    /// session. Mouse events and unsupported keys are dropped explicitly.
+    /// session. Mouse events, bracketed pastes, and bytes the decoder could not
+    /// parse are dropped explicitly.
     fn handle_input(&mut self, input: tuinix::Input) -> Result<(), AppError> {
         let tuinix::Input::Key(key) = input else {
-            // Mouse events are out of scope for this example; do not forward.
+            // Mouse events, bracketed pastes, and `Unrecognized` byte runs are
+            // out of scope for this example; do not forward them.
             return Ok(());
         };
         let Some(event) = key_event_from_host(key) else {
-            // BackTab, standalone Escape and other unsupported keys are
-            // dropped rather than remapped to a different key.
+            // BackTab, standalone Escape, function keys and other unsupported
+            // keys are dropped rather than remapped to a different key.
             return Ok(());
         };
         match command_from_key(event) {
@@ -592,6 +594,11 @@ fn drain_host_inputs(
 /// A lone `ESC` is left uncommitted: the example never forwards Escape to a
 /// child, so waiting for more bytes can only ever turn it into an Alt+key
 /// sequence, which is the more faithful reading of what the user typed.
+///
+/// `next()` returns `None` only while an incomplete sequence is held, so a
+/// stopped loop means no further input is ready; bytes the decoder cannot
+/// parse come back as [`Input::Unrecognized`](tuinix::Input::Unrecognized)
+/// and are handed to `handle_input`, which drops them.
 fn collect_inputs(decoder: &mut tuinix::InputDecoder, budget: usize) -> Vec<tuinix::Input> {
     let mut inputs = Vec::new();
     for _ in 0..budget {
@@ -629,9 +636,11 @@ fn key_event_from_host(key: tuinix::KeyInput) -> Option<termnix::KeyEvent> {
         tuinix::KeyCode::End => termnix::KeyCode::End,
         tuinix::KeyCode::PageUp => termnix::KeyCode::PageUp,
         tuinix::KeyCode::PageDown => termnix::KeyCode::PageDown,
-        // BackTab, standalone Escape and mouse events stay unsupported so the
-        // example never silently forwards a different key.
-        tuinix::KeyCode::Escape | tuinix::KeyCode::BackTab => return None,
+        // BackTab, standalone Escape, function keys and mouse events stay
+        // unsupported so the example never silently forwards a different key.
+        tuinix::KeyCode::Escape | tuinix::KeyCode::BackTab | tuinix::KeyCode::F(_) => {
+            return None;
+        }
     };
     Some(termnix::KeyEvent { code, modifiers })
 }
@@ -731,7 +740,7 @@ fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
                         cell.ch
                     )
                 })?;
-            let pos = frame.next_push_position();
+            let pos = frame.next_position();
             if !frame.push_char(ch) {
                 return Err(format!(
                     "cell {:?} was clipped at {}x{} position ({}, {})",
@@ -808,7 +817,7 @@ fn run_loop(
 
         // `size()` drains the resize-signal pipe itself; a burst is collapsed
         // to one query because only the latest size matters.
-        let size = driver.size().map_err(AppError::io)?;
+        let size = driver.size();
         let size = size_from_host(size).map_err(AppError::msg)?;
         app.apply_resize(size)?;
 
@@ -846,7 +855,7 @@ fn run_loop(
                 PollOutcome::HostResize => {
                     // The signal fd was reported readable, so `size()` re-queries
                     // the terminal instead of returning the cached value.
-                    let size = driver.size().map_err(AppError::io)?;
+                    let size = driver.size();
                     let size = size_from_host(size).map_err(AppError::msg)?;
                     app.apply_resize(size)?;
                 }
@@ -878,9 +887,9 @@ fn deliver_host_inputs(decoder: &mut tuinix::InputDecoder, app: &mut App) -> Res
 fn run() -> Result<(), AppError> {
     let mut driver = TerminalDriver::new().map_err(AppError::io)?;
     let host_input_fd = driver.input_fd();
-    let host_signal_fd = driver.signal_fd();
+    let host_signal_fd = driver.resize_signal_fd();
     let mut decoder = tuinix::InputDecoder::new();
-    let size = size_from_host(driver.size().map_err(AppError::io)?).map_err(AppError::msg)?;
+    let size = size_from_host(driver.size()).map_err(AppError::msg)?;
     let mut app = App::spawn(size)?;
 
     let primary = run_loop(
@@ -1199,11 +1208,11 @@ mod tests {
         let mut frame = Frame::new(tuinix::Size { rows: 2, cols: 6 });
         write_grid(&mut frame, &grid).expect("write");
         assert_eq!(
-            frame.next_push_position().row,
+            frame.next_position().row,
             2,
             "explicit newline terminates each row"
         );
-        assert_eq!(frame.next_push_position().col, 0);
+        assert_eq!(frame.next_position().col, 0);
 
         let written = frame
             .chars()
@@ -1337,8 +1346,18 @@ mod tests {
         let stray = collect_inputs(&mut decoder, 10);
         assert!(stray.is_empty(), "held ESC must not decode: {stray:?}");
 
-        // A sequence split across two feeds is parsed exactly once.
-        decoder.feed(b"[");
+        // The held ESC is abandoned for the next part of the test: leaving it
+        // buffered would glue it to the following `ESC` as an Alt+Escape.
+        decoder.commit_escape();
+        assert_eq!(collect_inputs(&mut decoder, 10).len(), 1);
+        assert_eq!(decoder.buffered_bytes(), 0);
+
+        // A sequence split across two feeds is parsed exactly once. The
+        // terminal sends the arrow as `ESC [ 1 A`; splitting it after the
+        // introducer crosses both a CSI prefix and the parameter run.
+        decoder.feed(b"\x1b[");
+        assert!(collect_inputs(&mut decoder, 10).is_empty());
+        decoder.feed(b"1");
         assert!(collect_inputs(&mut decoder, 10).is_empty());
         decoder.feed(b"A");
         let inputs = collect_inputs(&mut decoder, 10);
@@ -1397,9 +1416,6 @@ mod tests {
         };
         let mut frame = Frame::new(tuinix::Size { rows: 2, cols: 2 });
         write_grid(&mut frame, &grid).expect("write");
-        assert_eq!(
-            frame.next_push_position(),
-            tuinix::Position { row: 2, col: 0 }
-        );
+        assert_eq!(frame.next_position(), tuinix::Position { row: 2, col: 0 });
     }
 }
