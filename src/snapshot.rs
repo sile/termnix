@@ -81,7 +81,10 @@ impl PartialEq for TerminalSnapshot {
 impl Eq for TerminalSnapshot {}
 
 impl TerminalSnapshot {
-    #[expect(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the constructor collects every field of a snapshot in one place"
+    )]
     pub(crate) fn new(
         size: Size,
         cells: Vec<Cell>,
