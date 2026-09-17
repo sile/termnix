@@ -6,11 +6,13 @@ termnix
 [![Actions Status](https://github.com/sile/termnix/workflows/CI/badge.svg)](https://github.com/sile/termnix/actions)
 ![License](https://img.shields.io/crates/l/termnix)
 
-A Unix-only foundation for building terminal multiplexers.
+A Unix-only library for PTY-backed child processes and terminal emulation.
 
-`termnix` provides an I/O-free terminal emulator, logical `Input`, and one
-PTY-backed `Session` per child process, all driven from the caller's event loop
-without an async runtime.
+`termnix` provides three things: PTY-backed `Session`s that own the child's
+pseudo-terminal, an I/O-free terminal emulator that turns its bytes into a
+screen grid, and an I/O model driven entirely from the caller's poll loop
+without an async runtime. Multiplexing several sessions is one use of these
+primitives, not the scope of the crate.
 
 ## What it does not own
 

@@ -4,12 +4,12 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.97"
 authors = ["Takeru Ohta <phjgt308@gmail.com>"]
-description = "A Unix-only foundation for building terminal multiplexers"
+description = "A Unix-only library for PTY-backed child processes and terminal emulation"
 license = "MIT"
 homepage = "https://github.com/sile/termnix"
 repository = "https://github.com/sile/termnix"
 readme = "README.md"
-keywords = ["terminal", "multiplexer", "pty", "unix"]
+keywords = ["terminal", "emulator", "pty", "unix"]
 categories = ["command-line-interface"]
 
 [dependencies]
