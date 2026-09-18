@@ -1,6 +1,6 @@
 # RFC: Make "the child exited" a single predicate
 
-- Status: draft
+- Status: rejected
 
 ## Summary
 
@@ -109,3 +109,37 @@ but to add the predicate so the common question has a common answer.
 - Predicate method, or the `SessionStatus::Exited` variant (see above)?
 - Should there also be a way to be *notified* of the transition (a flag a loop
   checks), or is a predicate enough given the caller already polls?
+
+## Outcome
+
+Not implemented; settled by documenting the distinction instead, in
+[#2](https://github.com/sile/termnix/pull/2) (merged as `d3f91f2`).
+
+Investigating the proposal showed the predicate would add no information, which
+is why it was dropped rather than renamed or narrowed. `SessionStatus::Reaped`
+is reached only once the child's exit has been observed *and* the I/O is
+finished, so `exit_status().is_some()` is already true whenever it matters, and
+`status() != SessionStatus::Reaped` — the second half of the combination this
+RFC wanted to name — never changes the answer. The combination is therefore not
+a rule the crate was missing; it is a redundant one that callers assembled
+because the two questions were not written down side by side.
+
+The two methods stay public and keep their meanings: `exit_status()` answers
+"has the child exited?" without a syscall, and `try_wait()` observes and reaps
+when the caller wants that. `status() == Reaped` keeps its place as the answer
+to "is the session over?", which is a different question and the one a pane
+that must drain before closing is actually asking. What changed in #2 is the
+documentation: `Session::exit_status()` now names the distinction and shows it,
+`SessionStatus::Reaped` says which of the two questions it answers, and
+`Session::try_wait()` points at the syscall-free accessor for the yes/no
+question. The two existing examples are cited as the two halves of the
+distinction — `examples/headless.rs` tracks the child's exit separately from
+draining, `examples/tuinix.rs` drops a pane only once the session is `Reaped` —
+so a reader has runnable code for each question rather than a new guide.
+
+`SessionStatus::Exited`, the structural alternative recorded above, is not
+needed for the same reason: the state it would name is already observable, and
+adding a variant would change every match over the status without making any of
+them easier.
+
+The scope is unchanged from what is described above.
