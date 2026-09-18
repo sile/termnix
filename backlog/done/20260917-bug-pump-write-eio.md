@@ -1,6 +1,6 @@
 # Bug: `pump_io` treats write-side `EIO` as an error, not as EOF
 
-- Status: open
+- Status: fixed
 
 ## Summary
 
@@ -64,3 +64,28 @@ Fix should likely share the normalization with the read phase rather than
 adding a second classification, so the two cannot drift again. A test should
 force the window (exit the child, then pump a write) rather than relying on the
 race happening.
+
+## Outcome
+
+Fixed in [#1](https://github.com/sile/termnix/pull/1) (merged as `861cf07`).
+
+Both directions now classify through one predicate, `is_pty_gone`, keyed on the
+raw `EIO` code. `read_phase` calls it in place of its inline check, and
+`write_phase` treats its `EIO` as PTY EOF: it retires the outbound queue
+(without touching the byte counters, the same way `close()` discards it) and
+calls `note_eof()`, so the two directions can no longer disagree about whether
+"the pty went away" is an error. This also removes a `needs_pump()` spin, since
+clearing the queue makes `outbound_empty()` true.
+
+A platform caveat found while testing: on Linux/Android a write to a master
+whose slave has closed usually succeeds (the tty layer discards or buffers it)
+rather than returning `EIO`, and `EIO` is reliably seen on the read side. So the
+write arm cannot be forced by a plain child-exit fixture here, and the report's
+"writing after child death crashes the loop" was not reproduced on this
+platform. The fix is kept as the correct contract, since a write-side `EIO` is
+never recoverable and classifying it opens no new path. The classification is
+covered by a unit test (`session::tests::pty_gone_only_matches_eio`), and the
+observable contract (a queued write after child death must not error or spin
+`needs_pump`) by `tests/session.rs::write_to_a_gone_child_is_not_an_error`.
+
+The scope is unchanged from what is described above.
