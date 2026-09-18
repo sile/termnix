@@ -275,6 +275,12 @@ pub enum SessionStatus {
     /// Logically closed; master closed, awaiting reap.
     Closing,
     /// Direct child reaped and I/O finished; the session is spent.
+    ///
+    /// This is the *session* being over, not the *child* having exited: it
+    /// requires both that the child was reaped and that I/O finished (PTY EOF
+    /// or a logical close). A child that has exited while output is still
+    /// being drained is not here; ask [`Session::exit_status()`] for that
+    /// question instead.
     Reaped,
 }
 
@@ -624,6 +630,35 @@ impl Session {
     ///
     /// This is the exit of the direct child only. It says nothing about PTY
     /// I/O, which continues until EOF independently of the child's state.
+    ///
+    /// # "The child exited" and "the session ended" are different questions
+    ///
+    /// `exit_status().is_some()` answers *the child has exited*. It becomes
+    /// true as soon as the child is reaped, including while output the child
+    /// wrote before exiting is still being drained.
+    ///
+    /// [`Session::status()`] answering [`SessionStatus::Reaped`] answers *the
+    /// session is over*, which additionally requires I/O to have finished.
+    ///
+    /// The two are not alternatives. A pane that closes when its program ends
+    /// usually has to keep draining after the child is gone: closing on the
+    /// child's exit alone would lose that output, while waiting for `Reaped`
+    /// would hold the pane open past the last useful byte. Neither is a
+    /// substitute for the other, and since `exit_status().is_some()` already
+    /// implies the child is gone, pairing it with a `Reaped` comparison adds
+    /// nothing.
+    ///
+    /// ```no_run
+    /// # let mut session: termnix::Session = unimplemented!();
+    /// // The child has exited; keep going until its output is drained.
+    /// let child_gone = session.exit_status().is_some();
+    /// let session_over = session.status() == termnix::SessionStatus::Reaped;
+    /// # let _ = (child_gone, session_over);
+    /// ```
+    ///
+    /// Two runnable examples show the split: `examples/headless.rs` tracks the
+    /// child's exit separately from draining its output, and
+    /// `examples/tuinix.rs` drops a pane only once the session is `Reaped`.
     pub fn exit_status(&self) -> Option<ExitStatus> {
         self.exit_status
     }
@@ -635,6 +670,9 @@ impl Session {
     /// I/O: while the master is still open the session stays readable until
     /// EOF. The session enters [`SessionStatus::Reaped`] only after the child
     /// is reaped and I/O is finished (EOF or a logical close).
+    ///
+    /// A child that has exited is not a session that is over; for the yes/no
+    /// question alone, [`Session::exit_status()`] answers without a syscall.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         if let Some(status) = self.exit_status {
             return Ok(Some(status));
