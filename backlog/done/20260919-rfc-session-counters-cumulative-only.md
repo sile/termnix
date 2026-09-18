@@ -1,6 +1,6 @@
 # RFC: Keep only cumulative totals in `SessionCounters`
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -315,3 +315,42 @@ available if a need appears.
 - A scrollback peak, if a consumer ever wants one, can be sampled from the
   public `TerminalState` accessors without touching the counters, which is what
   a caller can do today.
+
+## Outcome
+
+Implemented in [#3](https://github.com/sile/termnix/pull/3) (merged as `7c39e03`).
+
+The maxima are gone, and with them `update_maxes()` and the `byte_delta()`
+helper it was the last caller of. Callers that want a peak track it
+themselves from the cumulative totals; nothing in the crate needed one.
+
+`write_queue_len()` and `input_byte_len()` landed on `Session`, as proposed.
+The three example call sites and the `README.md` backpressure snippet use the
+two-term form spelled out in the RFC, and the explicit addition reads better
+at the call site than the old `unwritten()` did.
+
+Two details landed differently from what the text above predicts, both in the
+same direction as the RFC's own argument:
+
+- `written()` was deleted, not kept. The section on naming called it out as
+  the one derived accessor worth preserving, because it is the only total that
+  crosses directions. In practice it summed two `pub` fields
+  (`input_bytes_written + reply_bytes_written`), so keeping it would have been
+  the single exception to the rule the maxima and the residuals are held to.
+  The relationship moved into the two fields' own docs instead, and the one
+  caller in `tests/session.rs` now asserts on `input_bytes_written` directly --
+  which is stricter than the `written() >= 6` it replaced, since it names the
+  direction the test actually drives.
+- The residual breakdown was dropped entirely. No `write_queue_len_input()` /
+  `write_queue_len_reply()` split, as decided: the only callers wanted the
+  total.
+
+`undecoded_read()` is deleted rather than moved, and its single caller in
+`tests/session_workflow.rs` dropped the term: it was redundant with
+`needs_pump()` inside the same predicate. No `read_queue_len()` was added for
+symmetry, which would have repeated the problem just fixed.
+
+`SessionCounters` now holds cumulative totals only, each a produced/consumed
+pair.
+
+The scope is unchanged from what is described above.
