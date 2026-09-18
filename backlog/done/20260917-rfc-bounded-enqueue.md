@@ -1,6 +1,6 @@
 # RFC: Add a bounded `enqueue_input`
 
-- Status: draft
+- Status: rejected
 
 ## Summary
 
@@ -123,3 +123,52 @@ blocking inside an enqueue would deadlock against that loop.
 - One-shot method versus stored limit (see above).
 - Bytes, or a coarser unit like "number of sessions' worth of input"? The RFC
   uses bytes because `byte_len` is what the crate already reports.
+
+## Outcome
+
+Rejected. No pull request: the reasoning was settled against the proposal
+before any code was written.
+
+The Motivation describes the caller as having "no *action* to take" and as
+having only "a counter the caller must remember to check and compare against a
+limit it chose itself". But the loop the RFC itself prints as the thing to
+replace *is* the action, and it is expressible without the method:
+
+```rust
+if session.write_queue_len() + session.input_byte_len(input) > MY_LIMIT {
+    // hold or drop the input
+} else {
+    session.enqueue_input(input);
+}
+```
+
+That is the same decision `enqueue_input_bounded` would make internally, with
+the policy left where the RFC also wants it: at the call site. This is the
+"keep `enqueue_input` and document the counter harder" alternative, which the
+RFC rejects as "missing a way to act on it without the caller implementing the
+queue-depth arithmetic itself" -- and that missing piece is the whole
+proposal. The arithmetic is one addition and one comparison, and the three
+real call sites in this repository (`examples/headless.rs`, two in
+`examples/tuinix.rs`, plus the `README.md` snippet) were all rewritten to
+exactly that form while settling
+`20260919-rfc-session-counters-cumulative-only`, so the shape is known to read
+well in practice.
+
+The alternatives now have a concrete decision behind them rather than a
+preference. When the counter-cleaning proposal came to the same question -- a
+`Session`-side helper that folds the comparison -- it was rejected for the
+same reason this RFC should be: `would_exceed(limit)` and
+`unwritten_after(input)` each collapse the addition and the comparison
+convention into one name and hide what is being measured. Keeping the two
+terms explicit was chosen deliberately.
+
+What would revive this: evidence that the arithmetic is genuinely hard to get
+right at the call site (an off-by-one in the comparison, mistaking the
+pre-enqueue for the post-enqueue queue, or forgetting that `byte_len` depends
+on the session's current modes and can change between calls). The RFC notes
+that its limit is measured on the queue *after* a successful enqueue so that a
+single oversized input is refused rather than allowed to exceed the limit --
+that is a real distinction, and if callers demonstrably get it wrong, a helper
+has a reason to exist. No such evidence was presented, and the repository's
+own four sites did not need it. A default limit was not proposed either, and
+unbounded `enqueue_input` remains correct.
