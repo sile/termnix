@@ -19,5 +19,5 @@ unicode-width = "0.2"
 vte = { version = "0.15", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-tuinix = "0.6"
+tuinix = "0.7"
 noprop = "0.2"

@@ -686,7 +686,7 @@ fn position_to_host(position: termnix::Position) -> tuinix::Position {
 /// else resolves through [`termnix::Color::to_rgb`] (the xterm 256-color
 /// palette for `Indexed`).
 fn to_host_color(color: termnix::Color) -> Option<tuinix::Color> {
-    color.to_rgb().map(|(r, g, b)| tuinix::Color::new(r, g, b))
+    color.to_rgb().map(|(r, g, b)| tuinix::Color::Rgb(r, g, b))
 }
 
 /// Maps a termnix style to a tuinix style, dropping unsupported attributes.
@@ -723,11 +723,16 @@ fn to_host_style(style: termnix::Style) -> tuinix::Style {
 /// is needed. Width-0 continuation cells are skipped: they cover columns that
 /// the preceding wide character already owns.
 ///
-/// A cell that [`push_char`](tuinix::Frame::push_char) clips means the grid and
-/// the frame disagree about their geometry; that is a bug in this example, not
-/// a condition to paper over, so it is reported as an error.
+/// The position is kept here rather than in the frame: every write names the
+/// position it targets, so the sweep advances its own local one column per
+/// cell and row per row.
+///
+/// A cell that [`fits`](tuinix::Frame::fits) rejects means the grid and the
+/// frame disagree about their geometry; that is a bug in this example, not a
+/// condition to paper over, so it is reported as an error.
 fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
-    for row in &grid.rows {
+    for (row_index, row) in grid.rows.iter().enumerate() {
+        let mut col = 0usize;
         for cell in row {
             if cell.width == 0 {
                 continue;
@@ -740,8 +745,11 @@ fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
                         cell.ch
                     )
                 })?;
-            let pos = frame.next_position();
-            if !frame.push_char(ch) {
+            let pos = tuinix::Position {
+                row: row_index,
+                col,
+            };
+            if !frame.fits(pos, ch) {
                 return Err(format!(
                     "cell {:?} was clipped at {}x{} position ({}, {})",
                     cell.ch,
@@ -751,8 +759,9 @@ fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
                     pos.col
                 ));
             }
+            frame.put_char(pos, ch);
+            col += usize::from(cell.width);
         }
-        frame.push_newline();
     }
     Ok(())
 }
@@ -1016,7 +1025,9 @@ mod tests {
 
     /// The xterm-256 palette entry for a `termnix` indexed color.
     fn host_palette(index: u8) -> Option<tuinix::Color> {
-        to_host_color(termnix::Color::Indexed(index))
+        termnix::Color::Indexed(index)
+            .to_rgb()
+            .map(|(r, g, b)| tuinix::Color::Rgb(r, g, b))
     }
 
     #[test]
@@ -1127,16 +1138,16 @@ mod tests {
         assert_eq!(to_host_color(termnix::Color::Default), None);
         assert_eq!(
             to_host_color(termnix::Color::Rgb(1, 2, 3)),
-            Some(tuinix::Color::new(1, 2, 3))
+            Some(tuinix::Color::Rgb(1, 2, 3))
         );
-        assert_eq!(host_palette(0), Some(tuinix::Color::BLACK));
-        assert_eq!(host_palette(15), Some(tuinix::Color::new(255, 255, 255)));
-        assert_eq!(host_palette(16), Some(tuinix::Color::new(0, 0, 0)));
-        assert_eq!(host_palette(21), Some(tuinix::Color::new(0, 0, 255)));
-        assert_eq!(host_palette(196), Some(tuinix::Color::new(255, 0, 0)));
-        assert_eq!(host_palette(231), Some(tuinix::Color::new(255, 255, 255)));
-        assert_eq!(host_palette(232), Some(tuinix::Color::new(8, 8, 8)));
-        assert_eq!(host_palette(255), Some(tuinix::Color::new(238, 238, 238)));
+        assert_eq!(host_palette(0), Some(tuinix::Color::Rgb(0, 0, 0)));
+        assert_eq!(host_palette(15), Some(tuinix::Color::Rgb(255, 255, 255)));
+        assert_eq!(host_palette(16), Some(tuinix::Color::Rgb(0, 0, 0)));
+        assert_eq!(host_palette(21), Some(tuinix::Color::Rgb(0, 0, 255)));
+        assert_eq!(host_palette(196), Some(tuinix::Color::Rgb(255, 0, 0)));
+        assert_eq!(host_palette(231), Some(tuinix::Color::Rgb(255, 255, 255)));
+        assert_eq!(host_palette(232), Some(tuinix::Color::Rgb(8, 8, 8)));
+        assert_eq!(host_palette(255), Some(tuinix::Color::Rgb(238, 238, 238)));
 
         let style = to_host_style(termnix::Style {
             foreground: termnix::Color::Indexed(1),
@@ -1150,8 +1161,8 @@ mod tests {
         assert!(style.italic);
         assert!(style.underline);
         assert!(style.reverse);
-        assert_eq!(style.fg_color, Some(tuinix::Color::new(205, 0, 0)));
-        assert_eq!(style.bg_color, Some(tuinix::Color::new(10, 20, 30)));
+        assert_eq!(style.fg_color, Some(tuinix::Color::Rgb(205, 0, 0)));
+        assert_eq!(style.bg_color, Some(tuinix::Color::Rgb(10, 20, 30)));
         assert_eq!(style.blink, false, "tuinix-only attributes stay off");
         assert_eq!(style.dim, false);
         assert_eq!(style.strikethrough, false);
@@ -1207,13 +1218,6 @@ mod tests {
         };
         let mut frame = Frame::new(tuinix::Size { rows: 2, cols: 6 });
         write_grid(&mut frame, &grid).expect("write");
-        assert_eq!(
-            frame.next_position().row,
-            2,
-            "explicit newline terminates each row"
-        );
-        assert_eq!(frame.next_position().col, 0);
-
         let written = frame
             .chars()
             .filter(|(_, c)| !c.is_blank())
@@ -1404,18 +1408,26 @@ mod tests {
     }
 
     #[test]
-    fn write_grid_terminates_each_row_with_a_newline() {
+    fn write_grid_advances_to_the_start_of_each_row() {
+        // Two rows of blank cells: the sweep must restart at column 0 on the
+        // second row, so a cell that would otherwise be skipped is written.
+        let blank = termnix::Cell {
+            ch: 'a',
+            width: 1,
+            style: termnix::Style::default(),
+        };
         let grid = Projection {
             size: termnix::Size::new(2, 2).expect("size"),
-            rows: vec![
-                vec![termnix::Cell::EMPTY, termnix::Cell::EMPTY],
-                vec![termnix::Cell::EMPTY, termnix::Cell::EMPTY],
-            ],
+            rows: vec![vec![blank; 2], vec![blank; 2]],
             cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,
         };
         let mut frame = Frame::new(tuinix::Size { rows: 2, cols: 2 });
         write_grid(&mut frame, &grid).expect("write");
-        assert_eq!(frame.next_position(), tuinix::Position { row: 2, col: 0 });
+        assert_eq!(
+            frame.chars().filter(|(_, c)| !c.is_blank()).count(),
+            4,
+            "every cell lands on its own row"
+        );
     }
 }
