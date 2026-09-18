@@ -479,12 +479,16 @@ impl Session {
     ///
     /// # Errors
     ///
-    /// Returns any error surfaced by the underlying `read` or `write`. Note
-    /// that a PTY error that the caller did not cause is
-    /// [`ErrorKind::ReadOnlyFilesystem`] (`EIO`), reported by the kernel when
-    /// the last slave fd closes. This is the normal way for the master side to
-    /// learn that the child side is gone, and it can arrive before or after
-    /// [`Session::try_wait()`] observes the exit. A
+    /// Returns any error surfaced by the underlying `read` or `write`, except
+    /// that the `EIO` reported by the kernel when the last slave fd closes is
+    /// not an error. (Its Rust face is usually
+    /// [`ErrorKind::ReadOnlyFilesystem`], but the `ErrorKind` is not portable;
+    /// the crate classifies by the raw `EIO` code.) This is the normal way for
+    /// the master side to learn that the child side is gone, and it can arrive
+    /// before or after [`Session::try_wait()`] observes the exit; both the read
+    /// and the write direction treat it as PTY EOF, so a write that meets it
+    /// retires the queue and the session reaches [`SessionStatus::Eof`] just
+    /// as a read-side `EIO` would. A
     /// [`ErrorKind::InvalidData`] error means the emulator produced a reply
     /// longer than its internal bound, which is a library invariant violation
     /// rather than a recoverable condition.
@@ -943,6 +947,19 @@ impl Session {
                     break;
                 }
                 Err(err) if err.kind() == ErrorKind::Interrupted => break,
+                Err(err) if is_pty_gone(&err) => {
+                    // The slave end is fully closed, so no future write can
+                    // succeed. Retire the queue and report EOF, the same way a
+                    // read-side `EIO` does, so both directions agree that "the
+                    // pty went away" is the peer being gone rather than a
+                    // `pump_io` failure. The queue is discarded without
+                    // touching the byte counters, matching `close()`.
+                    self.outbound.clear();
+                    self.write_offset = 0;
+                    self.pending_reply_range = None;
+                    self.note_eof();
+                    break;
+                }
                 Err(err) => return Err(err),
             }
         }
@@ -1019,7 +1036,7 @@ impl Session {
                     self.read_buffer.truncate(start);
                     break;
                 }
-                Err(err) if err.raw_os_error() == Some(libc::EIO) => {
+                Err(err) if is_pty_gone(&err) => {
                     // PTY slave close is reported as EIO on some platforms;
                     // normalize it to EOF.
                     self.read_buffer.truncate(start);
@@ -1118,6 +1135,18 @@ impl Drop for Session {
     }
 }
 
+/// Whether an I/O error means the PTY slave end is gone.
+///
+/// Closing the last slave fd makes the kernel report [`libc::EIO`] on both
+/// directions of the master, which the crate treats as end-of-stream rather
+/// than a failure: it is the normal way for the master to learn the child side
+/// has ended, and it can arrive before or after [`Session::try_wait()`]
+/// observes the exit. Both the read and write phases classify through this one
+/// predicate so the two directions cannot drift.
+fn is_pty_gone(err: &io::Error) -> bool {
+    err.raw_os_error() == Some(libc::EIO)
+}
+
 /// Length of the intersection between unsent outbound bytes and a reply range.
 fn pending_reply_unsent_len(write_offset: usize, range: Option<&Range<usize>>) -> usize {
     match range {
@@ -1128,8 +1157,11 @@ fn pending_reply_unsent_len(write_offset: usize, range: Option<&Range<usize>>) -
 
 #[cfg(test)]
 mod tests {
-    use super::pending_reply_unsent_len;
-    use std::ops::Range;
+    use super::{is_pty_gone, pending_reply_unsent_len};
+    use std::{
+        io::{Error, ErrorKind},
+        ops::Range,
+    };
 
     #[test]
     fn pending_reply_counts_only_intersection_with_unsent() {
@@ -1139,5 +1171,20 @@ mod tests {
         assert_eq!(pending_reply_unsent_len(102, Some(&range)), 3);
         assert_eq!(pending_reply_unsent_len(105, Some(&range)), 0);
         assert_eq!(pending_reply_unsent_len(0, None), 0);
+    }
+
+    #[test]
+    fn pty_gone_only_matches_eio() {
+        // Classification keys on `raw_os_error()`, not `ErrorKind`: `EIO`'s
+        // `kind()` is not stable across toolchains (it may be
+        // `Uncategorized`), so matching the OS error is what keeps both
+        // directions agreeing.
+        assert!(is_pty_gone(&Error::from_raw_os_error(libc::EIO)));
+
+        assert!(!is_pty_gone(&Error::from(ErrorKind::WouldBlock)));
+        assert!(!is_pty_gone(&Error::from(ErrorKind::Interrupted)));
+        assert!(!is_pty_gone(&Error::from(ErrorKind::BrokenPipe)));
+        // A same-kind error without the OS code must not be treated as gone.
+        assert!(!is_pty_gone(&Error::from(ErrorKind::ReadOnlyFilesystem)));
     }
 }

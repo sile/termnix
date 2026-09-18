@@ -452,6 +452,62 @@ fn try_wait_before_eof_still_drains_output() {
 }
 
 #[test]
+fn write_to_a_gone_child_is_not_an_error() {
+    // Contract: once the child has exited and the slave end is closed, queuing
+    // input and pumping must not surface an error. The bug this pins down is
+    // that the read direction normalizes a slave-closed `EIO` to EOF while the
+    // write direction returned it as `Err`, so the same "the pty went away"
+    // condition took a different path depending on the direction.
+    //
+    // On this platform a master write after hang-up tends to succeed rather
+    // than return `EIO` (see the unit test on `is_pty_gone`, which covers the
+    // classification directly), so this test asserts the observable contract
+    // rather than trying to force the kernel error: the pump succeeds, the
+    // session settles, and no queued write spins.
+    let mut session = spawn_session("stty -echo; exit 0");
+
+    // Drive the read direction to EOF *without* reaping the child. EOF means
+    // the master saw the slave's last close, so this is the state a caller
+    // reaches when it queues a final keystroke around the child's death. Not
+    // reaping keeps the phase at Eof rather than Reaped, so the write path
+    // below still runs instead of being short-circuited as a spent session.
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        sessions[0].status() == termnix::SessionStatus::Eof
+    });
+    assert!(
+        session.exit_status().is_none(),
+        "the test must not have reaped the child yet"
+    );
+
+    // A queued write on the hung-up master is the ordinary race: a keystroke
+    // enqueued around the moment the child ends.
+    session
+        .enqueue_input(termnix::Input::Raw(b"keystroke"))
+        .expect("enqueue while at Eof");
+
+    // Every pump must succeed and settle; on the bug a write-side `EIO`
+    // returned `Err` and `needs_pump` stayed true forever.
+    let deadline = Instant::now() + DEADLINE;
+    while session.needs_pump() {
+        session
+            .pump_io(termnix::PumpBudget::default())
+            .expect("pump after the child is gone must not fail");
+        assert!(
+            Instant::now() < deadline,
+            "needs_pump stayed true; the retired queue must not spin"
+        );
+    }
+
+    // The write half being gone is end-of-stream, not a spent session: the
+    // state, counters and process polling stay available until a reap.
+    assert_eq!(session.status(), termnix::SessionStatus::Eof);
+    assert_eq!(
+        session.try_wait().expect("try_wait").map(|s| s.code()),
+        Some(Some(0))
+    );
+}
+
+#[test]
 fn close_then_force_terminate_reaps_a_stubborn_process_group() {
     let mut session = spawn_session("trap '' TERM HUP; while :; do sleep 30; done");
     std::thread::sleep(Duration::from_millis(200));
