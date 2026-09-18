@@ -116,9 +116,7 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
         "A filler fully emitted and drained",
         |sessions| {
             let a = &sessions[0];
-            a.status() == SessionStatus::Live
-                && a.counters().undecoded_read() == 0
-                && !a.needs_pump()
+            a.status() == SessionStatus::Live && !a.needs_pump()
         },
     );
     // The marker confirms the oracle: the whole burst really was emitted.

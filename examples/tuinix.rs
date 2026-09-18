@@ -304,8 +304,8 @@ impl App {
             let Some(session) = self.sessions[self.selected].as_mut() else {
                 return Ok(());
             };
-            let need = input.byte_len(session.terminal_state().modes());
-            if session.counters().unwritten().saturating_add(need) > WRITE_SOFT_LIMIT {
+            let need = session.input_byte_len(input);
+            if session.write_queue_len().saturating_add(need) > WRITE_SOFT_LIMIT {
                 true
             } else {
                 match session.enqueue_input(input) {
@@ -346,8 +346,8 @@ impl App {
             .pump_io(termnix::PumpBudget::default())
             .map_err(AppError::io)?;
         let input = termnix::Input::Key(pending.event);
-        let need = input.byte_len(session.terminal_state().modes());
-        if session.counters().unwritten().saturating_add(need) > WRITE_SOFT_LIMIT {
+        let need = session.input_byte_len(input);
+        if session.write_queue_len().saturating_add(need) > WRITE_SOFT_LIMIT {
             return Ok(());
         }
         match session.enqueue_input(input) {

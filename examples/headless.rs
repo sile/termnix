@@ -165,9 +165,8 @@ fn try_enqueue(
     deadline: Instant,
     next_process_poll: &mut Instant,
 ) -> Result<(), AppError> {
-    let modes = session.terminal_state().modes();
-    let need = input.byte_len(modes);
-    while session.counters().unwritten().saturating_add(need) > WRITE_SOFT_LIMIT {
+    let need = session.input_byte_len(input);
+    while session.write_queue_len().saturating_add(need) > WRITE_SOFT_LIMIT {
         if Instant::now() >= deadline {
             return Err(AppError::timeout(
                 "timed out waiting for write queue room",
