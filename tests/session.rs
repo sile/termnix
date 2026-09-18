@@ -229,7 +229,7 @@ fn pump_io_flushes_input_after_read_would_block() {
         .pump_io(termnix::PumpBudget::default())
         .expect("pump after enter");
     assert_eq!(
-        session.counters().unwritten(),
+        session.write_queue_len(),
         0,
         "Enter must flush even when the prior pump ended on a read WouldBlock"
     );
@@ -300,22 +300,17 @@ fn input_and_reply_keep_fifo_order() {
 fn reply_flood_is_bounded_and_nothing_is_dropped() {
     // 50 DA queries produce 50 replies (250 bytes). Decoding pauses after
     // each reply until it is written, so the pending reply never exceeds the
-    // 14-byte bound even while the child never drains.
+    // 14-byte bound even while the child never drains. No application input is
+    // sent, so the write queue holds replies only.
     let mut session = spawn_session(
         "stty raw -echo; for i in $(seq 1 50); do printf '\\033[c'; done; r=$(dd bs=1 count=250 2>/dev/null | od -An -v -tu1); printf 'GOT:%s\\n' \"$r\"",
     );
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         let session = &sessions[0];
-        let counters = session.counters();
         assert!(
-            counters.unwritten_reply() <= 14,
+            session.write_queue_len() <= 14,
             "pending reply exceeded the internal bound: {}",
-            counters.unwritten_reply()
-        );
-        assert_eq!(
-            counters.unwritten_input() + counters.unwritten_reply(),
-            counters.unwritten(),
-            "reply/input split must partition the write queue"
+            session.write_queue_len()
         );
         visible_text(session).contains("GOT:")
     });
@@ -344,9 +339,7 @@ fn counters_reflect_produced_and_consumed_bytes() {
 
     let before_counters = session.counters().clone();
     assert_eq!(before_counters.input_bytes_enqueued, 6);
-    assert_eq!(before_counters.unwritten(), 6);
-    assert_eq!(before_counters.unwritten_input(), 6);
-    assert_eq!(before_counters.unwritten_reply(), 0);
+    assert_eq!(session.write_queue_len(), 6);
     assert!(session.interests().writable, "writable interest missing");
     assert!(session.needs_pump(), "queued input should need a pump");
 
@@ -354,8 +347,8 @@ fn counters_reflect_produced_and_consumed_bytes() {
         visible_text(&sessions[0]).contains("X:hello")
     });
     let after_counters = session.counters().clone();
-    assert!(after_counters.written() >= 6, "bytes not written");
-    assert_eq!(after_counters.unwritten(), 0);
+    assert_eq!(after_counters.input_bytes_written, 6, "input not written");
+    assert_eq!(session.write_queue_len(), 0);
     assert!(!session.interests().writable, "stale writable interest");
     // With nothing queued and the fd drained to WouldBlock, no immediate
     // re-pump is requested.
@@ -646,11 +639,9 @@ fn trim_scrollback_via_session_matches_terminal_state() {
     pump_until(std::slice::from_mut(&mut session), |sessions| {
         sessions[0].terminal_state().scrollback_lines().len() >= 10
     });
-    let before = session.counters().clone();
     let before_len = session.terminal_state().scrollback_lines().len();
     let before_cells = session.terminal_state().scrollback_cells();
     assert!(before_len > 0);
-    assert_eq!(before_len, before.max_scrollback_lines);
     assert!(before_cells > 0);
 
     session.trim_scrollback(5, usize::MAX);

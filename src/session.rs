@@ -47,8 +47,8 @@
 //! is appended in chronological order and decoding pauses until that reply is
 //! fully written, so at most one reply (bounded by a fixed internal size) is
 //! ever pending and replies never overtake previously accepted input. The
-//! write queue itself is unbounded; callers apply backpressure via
-//! [`SessionCounters::unwritten()`].
+//! write queue itself is unbounded; callers apply backpressure by comparing
+//! [`Session::write_queue_len()`] against a limit of their own.
 //!
 //! Child exit and PTY EOF are tracked separately: reaping the child does not
 //! disable I/O, so any remaining master-side output can still be drained until
@@ -169,23 +169,11 @@ pub struct Interests {
 
 /// Cumulative counters tracked by a session, returned by [`Session::counters()`].
 ///
-/// The returned reference exposes the session's running totals, which are never
-/// reset for the lifetime of the session. Peak fields record the highest value
-/// observed when the corresponding buffer grew, not only at pump boundaries.
-///
-/// Everything here describes the session's PTY and pump bookkeeping. Quantities
-/// owned by the terminal emulator, such as the current scrollback size, are
-/// reached through [`Session::terminal_state()`] instead, so this type never
-/// mixes the two observation subjects.
-///
-/// The counters record only production and consumption totals. How much is
-/// buffered right now is derived from them through [`undecoded_read()`],
-/// [`unwritten_input()`], [`unwritten_reply()`], and [`unwritten()`].
-///
-/// [`undecoded_read()`]: SessionCounters::undecoded_read()
-/// [`unwritten_input()`]: SessionCounters::unwritten_input()
-/// [`unwritten_reply()`]: SessionCounters::unwritten_reply()
-/// [`unwritten()`]: SessionCounters::unwritten()
+/// Every field is a running total, which is never reset for the lifetime of the
+/// session. How much is buffered right now is not here: the write queue's
+/// occupancy is [`Session::write_queue_len()`], and the scrollback size is
+/// reached through [`Session::terminal_state()`]. This type never mixes running
+/// totals with the quantities derived from them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionCounters {
     /// Cumulative `pump_io` calls.
@@ -206,8 +194,14 @@ pub struct SessionCounters {
     /// Cumulative bytes accepted through [`Session::enqueue_input()`].
     pub input_bytes_enqueued: u64,
     /// Cumulative application input bytes written to the PTY.
+    ///
+    /// Together with [`Self::reply_bytes_written`], this accounts for every
+    /// byte written to the PTY.
     pub input_bytes_written: u64,
     /// Cumulative reply bytes written to the PTY.
+    ///
+    /// Together with [`Self::input_bytes_written`], this accounts for every
+    /// byte written to the PTY.
     pub reply_bytes_written: u64,
     /// Cumulative `read` syscalls attempted.
     pub read_syscalls: u64,
@@ -217,52 +211,6 @@ pub struct SessionCounters {
     pub read_would_block: u64,
     /// Cumulative `write` syscalls that returned `WouldBlock`.
     pub write_would_block: u64,
-    /// Highest observed undecoded read bytes.
-    pub max_buffered_read_bytes: usize,
-    /// Highest observed unwritten write bytes.
-    pub max_pending_write_bytes: usize,
-    /// Highest observed scrollback lines.
-    pub max_scrollback_lines: usize,
-    /// Highest observed scrollback cells.
-    pub max_scrollback_cells: usize,
-}
-
-impl SessionCounters {
-    /// Bytes read from the PTY but not yet decoded by the emulator.
-    pub fn undecoded_read(&self) -> usize {
-        byte_delta(self.pty_bytes_read, self.terminal_bytes_processed)
-    }
-
-    /// Bytes held for writing to the PTY, both directions combined.
-    ///
-    /// Always equals `unwritten_input() + unwritten_reply()`.
-    pub fn unwritten(&self) -> usize {
-        self.unwritten_input() + self.unwritten_reply()
-    }
-
-    /// Unwritten bytes that came from [`Session::enqueue_input()`].
-    pub fn unwritten_input(&self) -> usize {
-        byte_delta(self.input_bytes_enqueued, self.input_bytes_written)
-    }
-
-    /// Unwritten bytes that the emulator generated in reply to queries.
-    pub fn unwritten_reply(&self) -> usize {
-        byte_delta(
-            self.terminal_reply_bytes_generated,
-            self.reply_bytes_written,
-        )
-    }
-
-    /// Cumulative bytes written to the PTY, both directions combined.
-    pub fn written(&self) -> u64 {
-        self.input_bytes_written
-            .saturating_add(self.reply_bytes_written)
-    }
-}
-
-/// Difference between two byte totals that can never regress.
-fn byte_delta(total: u64, consumed: u64) -> usize {
-    usize::try_from(total.saturating_sub(consumed)).unwrap_or(usize::MAX)
 }
 
 /// Observable lifecycle phase of a session.
@@ -548,15 +496,47 @@ impl Session {
         Ok(())
     }
 
+    /// Returns how many bytes are queued for writing to the PTY and have not
+    /// been written yet, counting application input and terminal replies
+    /// together.
+    ///
+    /// Application input and terminal replies share a single write queue, in
+    /// chronological order. The queue is unbounded, and the session applies no
+    /// backpressure policy of its own: compare this against a limit of your
+    /// own to decide whether to enqueue, hold, or drop an input. Add
+    /// [`Session::input_byte_len()`] for the size the input would contribute.
+    ///
+    /// Takes `&self` and performs no syscall.
+    pub fn write_queue_len(&self) -> usize {
+        self.unsent()
+    }
+
+    /// Returns how many bytes `input` would add to the write queue with the
+    /// session's current terminal modes.
+    ///
+    /// Equal to `input.byte_len(self.terminal_state().modes())`. Provided
+    /// because the modes are part of the session's state: a caller applying an
+    /// input limit through [`Session::write_queue_len()`] needs this size and
+    /// would otherwise have to fetch the modes from
+    /// [`Session::terminal_state()`].
+    ///
+    /// Takes `&self` and performs no syscall. The session's modes can change
+    /// between calls as the child writes escape sequences, so a size is only
+    /// valid for the modes at the moment it was taken; size an input and
+    /// enqueue it back to back.
+    pub fn input_byte_len(&self, input: Input<'_>) -> usize {
+        input.byte_len(self.term.modes())
+    }
+
     /// Enqueues application [`Input`] to be written to the PTY.
     ///
     /// `Key` and `Paste` are turned into bytes with the session's current
     /// terminal modes; `Raw` is appended unchanged. All accepted bytes join
     /// the write queue in chronological order. The session applies no
-    /// backpressure policy; compare [`Input::byte_len()`] against
-    /// [`SessionCounters::unwritten()`] to decide whether to enqueue, hold the
-    /// input on the caller side, or drop it. A closed session returns
-    /// [`ErrorKind::BrokenPipe`].
+    /// backpressure policy; compare [`Session::write_queue_len()`] plus
+    /// [`Session::input_byte_len()`] against a limit of your own to decide
+    /// whether to enqueue, hold the input on the caller side, or drop it. A
+    /// closed session returns [`ErrorKind::BrokenPipe`].
     pub fn enqueue_input(&mut self, input: Input<'_>) -> io::Result<()> {
         if self.phase != Phase::Live && self.phase != Phase::Eof {
             return Err(io::Error::new(ErrorKind::BrokenPipe, "session is closed"));
@@ -568,7 +548,6 @@ impl Session {
         self.counters.input_bytes_enqueued =
             self.counters.input_bytes_enqueued.saturating_add(n as u64);
         self.write_would_block = false;
-        self.update_maxes();
         Ok(())
     }
 
@@ -861,24 +840,6 @@ impl Session {
         self.read_buffer.len() - self.read_offset
     }
 
-    /// Updates the running maxima tracked in the session counters.
-    fn update_maxes(&mut self) {
-        self.counters.max_buffered_read_bytes = self
-            .counters
-            .max_buffered_read_bytes
-            .max(self.buffered_read_len());
-        self.counters.max_pending_write_bytes =
-            self.counters.max_pending_write_bytes.max(self.unsent());
-        self.counters.max_scrollback_lines = self
-            .counters
-            .max_scrollback_lines
-            .max(self.term.scrollback_lines().len());
-        self.counters.max_scrollback_cells = self
-            .counters
-            .max_scrollback_cells
-            .max(self.term.scrollback_cells());
-    }
-
     /// Drops the already-written prefix of `outbound` when it grows large.
     fn compact_outbound_if_needed(&mut self) {
         if self.write_offset == 0 {
@@ -1056,7 +1017,6 @@ impl Session {
                     budget.consume(n, 0);
                     self.counters.pty_bytes_read =
                         self.counters.pty_bytes_read.saturating_add(n as u64);
-                    self.update_maxes();
                     progressed = true;
                     self.decode_buffered(budget)?;
                     if self.read_paused() {
@@ -1128,7 +1088,6 @@ impl Session {
             reply.extend_from_slice(&bytes);
         }
         // Scrollback may have grown even when no reply was produced.
-        self.update_maxes();
         if reply.is_empty() {
             return Ok(());
         }
@@ -1145,7 +1104,6 @@ impl Session {
             .terminal_reply_bytes_generated
             .saturating_add(reply.len() as u64);
         self.pending_reply_range = Some(start..start + reply.len());
-        self.update_maxes();
         Ok(())
     }
 }

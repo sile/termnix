@@ -62,15 +62,15 @@ Input is raw bytes, a decoded key event, or paste text. The latter two are
 encoded with the session's current modes. Application input and terminal
 replies share one FIFO write queue, so replies are never reordered. The queue
 is unbounded: the session applies no backpressure policy of its own. Compare
-the unwritten bytes reported by [`Session::counters()`][] against the input
-size to decide whether to enqueue, hold, or drop.
+[`Session::write_queue_len()`][] plus [`Session::input_byte_len()`][] against a
+limit of your own to decide whether to enqueue, hold, or drop.
 
 ### Lifecycle
 
 Child exit and PTY EOF are tracked separately, so remaining output can still be
 drained after the exit status is observed. [`Session::counters()`][] reports
-the session's running totals plus peak values, including how many bytes are
-still waiting to be decoded or written.
+the session's running totals; how much is still waiting to be written is
+[`Session::write_queue_len()`][].
 
 ## Example
 
@@ -91,7 +91,7 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
     }
 
     // Send a keystroke to the child, holding off if writes are piling up.
-    if session.counters().unwritten() < 4096 {
+    if session.write_queue_len() < 4096 {
         let enter = termnix::KeyEvent::new(termnix::KeyCode::Enter);
         session.enqueue_input(termnix::Input::Key(enter))?;
     }
@@ -109,4 +109,6 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
   how to bridge a terminal state into a host frame buffer.
 
 [`Session::counters()`]: https://docs.rs/termnix/latest/termnix/struct.Session.html#method.counters
+[`Session::write_queue_len()`]: https://docs.rs/termnix/latest/termnix/struct.Session.html#method.write_queue_len
+[`Session::input_byte_len()`]: https://docs.rs/termnix/latest/termnix/struct.Session.html#method.input_byte_len
 [`TerminalState`]: https://docs.rs/termnix/latest/termnix/struct.TerminalState.html
