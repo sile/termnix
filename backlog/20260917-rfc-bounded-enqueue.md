@@ -1,9 +1,6 @@
----
-Created: 2026-09-17
-Status: draft
----
-
 # RFC: Add a bounded `enqueue_input`
+
+- Status: draft
 
 ## Summary
 

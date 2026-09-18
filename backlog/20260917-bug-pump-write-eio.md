@@ -1,9 +1,6 @@
----
-Created: 2026-09-17
-Status: open
----
-
 # Bug: `pump_io` treats write-side `EIO` as an error, not as EOF
+
+- Status: open
 
 ## Summary
 

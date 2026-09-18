@@ -1,9 +1,6 @@
----
-Created: 2026-09-17
-Status: draft
----
-
 # RFC: Make `PumpBudget` a plain struct with public fields
+
+- Status: draft
 
 ## Summary
 

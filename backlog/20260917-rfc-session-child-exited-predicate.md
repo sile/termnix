@@ -1,9 +1,6 @@
----
-Created: 2026-09-17
-Status: draft
----
-
 # RFC: Make "the child exited" a single predicate
+
+- Status: draft
 
 ## Summary
 

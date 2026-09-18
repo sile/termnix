@@ -1,9 +1,6 @@
----
-Created: 2026-09-17
-Status: draft
----
-
 # RFC: Give the caller a way to enumerate sessions that need pumping
+
+- Status: draft
 
 ## Summary
 

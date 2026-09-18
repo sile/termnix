@@ -1,9 +1,6 @@
----
-Created: 2026-09-17
-Status: draft
----
-
 # RFC: Add named constructors for `PumpBudget`
+
+- Status: draft
 
 ## Summary
 

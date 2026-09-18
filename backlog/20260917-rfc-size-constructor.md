@@ -1,9 +1,6 @@
----
-Created: 2026-09-17
-Status: draft
----
-
 # RFC: Remove `Size::new` and construct `Size` by field
+
+- Status: draft
 
 ## Summary
 
