@@ -3,10 +3,33 @@
 use crate::size::Size;
 use crate::terminal_types::{Cell, Position, Style};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) struct Screen {
     size: Size,
     cells: Vec<Cell>,
+    /// Set by the writing methods below when they store a cell. It is derived
+    /// bookkeeping for change detection and is excluded from equality, the same
+    /// way `TerminalState` excludes `revision`.
+    dirty: bool,
+}
+
+impl PartialEq for Screen {
+    fn eq(&self, other: &Self) -> bool {
+        self.size == other.size && self.cells == other.cells
+    }
+}
+
+impl Eq for Screen {}
+
+impl std::fmt::Debug for Screen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `dirty` is derived bookkeeping, so it is omitted here like
+        // `TerminalState` omits `revision`.
+        f.debug_struct("Screen")
+            .field("size", &self.size)
+            .field("cells", &self.cells)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Screen {
@@ -14,7 +37,24 @@ impl Screen {
         Self {
             size,
             cells: vec![Cell::EMPTY; cell_count(size)],
+            dirty: false,
         }
+    }
+
+    /// Returns whether a cell write happened since the last [`take_dirty`],
+    /// clearing the flag.
+    ///
+    /// [`take_dirty`]: Screen::take_dirty
+    pub(crate) fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// Marks the screen as changed without writing a cell.
+    ///
+    /// Used when a caller replaces the whole screen (a hard reset) rather than
+    /// writing through the methods below.
+    pub(crate) fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     pub(crate) fn get(&self, at: Position) -> Option<Cell> {
@@ -28,6 +68,7 @@ impl Screen {
     pub(crate) fn clear_all(&mut self, style: Style) {
         let blank = Cell::blank(style);
         self.cells.fill(blank);
+        self.dirty = true;
     }
 
     pub(crate) fn resize(&mut self, size: Size) {
@@ -53,6 +94,7 @@ impl Screen {
         }
         self.size = size;
         self.cells = cells;
+        self.dirty = true;
     }
 
     pub(crate) fn clear_cell(&mut self, row: u16, col: u16) {
@@ -77,6 +119,7 @@ impl Screen {
                 self.cells[index] = Cell::EMPTY;
             }
         }
+        self.dirty = true;
     }
 
     pub(crate) fn put_glyph(&mut self, row: u16, col: u16, ch: char, width: u8, style: Style) {
@@ -96,6 +139,7 @@ impl Screen {
                 style,
             };
         }
+        self.dirty = true;
     }
 
     pub(crate) fn erase_cells(&mut self, row: u16, col_start: u16, col_end: u16, style: Style) {
@@ -107,6 +151,7 @@ impl Screen {
             if let Some(index) = self.index(Position { row, col }) {
                 self.clear_cell(row, col);
                 self.cells[index] = blank;
+                self.dirty = true;
             }
         }
     }
@@ -133,6 +178,7 @@ impl Screen {
         let blank = Cell::blank(style);
         self.cells[insert_at..insert_at + count].fill(blank);
         self.fix_row_edge(row);
+        self.dirty = true;
     }
 
     pub(crate) fn delete_columns(&mut self, row: u16, col: u16, count: u16, style: Style) {
@@ -148,6 +194,7 @@ impl Screen {
         let blank = Cell::blank(style);
         self.cells[row_end - count..row_end].fill(blank);
         self.fix_row_edge(row);
+        self.dirty = true;
     }
 
     pub(crate) fn insert_lines(
@@ -168,6 +215,7 @@ impl Screen {
         self.cells[top..bottom].rotate_right(count * cols);
         let blank = Cell::blank(style);
         self.cells[top..top + count * cols].fill(blank);
+        self.dirty = true;
     }
 
     pub(crate) fn delete_lines(
@@ -188,6 +236,7 @@ impl Screen {
         self.cells[top..bottom].rotate_left(count * cols);
         let blank = Cell::blank(style);
         self.cells[bottom - count * cols..bottom].fill(blank);
+        self.dirty = true;
     }
 
     /// Scrolls the region up by `count` rows and returns the displaced rows
@@ -224,6 +273,7 @@ impl Screen {
         self.cells[top..bottom].rotate_left(count * cols);
         let blank = Cell::blank(style);
         self.cells[bottom - count * cols..bottom].fill(blank);
+        self.dirty = true;
         displaced
     }
 
@@ -249,6 +299,7 @@ impl Screen {
         self.cells[top..bottom].rotate_right(count * cols);
         let blank = Cell::blank(style);
         self.cells[top..top + count * cols].fill(blank);
+        self.dirty = true;
     }
 
     fn fix_row_edge(&mut self, row: u16) {
@@ -261,6 +312,7 @@ impl Screen {
             && self.cells[index].width == 2
         {
             self.cells[index] = Cell::EMPTY;
+            self.dirty = true;
         }
     }
 

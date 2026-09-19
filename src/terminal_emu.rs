@@ -52,6 +52,7 @@ impl Perform for Emulator<'_> {
                 .get(1)
                 .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
                 .unwrap_or_default();
+            self.term.title_changed = true;
         }
     }
 
@@ -199,6 +200,10 @@ impl TerminalState {
         let size = self.size;
         self.primary = Screen::blank(size);
         self.alternate = Screen::blank(size);
+        // The whole screen was replaced, which is a visible change even when
+        // the new screen is blank; record it so `feed` sees it.
+        self.primary.mark_dirty();
+        self.alternate.mark_dirty();
         self.on_alternate = false;
         self.cursor = Position { row: 0, col: 0 };
         self.saved = SavedCursor::default();
