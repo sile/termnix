@@ -287,6 +287,20 @@ impl TerminalState {
     /// [`TerminalState::rows()`], they are never reflowed by a later resize.
     /// The deque is exposed directly so callers can index, iterate, or measure
     /// the history without cloning it.
+    ///
+    /// # Keeping a place in the history
+    ///
+    /// The history moves underneath the caller: a push appends at the back
+    /// and a trim drops from the front, so an index into this deque does not
+    /// keep naming the same line across either event. A caller that needs to
+    /// hold onto one line (for example a copy-mode cursor) should store its
+    /// **distance from the newest line** instead of an index from the oldest.
+    /// Counting from the back makes both events cheap to follow: a push moves
+    /// the same physical line one step further from the newest line, so the
+    /// distance grows by one, and a trim removes lines from the far end, so
+    /// the distance is unchanged. No snapshot of the history is needed, and
+    /// the line is simply gone once the distance reaches the history length,
+    /// which the caller can test against [`VecDeque::len`].
     pub fn scrollback_lines(&self) -> &VecDeque<ScrollbackLine> {
         &self.scrollback
     }
