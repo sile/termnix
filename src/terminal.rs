@@ -109,30 +109,6 @@ struct VisibleScalars {
     modes: TerminalModes,
 }
 
-impl PartialEq for TerminalState {
-    fn eq(&self, other: &Self) -> bool {
-        self.size == other.size
-            && self.primary == other.primary
-            && self.alternate == other.alternate
-            && self.on_alternate == other.on_alternate
-            && self.cursor == other.cursor
-            && self.saved == other.saved
-            && self.wrap_pending == other.wrap_pending
-            && self.pen == other.pen
-            && self.modes == other.modes
-            && self.title == other.title
-            && self.scroll_top == other.scroll_top
-            && self.scroll_bottom == other.scroll_bottom
-            && self.actions == other.actions
-            && self.scrollback == other.scrollback
-            && self.scrollback_cells == other.scrollback_cells
-        // `revision` and `title_changed` are derived bookkeeping, not part of
-        // the terminal's observable value, so they are excluded from equality.
-    }
-}
-
-impl Eq for TerminalState {}
-
 impl std::fmt::Debug for TerminalState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TerminalState")
