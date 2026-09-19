@@ -299,18 +299,23 @@ The tests compensate explicitly:
 
 ## Unresolved questions
 
-- Whether the buffer eventually becomes a shared `Buf` type used by `Session`
-  for its input queue too (see Future possibilities). If it does, the method
-  names are re-examined there; for now `pending_reply_bytes` /
-  `advance_reply_bytes` are settled, and the `_bytes` suffix matches the naming
-  `SessionCounters` already uses (`terminal_reply_bytes_generated`,
-  `reply_bytes_written`).
+None. The questions raised while reviewing the early draft are all settled in
+the sections above: the panic-vs-clamp choice on `advance_reply_bytes`
+(panics, checked in release builds), whether the buffer is shared across
+screens (one buffer, not per screen), the method names
+(`pending_reply_bytes` / `advance_reply_bytes`), and whether `ReplyBuf` becomes
+a type shared with `Session` (not now; see Future possibilities).
 
 ## Future possibilities
 
-- A `ReplyBuf` type in its own module, usable by `Session` for its input queue
-  too, which would remove the duplicated `bytes + offset` logic rather than
-  leaving two implementations of it.
+- Extract `ReplyBuf` into its own module once a second caller needs it.
+  `Session` has two `bytes + offset` pairs already
+  (`read_buffer`/`read_offset` and `outbound`/`write_offset`), but their
+  compaction policies differ: they use different thresholds, and the read
+  buffer compacts when it is fully consumed while `outbound` compacts by size.
+  A shared type would have to take the policy as a parameter, which is not worth
+  it for one caller. Doing this would also be the moment to revisit the method
+  names.
 - A `write_reply(&mut self, w: impl io::Write) -> io::Result<usize>` convenience
   for callers that hold a `&mut dyn Write` to the master and do not want to
   handle partial writes themselves.
