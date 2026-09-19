@@ -1,6 +1,6 @@
 # RFC: Remove `Size::new` and construct `Size` by field
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -259,3 +259,47 @@ fields.
   genuinely untrusted size, the conversion belongs at that boundary. Nothing in
   this repository needs one today, and a `u16`-taking constructor on `Size`
   would reintroduce the concealment this proposal removes.
+
+## Outcome
+
+Implemented in [#4](https://github.com/sile/termnix/pull/4) (merged as `15ab779`).
+
+Implemented in [#4](https://github.com/sile/termnix/pull/4) by removing the
+`impl Size` block and converting all 39 call sites. Two things in the text
+above do not match what was built, and both are worth correcting here rather
+than leaving a reader to copy the wrong thing.
+
+**The dynamic-site sketch calls methods that do not exist.** The Proposal
+writes `size.rows()` and `size.cols()`, but `tuinix::Size` has no accessors: it
+has `pub rows: usize` and `pub cols: usize`, and `examples/tuinix.rs` builds it
+by struct literal. The real conversion reads the fields directly, so
+`NonZeroU16::new(size.rows)` and not `size.rows()`. Since this sketch is the
+part of the RFC a reader would copy for their own conversion, the field form is
+the one worth having in the text.
+
+**The sketch's error message is also superseded.** It has both dimensions
+report `unsupported terminal size: {size:?}`, which is the size-level report
+the open question below calls inconsistent. The conversion now names the
+dimension that failed for both cases:
+
+```
+terminal rows is zero: 0
+unsupported terminal rows: 70000
+```
+
+So the open question resolves toward naming the dimension, one check per
+dimension, which is the answer the RFC guessed was "likely". That was the only
+item left to the pull request.
+
+The second open question -- whether `Size` should ever grow a checked
+constructor back -- was not acted on, and is not a question this change
+settles. Nothing in the repository needed one.
+
+The one place the implementation departs from the Proposal's shape is the
+file-local helper: `tests/terminal.rs` and `tests/terminal_state.rs` already
+had a `term(rows, cols)` helper, so `size(rows, cols)` was added underneath it
+and `term` now calls `size`. That is the same "one import per file, one
+conversion per file" the RFC describes, just sharing the conversion with the
+helper that was already there rather than sitting beside it.
+
+The scope is unchanged from what is described above.
