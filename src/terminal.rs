@@ -279,20 +279,19 @@ impl TerminalState {
         }
     }
 
-    /// Returns the bytes the emulator wants written to the PTY master, if any.
+    /// Returns the bytes the emulator has produced in response to queries, if
+    /// any.
     ///
     /// These are replies to queries the terminal was sent (DSR, CPR, primary
-    /// DA). Whenever the slice is non-empty the caller should write it to the
-    /// PTY and then report how much it wrote with
+    /// DA). Whenever the slice is non-empty the caller should write it and then
+    /// report how much it wrote with
     /// [`advance_reply_bytes()`](TerminalState::advance_reply_bytes). A caller
     /// that writes the whole slice advances by its length; a caller whose write
     /// was short advances by the number of bytes it actually wrote and leaves
     /// the rest pending for a later call.
     ///
     /// Bytes stay in the buffer until advanced past, so a reply is never lost
-    /// by forgetting to look. This is the opposite of the old `drain_actions()`,
-    /// which took the queue and made a missed read indistinguishable from no
-    /// reply.
+    /// by forgetting to look: nothing is taken implicitly.
     pub fn pending_reply_bytes(&self) -> &[u8] {
         self.replies.pending()
     }
