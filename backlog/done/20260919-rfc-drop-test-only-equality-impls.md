@@ -1,6 +1,6 @@
 # RFC: Drop the equality impls that only the tests use
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -342,3 +342,34 @@ continuation state). The impact is small but permanent.
   equality, without a comment explaining why.
 - If a future type in this crate is a live buffer compared only from tests, it
   starts with no equality impl and the same question is not asked again.
+
+## Outcome
+
+Implemented in [#7](https://github.com/sile/termnix/pull/7) (merged as `49b7e69`).
+
+The change landed as described, with two things settled during review:
+
+- The change was widened to include `Screen`, not left as the `TerminalState`
+  removal the first draft proposed. Once `TerminalState`'s impl went, `Screen`'s
+  had no caller left, and removing it in the same change was clearly the same
+  decision rather than a separate one.
+- The draft's premise that the only caller was the `drain_and_compare` helper in
+  `tests/terminal.rs` was wrong. `tests/terminal_state.rs` had four more direct
+  comparisons (two `==`, an `assert_eq!`, and an `assert_ne!`). The conclusion
+  did not change, but the reasoning did: the argument for removing the impls is
+  not "few callers" but that what those callers want is observational
+  equivalence, not value equality. The Motivation and Alternatives above were
+  rewritten around that before merging.
+
+Two questions from the section above are still open and were not answered by the
+merge:
+
+- Whether the scroll region should get a public accessor (the known gap is still
+  a gap; nothing was added).
+- Whether the test helper should be shared once a third test file needs it.
+  `tests/terminal_state.rs` now defines `assert_same_public_state` locally and
+  `tests/terminal.rs` keeps `drain_and_compare`, following the convention that a
+  shared helper module should be named for its subject rather than be a single
+  `helpers` parent.
+
+The scope is unchanged from what is described above.
