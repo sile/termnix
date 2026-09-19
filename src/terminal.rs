@@ -39,7 +39,6 @@ pub use crate::terminal_types::{
 };
 
 use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
 
 use crate::size::Size;
 use crate::terminal_buffer::Screen;
@@ -87,7 +86,27 @@ pub struct TerminalState {
     pub(crate) scrollback: VecDeque<ScrollbackLine>,
     pub(crate) scrollback_cells: usize,
     pub(crate) revision: u64,
-    pub(crate) last_visible: u64,
+    /// Set by `osc_dispatch` when it stores a new title. The title is the one
+    /// visible field that is not `Copy`, so it cannot join the before/after
+    /// scalar compare without allocating a `String` per feed.
+    pub(crate) title_changed: bool,
+}
+
+/// The `Copy` fields of [`TerminalState`] that count as part of the visible
+/// state and are cheap to compare across a single `feed`.
+///
+/// The scroll region (`scroll_top` / `scroll_bottom`) is deliberately absent:
+/// setting it changes how later scrolls behave, but nothing is drawn until such
+/// a scroll happens, so a feed that only sets the region is not a visible
+/// change. This matches the fields the previous fingerprint hashed.
+#[derive(Clone, Copy, PartialEq)]
+struct VisibleScalars {
+    size: Size,
+    on_alternate: bool,
+    cursor: Position,
+    wrap_pending: bool,
+    pen: Style,
+    modes: TerminalModes,
 }
 
 impl PartialEq for TerminalState {
@@ -107,7 +126,7 @@ impl PartialEq for TerminalState {
             && self.actions == other.actions
             && self.scrollback == other.scrollback
             && self.scrollback_cells == other.scrollback_cells
-        // `revision` and `last_visible` are derived bookkeeping, not part of
+        // `revision` and `title_changed` are derived bookkeeping, not part of
         // the terminal's observable value, so they are excluded from equality.
     }
 }
@@ -159,7 +178,7 @@ impl TerminalState {
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
             revision: 0,
-            last_visible: 0,
+            title_changed: false,
         }
     }
 
@@ -181,20 +200,21 @@ impl TerminalState {
         self.revision
     }
 
-    /// Returns a fingerprint of the fields that make up the visible state.
+    /// Returns the cheap, `Copy` fields that make up part of the visible state.
     ///
-    /// Used by [`TerminalState::feed()`] to detect whether a feed changed
-    /// anything the caller can see; scrollback and parser state are excluded.
-    fn visible_fingerprint(&self) -> u64 {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.size.hash(&mut hasher);
-        self.active().cells().hash(&mut hasher);
-        self.on_alternate.hash(&mut hasher);
-        self.cursor.hash(&mut hasher);
-        self.pen.hash(&mut hasher);
-        self.modes.hash(&mut hasher);
-        self.title.hash(&mut hasher);
-        hasher.finish()
+    /// [`TerminalState::feed()`] snapshots this before parsing and compares it
+    /// after, so a change to any of these fields is detected without hashing
+    /// the grid. Cell writes are tracked separately by [`Screen`], and the
+    /// title has its own flag because snapshotting a `String` would allocate.
+    fn visible_scalars(&self) -> VisibleScalars {
+        VisibleScalars {
+            size: self.size,
+            on_alternate: self.on_alternate,
+            cursor: self.cursor,
+            wrap_pending: self.wrap_pending,
+            pen: self.pen,
+            modes: self.modes,
+        }
     }
 
     /// Feeds output bytes into the emulator.
@@ -202,16 +222,25 @@ impl TerminalState {
     /// Bytes may end mid-sequence or mid-UTF-8 code unit; state is kept until
     /// a later `feed` completes the sequence. Query replies are appended to
     /// the action queue; call [`TerminalState::drain_actions()`] to collect them.
+    ///
+    /// One `feed` bumps [`revision()`](TerminalState::revision) at most once,
+    /// no matter how many cells changed within it.
     pub fn feed(&mut self, bytes: &[u8]) {
+        let before = self.visible_scalars();
+        self.title_changed = false;
         feed_bytes(self, bytes);
-        self.refresh_revision();
-    }
-
-    /// Bumps [`revision`](Self::revision()) when the visible state changed.
-    fn refresh_revision(&mut self) {
-        let fingerprint = self.visible_fingerprint();
-        if fingerprint != self.last_visible {
-            self.last_visible = fingerprint;
+        // `take_dirty` clears the flag as it reads it, so it is taken into a
+        // local first: the combination below is short-circuiting, and an
+        // effectful call placed inside it would be skipped once an earlier
+        // term is true, silently stranding the flag.
+        //
+        // Only the primary screen is polled. A write cannot land on the
+        // alternate screen without also flipping `on_alternate`, which the
+        // snapshot below already carries, so polling it would only ever
+        // over-detect. A write to the hidden primary is invisible by definition.
+        let primary_dirty = self.primary.take_dirty();
+        let changed = primary_dirty || self.title_changed || (self.visible_scalars() != before);
+        if changed {
             self.revision = self.revision.wrapping_add(1);
         }
     }
@@ -352,7 +381,11 @@ impl TerminalState {
         self.cursor.col = self.cursor.col.min(size.cols.get() - 1);
         self.wrap_pending = false;
         self.repair_cursor_cell();
-        self.refresh_revision();
+        // A resize always changes the visible size, so the revision moves
+        // unconditionally. Clear the primary screen's dirty flag anyway so a
+        // later `feed` does not re-detect this resize's cell writes.
+        self.primary.take_dirty();
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub(crate) fn active(&self) -> &Screen {

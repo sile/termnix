@@ -1260,6 +1260,86 @@ fn revision_stays_put_without_visible_change() {
 }
 
 #[test]
+fn revision_advances_when_a_hard_reset_only_changes_the_title() {
+    // RIS clears the screen and the title. If the screen was already blank and
+    // nothing else was set, the only visible effect is the title going away,
+    // which must still be reported.
+    let mut t = term(2, 8);
+    t.feed(b"\x1b]2;title\x07");
+    let with_title = t.revision();
+
+    t.feed(b"\x1bc"); // RIS
+
+    assert_ne!(
+        t.revision(),
+        with_title,
+        "clearing a set title is a visible change"
+    );
+    assert_eq!(t.revision(), with_title.wrapping_add(1));
+}
+
+#[test]
+fn revision_advances_on_rewriting_the_same_cell() {
+    // The dirty flag records that a cell was written, not whether the stored
+    // value differs, so a feed that rewrites identical cells still advances
+    // the revision. This is a deliberate false positive: redrawing is cheap
+    // compared with missing a change.
+    let mut t = term(2, 8);
+    t.feed(b"x");
+    let after_first = t.revision();
+
+    t.feed(b"\x1b[1;1Hx"); // same cell, same value
+
+    assert_ne!(
+        t.revision(),
+        after_first,
+        "a cell write advances revision even when the value is unchanged"
+    );
+}
+
+#[test]
+fn revision_tracks_only_the_visible_screen() {
+    // The hidden buffer's writes are not polled: while the alternate screen is
+    // active, `on_alternate` is what the snapshot carries, and editing the
+    // primary behind it cannot be seen. Entering and leaving the alternate
+    // screen must still be reported, because those flip `on_alternate`.
+    let mut t = term(2, 8);
+    t.feed(b"primary");
+    t.feed(b"\x1b[?1049h");
+    let on_alternate = t.revision();
+
+    t.feed(b"hidden");
+    assert_ne!(
+        t.revision(),
+        on_alternate,
+        "writing the active alternate screen is a visible change"
+    );
+
+    let after_write = t.revision();
+    t.feed(b"\x1b[?1049l");
+    assert_ne!(
+        t.revision(),
+        after_write,
+        "returning to the primary screen is a visible change"
+    );
+}
+
+#[test]
+fn revision_stays_put_when_a_mode_is_set_to_its_current_value() {
+    let mut t = term(2, 8);
+    t.feed(b"\x1b[?25l"); // hide cursor
+    let hidden = t.revision();
+
+    t.feed(b"\x1b[?25l"); // same value again
+
+    assert_eq!(
+        t.revision(),
+        hidden,
+        "re-setting a mode to its current value is not a visible change"
+    );
+}
+
+#[test]
 fn revision_advances_on_visible_change_and_holds_otherwise() {
     let mut t = term(2, 8);
     t.feed(b"hi");
