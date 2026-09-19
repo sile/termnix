@@ -34,6 +34,7 @@
 
 use std::{
     io::{self, ErrorKind, Read as _, Write as _},
+    num::NonZeroU16,
     os::fd::RawFd,
     process::Command,
     time::{Duration, Instant},
@@ -660,13 +661,16 @@ fn command_from_key(event: termnix::KeyEvent) -> Option<AppCommand> {
 /// Converts a tuinix terminal size into a termnix grid size.
 ///
 /// Zero dimensions and values beyond `u16` are rejected instead of clamped or
-/// silently cast.
+/// silently cast, and every rejection names the dimension it came from.
 fn size_from_host(size: tuinix::Size) -> Result<termnix::Size, String> {
     let rows = u16::try_from(size.rows)
         .map_err(|_| format!("unsupported terminal rows: {}", size.rows))?;
     let cols = u16::try_from(size.cols)
         .map_err(|_| format!("unsupported terminal cols: {}", size.cols))?;
-    termnix::Size::new(rows, cols).ok_or_else(|| format!("unsupported terminal size: {size:?}"))
+    Ok(termnix::Size {
+        rows: NonZeroU16::new(rows).ok_or_else(|| format!("terminal rows is zero: {rows}"))?,
+        cols: NonZeroU16::new(cols).ok_or_else(|| format!("terminal cols is zero: {cols}"))?,
+    })
 }
 
 /// Converts a termnix grid position into a host position.
@@ -1009,6 +1013,14 @@ mod tests {
         tuinix::KeyInput { ctrl, alt, code }
     }
 
+    /// Builds a grid size from two dimensions known non-zero at the call site.
+    fn size(rows: u16, cols: u16) -> termnix::Size {
+        termnix::Size {
+            rows: NonZeroU16::new(rows).expect("rows is non-zero"),
+            cols: NonZeroU16::new(cols).expect("cols is non-zero"),
+        }
+    }
+
     /// An empty [`App`] for tests that only exercise pure helpers.
     fn empty_app() -> App {
         App {
@@ -1173,12 +1185,12 @@ mod tests {
 
     #[test]
     fn projection_carries_ascii_wide_continuation_and_cursor() {
-        let mut terminal = termnix::TerminalState::new(termnix::Size::new(2, 10).expect("size"));
+        let mut terminal = termnix::TerminalState::new(size(2, 10));
         terminal.feed(b"a\xe6\x97\xa5b\r\ncd");
         terminal.feed(b"\x1b[?25l");
         let projection = Projection::from_state(&terminal).expect("projection");
 
-        assert_eq!(projection.size, termnix::Size::new(2, 10).expect("size"));
+        assert_eq!(projection.size, size(2, 10));
         assert_eq!(projection.cursor, termnix::Position { row: 1, col: 2 });
         assert!(!projection.cursor_visible);
         let row0 = &projection.rows[0];
@@ -1194,7 +1206,7 @@ mod tests {
     #[test]
     fn frame_writer_handles_wide_and_styled_cells() {
         let grid = Projection {
-            size: termnix::Size::new(2, 6).expect("size"),
+            size: size(2, 6),
             rows: vec![
                 vec![
                     termnix::Cell::EMPTY,
@@ -1236,7 +1248,7 @@ mod tests {
             style: termnix::Style::default(),
         };
         let grid = Projection {
-            size: termnix::Size::new(1, 6).expect("size"),
+            size: size(1, 6),
             rows: vec![vec![wide; 6]],
             cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,
@@ -1417,7 +1429,7 @@ mod tests {
             style: termnix::Style::default(),
         };
         let grid = Projection {
-            size: termnix::Size::new(2, 2).expect("size"),
+            size: size(2, 2),
             rows: vec![vec![blank; 2], vec![blank; 2]],
             cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,

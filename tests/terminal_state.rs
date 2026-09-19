@@ -264,11 +264,7 @@ fn compare_snapshot_to_reference(
     cols: u16,
     desc: &str,
 ) {
-    assert_eq!(
-        snap.size(),
-        termnix::Size::new(rows, cols).expect("nonzero size"),
-        "{desc}; size mismatch"
-    );
+    assert_eq!(snap.size(), size(rows, cols), "{desc}; size mismatch");
     assert!(
         !snap.is_on_alternate_screen(),
         "{desc}; alternate screen mismatch"
@@ -371,12 +367,12 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
             hex(&input),
         );
 
-        let size = termnix::Size::new(rows, cols).expect("nonzero size");
-        let mut whole = termnix::TerminalState::new(size);
+        let grid = size(rows, cols);
+        let mut whole = termnix::TerminalState::new(grid);
         whole.feed(&input);
 
         let cuts = sample_cuts(ctx, input.len());
-        let mut split = termnix::TerminalState::new(size);
+        let mut split = termnix::TerminalState::new(grid);
         feed_with_cuts(&mut split, &input, &cuts);
         let snap_whole = &whole;
         let snap_split = &split;
@@ -418,9 +414,9 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
         // above.)
         let cut = noprop::sample_usize_in(ctx, 0..=input.len());
         let (prefix, _suffix) = input.split_at(cut);
-        let mut prefix_term = termnix::TerminalState::new(size);
+        let mut prefix_term = termnix::TerminalState::new(grid);
         prefix_term.feed(prefix);
-        let mut fresh = termnix::TerminalState::new(size);
+        let mut fresh = termnix::TerminalState::new(grid);
         fresh.feed(prefix);
         assert_eq!(
             prefix_term, fresh,
@@ -458,8 +454,17 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
     Ok(())
 }
 
+/// Builds a grid size from two dimensions the sampler has already bounded to
+/// at least 1, so the non-zero conversion cannot fail.
+fn size(rows: u16, cols: u16) -> termnix::Size {
+    termnix::Size {
+        rows: std::num::NonZeroU16::new(rows).expect("rows is non-zero"),
+        cols: std::num::NonZeroU16::new(cols).expect("cols is non-zero"),
+    }
+}
+
 fn term(rows: u16, cols: u16) -> termnix::TerminalState {
-    termnix::TerminalState::new(termnix::Size::new(rows, cols).expect("nonzero size"))
+    termnix::TerminalState::new(size(rows, cols))
 }
 
 fn text_at(snap: &termnix::TerminalState, row: u16) -> String {
@@ -546,7 +551,7 @@ fn snapshot_owns_size_cells_cursor_modes_style_title_and_active() {
     t.feed(b"\x1b[2;1H\x1b]2;snap-title\x07\x1b[?25l");
     let snap = &t;
 
-    assert_eq!(snap.size(), termnix::Size::new(2, 4).expect("nonzero size"));
+    assert_eq!(snap.size(), size(2, 4));
     assert_eq!(snap.size(), t.size());
     // Row-major cells: rows * cols count.
     assert_eq!(
@@ -651,7 +656,7 @@ fn resize_does_not_add_or_reflow_history() {
     // After the fourth line the top row "aaaa" scrolled out.
     let before = t.scrollback_lines().len();
     assert_eq!(before, 1);
-    t.resize(termnix::Size::new(2, 4).expect("nonzero size"));
+    t.resize(size(2, 4));
     let snap = &t;
     assert_eq!(snap.scrollback_lines().len(), 1);
     assert_eq!(

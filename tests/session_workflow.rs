@@ -25,7 +25,7 @@ use helpers::{
     DEADLINE, Teardown, default_size, enqueue, poll_once, pump_all, pump_until, rotate_until,
     screen_text, snapshot_text, snapshots, spawn, write_raw,
 };
-use termnix::{Input, PumpBudget, Session, SessionStatus, Size};
+use termnix::{Input, PumpBudget, Session, SessionStatus};
 
 /// Per-`pump_io` work ceiling used throughout the workflow.
 ///
@@ -283,7 +283,7 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
 
     // Step 5: B resizes. The child's own `stty size` is the authority, so the
     // child kernel size and B's snapshot must agree, and A must not move.
-    let new_size = Size::new(31, 111).expect("31x111 is non-zero");
+    let new_size = helpers::size(31, 111);
     sessions[1].resize(new_size).expect("resize B");
     assert_eq!(
         sessions[1].terminal_state().size(),
@@ -318,7 +318,7 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
         "B input after A reap",
         |sessions| screen_text(&sessions[1]).contains("B_INPUT:gamma"),
     );
-    let shrink = Size::new(20, 60).expect("20x60 is non-zero");
+    let shrink = helpers::size(20, 60);
     sessions[1].resize(shrink).expect("resize B again");
     enqueue(&mut sessions, 1, Input::Raw(b"SIZE\n"));
     pump_until(

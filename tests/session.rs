@@ -1,5 +1,6 @@
 use std::{
     io::{self, ErrorKind},
+    num::NonZeroU16,
     os::unix::process::ExitStatusExt,
     process::Command,
     time::{Duration, Instant},
@@ -7,14 +8,18 @@ use std::{
 
 const DEADLINE: Duration = Duration::from_secs(15);
 
+/// Builds a grid size from two dimensions known non-zero at the call site.
+fn size(rows: u16, cols: u16) -> termnix::Size {
+    termnix::Size {
+        rows: NonZeroU16::new(rows).expect("rows is non-zero"),
+        cols: NonZeroU16::new(cols).expect("cols is non-zero"),
+    }
+}
+
 fn spawn_session(script: &str) -> termnix::Session {
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(script);
-    termnix::Session::new(
-        &mut command,
-        termnix::Size::new(24, 80).expect("default size"),
-    )
-    .expect("create session")
+    termnix::Session::new(&mut command, size(24, 80)).expect("create session")
 }
 
 /// Renders the terminal's scrollback and visible cells as rows, dropping
@@ -363,13 +368,8 @@ fn resize_updates_child_and_terminal_state() {
     let mut session = spawn_session(
         "stty -echo; while IFS= read -r line; do case \"$line\" in SIZE) stty size;; esac; done",
     );
-    session
-        .resize(termnix::Size::new(33, 121).expect("size"))
-        .expect("resize");
-    assert_eq!(
-        session.terminal_state().size(),
-        termnix::Size::new(33, 121).expect("nonzero size")
-    );
+    session.resize(size(33, 121)).expect("resize");
+    assert_eq!(session.terminal_state().size(), size(33, 121));
     session
         .enqueue_input(termnix::Input::Raw(b"SIZE\n"))
         .expect("enqueue size");
@@ -562,9 +562,7 @@ fn closed_session_rejects_input_and_resize() {
         .enqueue_input(termnix::Input::Raw(b"x"))
         .expect_err("closed rejects");
     assert_eq!(err.kind(), ErrorKind::BrokenPipe);
-    let err = session
-        .resize(termnix::Size::new(40, 40).expect("size"))
-        .expect_err("closed rejects");
+    let err = session.resize(size(40, 40)).expect_err("closed rejects");
     assert_eq!(err.kind(), ErrorKind::BrokenPipe);
 }
 

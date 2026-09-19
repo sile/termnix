@@ -15,13 +15,3 @@ pub struct Size {
     /// Number of columns.
     pub cols: NonZeroU16,
 }
-
-impl Size {
-    /// Builds a size, returning `None` if either dimension is zero.
-    pub fn new(rows: u16, cols: u16) -> Option<Self> {
-        Some(Self {
-            rows: NonZeroU16::new(rows)?,
-            cols: NonZeroU16::new(cols)?,
-        })
-    }
-}
