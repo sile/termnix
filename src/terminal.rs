@@ -239,9 +239,7 @@ impl TerminalState {
         // snapshot below already carries, so polling it would only ever
         // over-detect. A write to the hidden primary is invisible by definition.
         let primary_dirty = self.primary.take_dirty();
-        let changed = primary_dirty
-            || self.title_changed
-            || (self.visible_scalars() != before);
+        let changed = primary_dirty || self.title_changed || (self.visible_scalars() != before);
         if changed {
             self.revision = self.revision.wrapping_add(1);
         }
