@@ -207,9 +207,10 @@ what preserves ordering (see `## Ordering`).
 
 ## Ordering
 
-An earlier draft of this RFC said `Session`'s `outbound` would stop carrying
-replies and `pending_reply_range` would be deleted. That is not implementable
-without changing observable behaviour, and the reason is the one queue.
+`Session`'s `outbound` continues to carry replies alongside input, and
+`pending_reply_range` stays where it is. Replies are not moved to an
+independent queue, because the one queue is what fixes the order between an
+accepted input byte and a reply generated after it.
 
 `Session::enqueue_input()` does not consult the paused-on-reply flag, so a
 caller may accept input while a reply is pending. That input is appended to
@@ -220,14 +221,14 @@ a short write into "reply bytes" and "input bytes" and so that
 `read_paused()` knows when the reply has been fully written. This is observable:
 tests/session.rs `input_and_reply_keep_fifo_order` drives the child to read an
 accepted `A`, emit a query, and then accept `B`, and asserts the wire order
-`A R B`. Splitting the two directions into independent queues makes `R` and `B`
-compete for the wire, and either choice reorders them.
+`A R B`. Independent queues would let `R` and `B` compete for the wire, and
+either choice reorders them.
 
-The RFC only ever needed to guarantee *reply-vs-reply* order (Invariants), which
-the single `TerminalState` buffer already gives. Reply-vs-input order is a
-property of `Session`, and it keeps the mechanism it already had. So the buffer
-moves to where the bytes are born, the enum and `drain_actions()` go away, and
-the session's own queue discipline is unchanged.
+This RFC only needs to guarantee *reply-vs-reply* order (Invariants), which the
+single `TerminalState` buffer already gives. Reply-vs-input order is a property
+of `Session`, which keeps the mechanism it already had. So the buffer moves to
+where the bytes are born, the enum and `drain_actions()` go away, and the
+session's own queue discipline is unchanged.
 
 ## Drawbacks
 
@@ -359,18 +360,15 @@ Implemented on branch `refactor/terminal-reply-buffer`. The version bump is
 left to the maintainer; the change is breaking (`TerminalAction` and
 `drain_actions()` are removed from the public API).
 
-What shipped matches the plan except for one correction made while
-implementing: the draft's claim that `Session`'s two directions would "stop
-sharing one queue" and that `pending_reply_range` /
-`pending_reply_unsent_len()` would be deleted was wrong. `enqueue_input()` can
-accept input while a reply is pending, so input can sit behind a reply in
-`outbound`, and the range is what keeps the reply's wire position. Deleting it
-would have reordered `tests/session.rs::input_and_reply_keep_fifo_order`. The
-range and helper are therefore kept; the `## Ordering` section above records
-why. Everything else landed as written: `TerminalAction` and `drain_actions()`
-are gone, `pending_reply_bytes()` / `advance_reply_bytes()` are the new public
-surface, `advance` panics (checked in release) on an over-advance, and the
-reply buffer is a single top-level field on `TerminalState`.
+`TerminalAction` and `drain_actions()` are gone, `pending_reply_bytes()` /
+`advance_reply_bytes()` are the new public surface, `advance` panics (checked
+in release) on an over-advance, and the reply buffer is a single top-level
+field on `TerminalState`.
+
+`Session`'s two directions still share one `outbound` queue, and
+`pending_reply_range` / `pending_reply_unsent_len()` are kept: as `## Ordering`
+sets out, that range is what preserves the position of a reply relative to
+input accepted while the reply was pending.
 
 Three test sites changed: `drain_and_compare` in `tests/terminal.rs` now
 compares and drains the reply buffer instead of a `Vec<TerminalAction>`,
