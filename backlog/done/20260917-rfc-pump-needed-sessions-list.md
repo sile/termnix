@@ -1,6 +1,6 @@
 # RFC: Give the caller a way to enumerate sessions that need pumping
 
-- Status: draft
+- Status: rejected
 
 ## Summary
 
@@ -119,3 +119,49 @@ may not fit every caller.
   `max_rounds`/`drain` flag)?
 - What order should the helper visit sessions in, given the point is to avoid
   depending on the caller's storage order?
+
+## Outcome
+
+Rejected. No pull request: the fairness policy stays with the caller, and the
+examples were the only part that disagreed with that.
+
+Nothing was added to the API. The Motivation's loop is not what a caller in
+this repository writes: `examples/tuinix.rs` keeps a pump cursor and rotates
+the starting session every round so that a busy child cannot starve the others,
+and `examples/headless.rs` bounds its drain per outer iteration. Both are
+written against the existing API, with no enumeration helper.
+
+Nor was the policy undocumented. It is stated in three places: the
+"No scheduling policy" boundary in `README.md`, the crate-level comment on
+`Session` ("One `pump_io` call is the scheduling quantum; a multi-session loop
+should rotate among runnable sessions rather than draining one session to
+idle"), and the doc comment on `Session::needs_pump()`. What made the RFC look
+needed was that two code examples — the README's Example section and the
+`Session` crate doc — showed `while session.needs_pump() { pump_io() }`
+without saying it is a single-session shape. Read as advice for several
+sessions, that is exactly the drain loop the prose warns against, so the
+proposal was working around a contradiction in the examples rather than a gap
+in the API.
+
+The examples were fixed instead. The `while` stays: an edge-triggered loop
+must drain before blocking, because `interests()` reports what a poll should
+wait for, not what `pump_io` can do right now. Each example now says which
+case it covers, the README gains a short rotation that visits every session
+once per round and moves the starting point each time, and the
+"so a chatty child cannot starve the others" claim — which a work budget
+alone does not deliver, since the caller is the one who decides who is
+visited — now points at that rotation instead.
+
+Two parts of the proposal do not survive this reading. The suggested
+`pump_all_needing(sessions: &mut [Session], budget)` cannot be handed the
+collection the Motivation is built around: a caller holding a
+`HashMap<SessionId, Session>` cannot get a `&mut [Session]` out of it, so the
+helper would not fit the one example it was argued from. And the Open question
+about visiting order has no answer inside this design — a helper that filters
+a caller-provided slice inherits the caller's order, and a helper that decides
+the order would have to own the sessions, which the crate deliberately does
+not.
+
+Readiness is the caller's throughout, and that includes deciding who to visit
+and how often. The crate's contribution is to make each visit bounded and to
+report what is left undone, which `PumpBudget` and `needs_pump()` already do.
