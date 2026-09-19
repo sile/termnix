@@ -571,11 +571,12 @@ fn pump_budget_bounds_work_per_call() {
     // An echoing child keeps output flowing, so a pump can always find work.
     let script = "stty -echo; while IFS= read -r line; do printf 'ECHO:%s\\n' \"$line\"; done";
     let mut session = spawn_session(script);
-    // A budget of one syscall cannot both read input and write the echo, so
-    // every pump stops with work still pending.
-    let tiny = termnix::PumpBudget::new(0, 1);
-    assert_eq!(tiny.bytes(), 0);
-    assert_eq!(tiny.syscalls(), 1);
+    // A zero byte ceiling stops every pump before it moves anything, so the
+    // budget is reported exhausted with work still pending.
+    let tiny = termnix::PumpBudget {
+        bytes: 0,
+        syscalls: 1,
+    };
 
     let before = session.counters().pump_budget_exhaustions;
     session
@@ -605,8 +606,8 @@ fn pump_budget_default_is_stable() {
     // The default is part of the public contract; pin it so a change is a
     // deliberate decision rather than an accident.
     let default = termnix::PumpBudget::default();
-    assert_eq!(default.bytes(), 65536);
-    assert_eq!(default.syscalls(), 64);
+    assert_eq!(default.bytes, 65536);
+    assert_eq!(default.syscalls, 64);
 }
 
 #[test]

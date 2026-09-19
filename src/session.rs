@@ -102,35 +102,48 @@ const READ_COMPACT_THRESHOLD: usize = 4096;
 ///
 /// The ceiling counts both bytes moved (read + decoded + written) and
 /// syscalls attempted. `pump_io` stops at whichever is reached first.
+///
+/// # Choosing a value
+///
+/// Most callers should pass [`PumpBudget::default()`], which is the recommended
+/// 64 KiB / 64 syscall ceiling. Reach for a struct literal only when you are
+/// deliberately tightening the ceiling (for instance to observe
+/// [`SessionCounters::pump_budget_exhaustions`] with a small fixture) or
+/// widening it (to drain a single session in one call).
+///
+/// Both fields are public and every value is valid, including zero: a zero in
+/// either field makes every `pump_io` stop immediately, which reports an
+/// exhausted budget without doing work. That is not an error — the call
+/// returns `Ok(())`, increments
+/// [`SessionCounters::pump_budget_exhaustions`], and leaves
+/// [`Session::needs_pump()`] true for any work still pending.
+///
+/// # Examples
+///
+/// ```
+/// # use termnix::PumpBudget;
+/// // The usual case: take the recommended ceiling.
+/// let budget = PumpBudget::default();
+///
+/// // Tighten it, so a pump stops after a single syscall.
+/// let budget = PumpBudget { bytes: 65536, syscalls: 1 };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PumpBudget {
-    bytes: usize,
-    syscalls: usize,
+    /// Maximum bytes the pump may move in one call, counting reads, decoded
+    /// output, and writes together.
+    ///
+    /// Zero makes every `pump_io` stop before moving anything, which reports an
+    /// exhausted budget without doing work.
+    pub bytes: usize,
+    /// Maximum read and write syscalls the pump may issue in one call.
+    ///
+    /// Zero makes every `pump_io` stop before issuing any syscall, which
+    /// reports an exhausted budget without doing work.
+    pub syscalls: usize,
 }
 
 impl PumpBudget {
-    /// A ceiling allowing at most `bytes` bytes and `syscalls` syscalls.
-    ///
-    /// A zero in either field makes every `pump_io` stop immediately, which
-    /// reports an exhausted budget without doing work. That is not an error:
-    /// the call returns `Ok(())`, increments
-    /// [`SessionCounters::pump_budget_exhaustions`], and leaves
-    /// [`Session::needs_pump()`] true for any work still pending. It is the
-    /// intended way to observe budget exhaustion in a small fixture.
-    pub const fn new(bytes: usize, syscalls: usize) -> Self {
-        Self { bytes, syscalls }
-    }
-
-    /// The byte ceiling.
-    pub fn bytes(&self) -> usize {
-        self.bytes
-    }
-
-    /// The syscall ceiling.
-    pub fn syscalls(&self) -> usize {
-        self.syscalls
-    }
-
     /// Charges `bytes` and `syscalls` against the ceiling.
     fn consume(&mut self, bytes: usize, syscalls: usize) {
         self.bytes = self.bytes.saturating_sub(bytes);
@@ -149,7 +162,10 @@ impl PumpBudget {
 }
 
 impl Default for PumpBudget {
-    /// 64 KiB of traffic or 64 syscalls, whichever comes first.
+    /// The recommended ceiling: 64 KiB of traffic or 64 syscalls, whichever
+    /// comes first.
+    ///
+    /// See [`PumpBudget`] for when to choose your own instead.
     fn default() -> Self {
         Self {
             bytes: 65536,
