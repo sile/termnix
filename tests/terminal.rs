@@ -1298,6 +1298,33 @@ fn revision_advances_on_rewriting_the_same_cell() {
 }
 
 #[test]
+fn revision_tracks_only_the_visible_screen() {
+    // The hidden buffer's writes are not polled: while the alternate screen is
+    // active, `on_alternate` is what the snapshot carries, and editing the
+    // primary behind it cannot be seen. Entering and leaving the alternate
+    // screen must still be reported, because those flip `on_alternate`.
+    let mut t = term(2, 8);
+    t.feed(b"primary");
+    t.feed(b"\x1b[?1049h");
+    let on_alternate = t.revision();
+
+    t.feed(b"hidden");
+    assert_ne!(
+        t.revision(),
+        on_alternate,
+        "writing the active alternate screen is a visible change"
+    );
+
+    let after_write = t.revision();
+    t.feed(b"\x1b[?1049l");
+    assert_ne!(
+        t.revision(),
+        after_write,
+        "returning to the primary screen is a visible change"
+    );
+}
+
+#[test]
 fn revision_stays_put_when_a_mode_is_set_to_its_current_value() {
     let mut t = term(2, 8);
     t.feed(b"\x1b[?25l"); // hide cursor

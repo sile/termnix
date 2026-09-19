@@ -229,8 +229,16 @@ impl TerminalState {
         let before = self.visible_scalars();
         self.title_changed = false;
         feed_bytes(self, bytes);
-        let changed = self.primary.take_dirty()
-            | self.alternate.take_dirty()
+        // `take_dirty` clears the flag as it reads it, so it is called on its
+        // own line rather than inline in the expression below; a
+        // short-circuiting operator there would silently strand the flag.
+        //
+        // Only the primary screen is polled. A write cannot land on the
+        // alternate screen without also flipping `on_alternate`, which the
+        // snapshot below already carries, so polling it would only ever
+        // over-detect. A write to the hidden primary is invisible by definition.
+        let primary_dirty = self.primary.take_dirty();
+        let changed = primary_dirty
             | self.title_changed
             | (self.visible_scalars() != before);
         if changed {
@@ -375,10 +383,9 @@ impl TerminalState {
         self.wrap_pending = false;
         self.repair_cursor_cell();
         // A resize always changes the visible size, so the revision moves
-        // unconditionally. Clear the screens' dirty flags anyway so a later
-        // `feed` does not re-detect this resize's cell writes.
+        // unconditionally. Clear the primary screen's dirty flag anyway so a
+        // later `feed` does not re-detect this resize's cell writes.
         self.primary.take_dirty();
-        self.alternate.take_dirty();
         self.revision = self.revision.wrapping_add(1);
     }
 
