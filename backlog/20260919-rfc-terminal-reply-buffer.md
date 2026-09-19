@@ -1,6 +1,6 @@
 # RFC: Replace `TerminalAction` with a reply buffer on `TerminalState`
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -11,8 +11,11 @@ wrapped in a single-variant enum, collected into a `Vec<TerminalAction>`, and
 copied a second time into the caller's own queue.
 
 The externally visible change is that `drain_actions()` and the
-`TerminalAction` type go away, and `Session`'s separate `outbound` queue stops
-holding terminal replies. The bytes a caller must write do not change.
+`TerminalAction` type go away. `Session`'s separate `outbound` queue still
+holds terminal replies alongside input, because that one queue is what
+preserves the order between an accepted input byte and a reply generated after
+it (see `## Ordering`, below). The bytes a caller must write do not change, and
+neither does their order.
 
 ## Motivation
 
@@ -60,10 +63,10 @@ compacted through `compact_outbound_if_needed()` against
 owned `Vec`s. The same abstraction is implemented once in `Session` and not at
 all where the bytes are produced.
 
-A second cost lands on the caller. Because a reply is only visible after
-`drain_actions()`, and because `Session` must know which bytes of `outbound`
-are still-unsent reply bytes rather than input, `Session` tracks that as a
-separate range:
+A second piece of caller-side bookkeeping is needed for ordering. Because a
+reply is only visible after being produced, and because `Session` must know
+which bytes of `outbound` are still-unsent reply bytes rather than input, it
+tracks that as a range:
 
 ```rust
 /// Range of the one unsent terminal reply inside `outbound`.
@@ -71,8 +74,9 @@ pending_reply_range: Option<Range<usize>>,
 ```
 
 plus a `pending_reply_unsent_len()` helper and its own tests. This bookkeeping
-exists only to reconstruct, after the fact, a fact the emulator knew for free:
-which bytes are a reply.
+stays after the change (it is not part of the enum), because it is the
+mechanism that keeps an accepted input byte from overtaking a reply generated
+before it. The `## Ordering` section below is the reason.
 
 ## Guide-level explanation
 
@@ -190,14 +194,40 @@ Invariants:
   `pending_reply_bytes()` preserves that order because it is one buffer.
 - There is exactly one reply buffer on `TerminalState`. It is not owned by a
   `Screen`, so neither `soft_reset` (RIS) nor a primary/alternate switch drops
-  a reply that is still owed to the PTY. This preserves today's behavior, where
-  `actions` is top-level and `soft_reset` leaves it untouched.
+  a reply that is still owed to the PTY. This preserves the behaviour before
+  the change, where the queue was top-level and `soft_reset` left it untouched.
 
-`Session::decode_byte` becomes an append followed by a pass-through, with no
-intermediate `Vec` and no `TerminalAction` match; `pending_reply_range` and
-`pending_reply_unsent_len()` are deleted. `Session::outbound` continues to hold
-input from `enqueue_input`, so the two directions stop sharing one queue and
-`write_offset` stops needing to know which bytes are replies.
+`Session::decode_byte` becomes a copy of the emulator's pending bytes into
+`outbound`, with no intermediate `Vec` and no `TerminalAction` match. The
+session immediately calls `advance_reply_bytes()` for the bytes it copied, so
+owning the bytes moves in one hop. `pending_reply_range` and
+`pending_reply_unsent_len()` are kept: they are no longer "the reply queue",
+but they still answer "where in the input queue does the reply sit", which is
+what preserves ordering (see `## Ordering`).
+
+## Ordering
+
+An earlier draft of this RFC said `Session`'s `outbound` would stop carrying
+replies and `pending_reply_range` would be deleted. That is not implementable
+without changing observable behaviour, and the reason is the one queue.
+
+`Session::enqueue_input()` does not consult the paused-on-reply flag, so a
+caller may accept input while a reply is pending. That input is appended to
+`outbound` *behind* the not-yet-written reply. The reply therefore need not be
+at the tail of `outbound`, and `pending_reply_range` (with both a `start` and
+an `end`) is what marks which span is the reply so that `write_phase` can split
+a short write into "reply bytes" and "input bytes" and so that
+`read_paused()` knows when the reply has been fully written. This is observable:
+tests/session.rs `input_and_reply_keep_fifo_order` drives the child to read an
+accepted `A`, emit a query, and then accept `B`, and asserts the wire order
+`A R B`. Splitting the two directions into independent queues makes `R` and `B`
+compete for the wire, and either choice reorders them.
+
+The RFC only ever needed to guarantee *reply-vs-reply* order (Invariants), which
+the single `TerminalState` buffer already gives. Reply-vs-input order is a
+property of `Session`, and it keeps the mechanism it already had. So the buffer
+moves to where the bytes are born, the enum and `drain_actions()` go away, and
+the session's own queue discipline is unchanged.
 
 ## Drawbacks
 
@@ -322,3 +352,29 @@ a type shared with `Session` (not now; see Future possibilities).
 - Richer outbound events (bell, title change) if a caller ever needs to observe
   them rather than write them; they would be a separate channel, not this
   buffer.
+
+## Outcome
+
+Implemented on branch `refactor/terminal-reply-buffer`. The version bump is
+left to the maintainer; the change is breaking (`TerminalAction` and
+`drain_actions()` are removed from the public API).
+
+What shipped matches the plan except for one correction made while
+implementing: the draft's claim that `Session`'s two directions would "stop
+sharing one queue" and that `pending_reply_range` /
+`pending_reply_unsent_len()` would be deleted was wrong. `enqueue_input()` can
+accept input while a reply is pending, so input can sit behind a reply in
+`outbound`, and the range is what keeps the reply's wire position. Deleting it
+would have reordered `tests/session.rs::input_and_reply_keep_fifo_order`. The
+range and helper are therefore kept; the `## Ordering` section above records
+why. Everything else landed as written: `TerminalAction` and `drain_actions()`
+are gone, `pending_reply_bytes()` / `advance_reply_bytes()` are the new public
+surface, `advance` panics (checked in release) on an over-advance, and the
+reply buffer is a single top-level field on `TerminalState`.
+
+Three test sites changed: `drain_and_compare` in `tests/terminal.rs` now
+compares and drains the reply buffer instead of a `Vec<TerminalAction>`,
+`cursor_position_report_is_an_action` was renamed to
+`cursor_position_report_is_a_pending_reply` and compares bytes, and
+`tests/terminal_state.rs::assert_same_public_state` needed no change. All tests,
+clippy with `-D warnings`, and `cargo fmt --check` pass.

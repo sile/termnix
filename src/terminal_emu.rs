@@ -5,9 +5,7 @@ use vte::Perform;
 
 use crate::terminal::TerminalState;
 use crate::terminal_buffer::Screen;
-use crate::terminal_types::{
-    Color, MouseReporting, Position, SavedCursor, Style, TerminalAction, TerminalModes,
-};
+use crate::terminal_types::{Color, MouseReporting, Position, SavedCursor, Style, TerminalModes};
 
 pub(crate) struct Emulator<'a> {
     pub(crate) term: &'a mut TerminalState,
@@ -528,15 +526,13 @@ impl TerminalState {
         }
         match param_or(params, 0, 0) {
             // DSR — terminal OK.
-            5 => self
-                .actions
-                .push(TerminalAction::WritePty(b"\x1b[0n".to_vec())),
+            5 => self.replies.push(b"\x1b[0n"),
             // CPR — cursor position report.
             6 => {
                 let row = self.cursor.row + 1;
                 let col = self.cursor.col + 1;
-                let reply = format!("\x1b[{row};{col}R").into_bytes();
-                self.actions.push(TerminalAction::WritePty(reply));
+                let reply = format!("\x1b[{row};{col}R");
+                self.replies.push(reply.as_bytes());
             }
             _ => {}
         }
@@ -544,8 +540,7 @@ impl TerminalState {
 
     fn primary_da(&mut self) {
         // DA1 reply shaped like a VT102. Spec: https://vt100.net/docs/vt510-rm/DA1.html
-        self.actions
-            .push(TerminalAction::WritePty(b"\x1b[?6c".to_vec()));
+        self.replies.push(b"\x1b[?6c");
     }
 
     fn handle_sgr(&mut self, params: &vte::Params) {
