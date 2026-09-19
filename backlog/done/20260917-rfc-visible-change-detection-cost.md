@@ -1,6 +1,6 @@
 # RFC: Make "did the visible state change?" cheap to ask
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -292,3 +292,23 @@ the read side with no bound. The flag-based design keeps both `feed` and
 - Once the per-cell write path has a cheap "did this store change the cell"
   check, the dirty flag could narrow from "a write happened" to "a write stored
   a new value," removing the false positives in the Drawbacks section.
+
+## Outcome
+
+Implemented in [#6](https://github.com/sile/termnix/pull/6) (merged as `56945bb`).
+
+The visible-change signal is now maintained where the visible state is written
+instead of being re-derived in `feed()`. Cell writes set a flag on `Screen`,
+the `Copy` scalars are compared before and after parsing, and the title has a
+flag at its one assignment site, so `feed()` decides whether to bump
+`revision()` with a fixed amount of work that does not scale with the grid.
+
+Two details diverged from what the text above predicted. The hidden screen is
+no longer polled at all: a write to it cannot happen without also flipping
+`on_alternate`, which the scalar comparison already covers, so polling it could
+only report changes that were already reported. And `soft_reset` needed an
+explicit mark that the proposal does not mention, because it replaces the screen
+wholesale with a blank one rather than writing through the cell methods; without
+it, a reset whose only visible effect is elsewhere went unreported.
+
+The scope is unchanged from what is described above.
