@@ -229,9 +229,10 @@ impl TerminalState {
         let before = self.visible_scalars();
         self.title_changed = false;
         feed_bytes(self, bytes);
-        // `take_dirty` clears the flag as it reads it, so it is called on its
-        // own line rather than inline in the expression below; a
-        // short-circuiting operator there would silently strand the flag.
+        // `take_dirty` clears the flag as it reads it, so it is taken into a
+        // local first: the combination below is short-circuiting, and an
+        // effectful call placed inside it would be skipped once an earlier
+        // term is true, silently stranding the flag.
         //
         // Only the primary screen is polled. A write cannot land on the
         // alternate screen without also flipping `on_alternate`, which the
@@ -239,8 +240,8 @@ impl TerminalState {
         // over-detect. A write to the hidden primary is invisible by definition.
         let primary_dirty = self.primary.take_dirty();
         let changed = primary_dirty
-            | self.title_changed
-            | (self.visible_scalars() != before);
+            || self.title_changed
+            || (self.visible_scalars() != before);
         if changed {
             self.revision = self.revision.wrapping_add(1);
         }
