@@ -1,6 +1,6 @@
 # RFC: Give scrollback lines a sequence number
 
-- Status: draft
+- Status: rejected
 
 ## Summary
 
@@ -246,3 +246,46 @@ the storage does not change the number a caller already holds.
 
 [`ScrollbackLine`]: ../src/terminal_types.rs
 [`scrollback_lines()`]: ../src/terminal.rs
+
+## Outcome
+
+Rejected. No pull request: the reasoning was settled against the proposal
+before any code was written.
+
+The Motivation claims the data model "cannot express a stable reference to a
+historical line at all", so that "any caller that wants one must copy the
+history". That is false, and it is false for the reason the RFC itself gives:
+the two events that invalidate a position are both observable by the caller
+already. A push is visible as growth of `scrollback_lines()`, and a trim is
+performed *by the caller* through `Session::trim_scrollback()`, so the caller
+that trims knows it trimmed. The anchor therefore does not have to live in
+`TerminalState` at all; it can live in the caller, expressed as a distance from
+the newest line rather than from the oldest.
+
+The distance in the design here is measured from the wrong end. The RFC treats
+the oldest line as the origin, so `scrollback_lines()[i]` is a position that
+both a push and a trim move. A caller should count from the newest line
+instead. Then the two churning events become trivial: a push adds
+one line past the anchor, which is corrected by `k += 1`, and a trim removes
+lines from the far end, which does not move `k` at all. Keeping `k` is enough
+on its own; the caller does not need to store the `len()` it last saw, because
+the correction is a single increment at the event it already observes.
+
+Trimming is not even on the hot path. A copy mode that is displaying history
+does not normally trim while it is open; trimming is the application's
+retention policy, applied on its own schedule. So the correction the RFC treats
+as a case to design for is a rare case the caller can handle, or ignore, with
+one branch. Writing that branch is smaller than widening `ScrollbackLine` by a
+field for every consumer, including the ones that never browse history.
+
+The `BTreeMap` section is unaffected by this and remains a separate question,
+but it also loses most of its force: `O(log n)` lookup would make anchoring
+*cheaper*, not *possible*, and the arithmetic above shows it is already
+possible. What would revive a sequence number is a caller whose anchor has to
+survive without seeing the events: for example a view that cannot know whether
+a trim happened because another part of the application owns retention, or
+several independent views that each need to name the same line without sharing
+a position. No such caller was presented, and the copy-mode case that motivated
+the RFC is not one.
+
+The scope is unchanged from what is described above.
