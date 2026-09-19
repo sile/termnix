@@ -30,11 +30,25 @@ jobs:
     steps:
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Verify the `rust-version` declared in the published crate's
-      # Cargo.toml still builds.
-      - run: rustup toolchain install 1.97 --profile minimal
-      - run: rustup default 1.97
-      - run: cargo build --all-targets
+      # The MSRV is read from `Cargo.toml`'s `rust-version` so it is not
+      # duplicated here. Stable is installed first because `cargo metadata`
+      # needs a working toolchain to run.
+      - name: Read MSRV from Cargo.toml
+        run: |
+          set -euo pipefail
+          rustup update stable
+          rustup default stable
+          msrv="$(cargo metadata --format-version=1 --no-deps \
+            | grep -o '"rust_version":"[^"]*"' \
+            | cut -d'"' -f4)"
+          test -n "$msrv" || { echo "no rust-version in Cargo.toml" >&2; exit 1; }
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+      - run: rustup toolchain install "$MSRV" --profile minimal
+      - run: rustup default "$MSRV"
+      # Build only the library, not `--all-targets`: dev-dependencies are
+      # irrelevant to downstream users and may themselves require a newer
+      # rustc, which would make this job fail for the wrong reason.
+      - run: cargo build
 
   lints:
     name: Lints
