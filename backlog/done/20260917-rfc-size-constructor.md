@@ -264,10 +264,9 @@ fields.
 
 Implemented in [#4](https://github.com/sile/termnix/pull/4) (merged as `15ab779`).
 
-Implemented in [#4](https://github.com/sile/termnix/pull/4) by removing the
-`impl Size` block and converting all 39 call sites. Two things in the text
-above do not match what was built, and both are worth correcting here rather
-than leaving a reader to copy the wrong thing.
+The `impl Size` block is removed and all 39 call sites are converted. Two
+things in the text above do not match what was built, and both are worth
+correcting here rather than leaving a reader to copy the wrong thing.
 
 **The dynamic-site sketch calls methods that do not exist.** The Proposal
 writes `size.rows()` and `size.cols()`, but `tuinix::Size` has no accessors: it
@@ -279,7 +278,7 @@ the one worth having in the text.
 
 **The sketch's error message is also superseded.** It has both dimensions
 report `unsupported terminal size: {size:?}`, which is the size-level report
-the open question below calls inconsistent. The conversion now names the
+the open question above calls inconsistent. The conversion now names the
 dimension that failed for both cases:
 
 ```
