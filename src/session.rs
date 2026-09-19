@@ -764,6 +764,8 @@ impl Session {
 
     /// Sends a graceful termination signal (SIGTERM) to the session's process
     /// group.
+    ///
+    /// See [`SignalOutcome`] for what each result means for the caller.
     pub fn terminate(&mut self) -> io::Result<SignalOutcome> {
         match self.pty.as_mut() {
             Some(Pty::Live(pty)) => pty.signal_group(libc::SIGTERM),
@@ -777,6 +779,8 @@ impl Session {
 
     /// Sends a force-termination signal (SIGKILL) to the session's process
     /// group.
+    ///
+    /// See [`SignalOutcome`] for what each result means for the caller.
     pub fn force_terminate(&mut self) -> io::Result<SignalOutcome> {
         match self.pty.as_mut() {
             Some(Pty::Live(pty)) => pty.signal_group(libc::SIGKILL),

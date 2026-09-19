@@ -196,6 +196,12 @@ impl TerminalState {
     /// bump it once even when many cells changed, and it stays unchanged when
     /// input produced no visible effect (BEL, an ignored sequence, or a
     /// partial escape). It wraps on overflow, which is unreachable in practice.
+    ///
+    /// The guarantee is one-directional. An unchanged counter means the visible
+    /// state is certainly unchanged, but an advanced counter only means that
+    /// some write reached the screen, not that anything on it differs: writing
+    /// a cell the value it already held still counts as a write. Treat an
+    /// advance as "repaint to be safe" rather than as "something is different".
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -281,7 +287,8 @@ impl TerminalState {
 
     /// Returns the visible row at `row` as a cell slice, if in range.
     ///
-    /// Rows outside `0..`[`Size::rows`](crate::size::Size::rows) return `None`.
+    /// Rows outside the range `0..`[`Size::rows`](crate::size::Size::rows)
+    /// return `None`.
     pub fn row(&self, row: u16) -> Option<&[Cell]> {
         if row >= self.size.rows.get() {
             return None;
