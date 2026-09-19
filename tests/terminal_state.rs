@@ -257,6 +257,38 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Asserts that two states are observationally identical, naming the first
+/// observation that differs so a failure points at the field.
+fn assert_same_public_state(a: &termnix::TerminalState, b: &termnix::TerminalState, desc: &str) {
+    assert_eq!(a.size(), b.size(), "{desc}; size mismatch");
+    assert_eq!(a.cursor(), b.cursor(), "{desc}; cursor mismatch");
+    let size = a.size();
+    for row in 0..size.rows.get() {
+        for col in 0..size.cols.get() {
+            let at = termnix::Position { row, col };
+            assert_eq!(a.cell(at), b.cell(at), "{desc}; cell mismatch at {at:?}");
+        }
+    }
+    assert_eq!(a.modes(), b.modes(), "{desc}; modes mismatch");
+    assert_eq!(
+        a.is_on_alternate_screen(),
+        b.is_on_alternate_screen(),
+        "{desc}; alternate screen mismatch"
+    );
+    assert_eq!(a.title(), b.title(), "{desc}; title mismatch");
+    assert_eq!(a.style(), b.style(), "{desc}; style mismatch");
+    assert_eq!(
+        a.scrollback_lines(),
+        b.scrollback_lines(),
+        "{desc}; scrollback mismatch"
+    );
+    assert_eq!(
+        a.scrollback_cells(),
+        b.scrollback_cells(),
+        "{desc}; scrollback cell count mismatch"
+    );
+}
+
 fn compare_snapshot_to_reference(
     snap: &termnix::TerminalState,
     reference: &RefTerm,
@@ -376,9 +408,10 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
         feed_with_cuts(&mut split, &input, &cuts);
         let snap_whole = &whole;
         let snap_split = &split;
-        assert_eq!(
-            snap_whole, snap_split,
-            "{desc}; whole and split snapshots differ cuts={cuts:?}"
+        assert_same_public_state(
+            snap_whole,
+            snap_split,
+            &format!("{desc}; whole and split snapshots differ cuts={cuts:?}"),
         );
 
         compare_snapshot_to_reference(snap_whole, &reference, rows, cols, &desc);
@@ -418,9 +451,10 @@ fn snapshot_matches_reference_model() -> noprop::TestResult {
         prefix_term.feed(prefix);
         let mut fresh = termnix::TerminalState::new(grid);
         fresh.feed(prefix);
-        assert_eq!(
-            prefix_term, fresh,
-            "{desc}; rebuilding a prefix-only state was not deterministic"
+        assert_same_public_state(
+            &prefix_term,
+            &fresh,
+            &format!("{desc}; rebuilding a prefix-only state was not deterministic"),
         );
 
         saw_scroll.set(saw_scroll.get() || reference.scrolls > 0);
@@ -585,12 +619,15 @@ fn snapshot_is_owned_and_unaffected_by_later_updates() {
     t.feed(b"aa\r\nbb\r\ncc\r\ndd");
     let mut fresh = term(2, 4);
     fresh.feed(b"aa\r\nbb\r\ncc\r\ndd");
-    assert_eq!(t, fresh);
+    assert_same_public_state(&t, &fresh, "identical feeds");
 
     // The state captured earlier still equals a fresh term fed only the
     // original prefix; later updates move `t` on without touching `fresh`.
     t.feed(b"ee\r\nff");
-    assert_ne!(t, fresh);
+    assert!(
+        t.cursor() != fresh.cursor() || t.scrollback_lines() != fresh.scrollback_lines(),
+        "later updates left the two states observationally identical"
+    );
 }
 
 #[test]

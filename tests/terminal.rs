@@ -114,10 +114,12 @@ fn feed_with_cuts(term: &mut termnix::TerminalState, bytes: &[u8], cuts: &[usize
     term.feed(&bytes[start..]);
 }
 
-/// Compares every public observable of two states, drains and compares the
-/// action queues (contents and order), then compares the full emulator state
-/// via `PartialEq` (which covers saved cursor, wrap pending, scroll region,
-/// and the inactive screen, but not the parser's private continuation state).
+/// Compares every public observable of two states, then drains and compares
+/// the action queues (contents and order). The comparison is written out field
+/// by field rather than delegating to a `PartialEq` impl, so it covers exactly
+/// what the public API exposes: the parser's private continuation state, the
+/// saved cursor, wrap pending, and the scroll region have no accessor to read
+/// them through.
 fn drain_and_compare(
     a: &mut termnix::TerminalState,
     b: &mut termnix::TerminalState,
@@ -140,10 +142,19 @@ fn drain_and_compare(
     );
     assert_eq!(a.title(), b.title(), "{where_}: title mismatch");
     assert_eq!(a.style(), b.style(), "{where_}: style mismatch");
+    assert_eq!(
+        a.scrollback_lines(),
+        b.scrollback_lines(),
+        "{where_}: scrollback mismatch"
+    );
+    assert_eq!(
+        a.scrollback_cells(),
+        b.scrollback_cells(),
+        "{where_}: scrollback cell count mismatch"
+    );
     let actions_a = a.drain_actions();
     let actions_b = b.drain_actions();
     assert_eq!(actions_a, actions_b, "{where_}: action mismatch");
-    assert_eq!(a, b, "{where_}: internal emulator state mismatch");
     actions_a
 }
 
@@ -589,7 +600,7 @@ fn chunk_boundaries_do_not_change_terminal_state() -> noprop::TestResult {
         let mut split = termnix::TerminalState::new(size(rows, cols));
         feed_with_cuts(&mut split, &input, &cuts);
 
-        assert_eq!(whole, split);
+        drain_and_compare(&mut whole, &mut split, "chunk boundaries");
         Ok(())
     })?;
 

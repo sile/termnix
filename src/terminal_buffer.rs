@@ -8,23 +8,13 @@ pub(crate) struct Screen {
     size: Size,
     cells: Vec<Cell>,
     /// Set by the writing methods below when they store a cell. It is derived
-    /// bookkeeping for change detection and is excluded from equality, the same
-    /// way `TerminalState` excludes `revision`.
+    /// bookkeeping for change detection and is omitted from `Debug` below.
     dirty: bool,
 }
 
-impl PartialEq for Screen {
-    fn eq(&self, other: &Self) -> bool {
-        self.size == other.size && self.cells == other.cells
-    }
-}
-
-impl Eq for Screen {}
-
 impl std::fmt::Debug for Screen {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `dirty` is derived bookkeeping, so it is omitted here like
-        // `TerminalState` omits `revision`.
+        // `dirty` is derived bookkeeping, so it is omitted here.
         f.debug_struct("Screen")
             .field("size", &self.size)
             .field("cells", &self.cells)
