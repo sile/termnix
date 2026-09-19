@@ -40,7 +40,9 @@ The boundaries are the design:
   possible from its own `WouldBlock` results.
 - **No scheduling policy.** The caller decides how to interleave sessions. One
   pump call is the scheduling quantum, bounded by a caller-supplied work
-  budget, so a chatty child cannot starve the others.
+  budget, so the crate caps how much work a single visit can do — but it does
+  not decide who is visited. See the example below for a rotation that keeps a
+  chatty child from starving the others.
 - **No host terminal state.** Raw mode, the alternate screen, and rendering
   stay with the caller.
 - **No window, pane, or layout concepts.** Those belong to the application.
@@ -86,6 +88,12 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
     session.pump_io(termnix::PumpBudget::default())?;
 
     // Keep going while work remains, so a large backlog still drains.
+    //
+    // This is the right shape for one session, and an edge-triggered loop
+    // must do it before blocking: `interests()` reports what a poll should
+    // wait for, not what `pump_io` can do right now, so waiting while
+    // `needs_pump()` is still true can hang. With several sessions, do not
+    // drain each one in turn — see below.
     while session.needs_pump() {
         session.pump_io(termnix::PumpBudget::default())?;
     }
@@ -98,6 +106,35 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
     Ok(())
 }
 ```
+
+With several sessions, the same loop applied to each in turn is what starves
+them: draining one session to idle before visiting the next means a chatty
+child keeps the ones after it waiting, and the same session tends to stay in
+front. One `pump_io` call is the scheduling quantum, so visit each runnable
+session once per round and let the budget bound the work:
+
+```rust,no_run
+fn pump_round(sessions: &mut [termnix::Session], cursor: &mut usize) -> std::io::Result<()> {
+    if sessions.is_empty() {
+        return Ok(());
+    }
+    // Rotate the starting point each round, so no session is always first.
+    *cursor = (*cursor + 1) % sessions.len();
+    for offset in 0..sessions.len() {
+        let session = &mut sessions[(*cursor + offset) % sessions.len()];
+        // One quantum, whether or not this session reports more work. What it
+        // leaves undone is done next round, so a busy session cannot keep the
+        // others waiting.
+        session.pump_io(termnix::PumpBudget::default())?;
+    }
+    Ok(())
+}
+```
+
+Both shapes are the caller's to write: the crate holds no loop and no session
+collection of its own. `Session::needs_pump()` reports whether a session has
+work that needs no new readiness edge, which is the signal to pump it again
+this round rather than wait for a poll.
 
 ## Examples
 

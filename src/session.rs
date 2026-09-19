@@ -10,6 +10,8 @@
 //!     // 1. Run everything that can be done without a new readiness edge.
 //!     //    An edge-triggered loop must drain this before blocking, or the
 //!     //    poll can miss the edge that a later pump would have consumed.
+//!     //    Draining is right for one session; with several, visit each
+//!     //    runnable session once per round instead (see below).
 //!     while session.needs_pump() {
 //!         session.pump_io(termnix::PumpBudget::default())?;
 //!     }
