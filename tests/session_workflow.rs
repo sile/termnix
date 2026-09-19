@@ -36,7 +36,10 @@ use termnix::{Input, PumpBudget, Session, SessionStatus};
 /// rotation is then observable. It also keeps the test fast, since the
 /// smallest burst that stalls a pump is enough. The ceiling is expressed in
 /// syscalls (4), because the filler emits one line per `printf` / read.
-const WORK_BUDGET: PumpBudget = PumpBudget::new(48, 4);
+const WORK_BUDGET: PumpBudget = PumpBudget {
+    bytes: 48,
+    syscalls: 4,
+};
 
 /// A's initial payload. With [`WORK_BUDGET`] capping one call at 4 syscalls,
 /// even this small burst spans many rotations, so B's marker can appear while
