@@ -1,6 +1,6 @@
 # RFC: Make `PumpBudget` a plain struct with public fields
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -106,3 +106,55 @@ would add ceremony to a value that a struct literal expresses directly.
   something that reads better at a struct literal (for example
   `byte_ceiling` / `syscall_ceiling`). Field names are now the only vocabulary,
   so they matter more than they did as parameter names.
+
+## Outcome
+
+Implemented in [#5](https://github.com/sile/termnix/pull/5) (merged as `7a79a10`).
+
+The type is now a plain struct: `pub bytes` and `pub syscalls`, no `new`, no
+getters, no constructor to call. That part landed as proposed.
+
+Three details differ from the text above, and they are worth recording because
+the text would otherwise mislead a reader of the code.
+
+**`consume`, `bytes_left`, and `exhausted` stayed private, not `pub(crate)`.**
+The proposal asks for `pub(crate)` on the grounds that they are "the pump's
+internal accounting, not part of the caller's vocabulary" -- which is the
+argument for keeping them *out* of the public surface, and `pub(crate)` is not
+that. Nothing outside `src/session.rs` uses them: they are called only by
+`pump_io`, in the same file. `pub(crate)` would have widened the visibility
+without changing a single call site, so the change would have been noise. If a
+second module ever needs them, `pub(crate)` is one word away; there is no cost
+to waiting for that module to exist.
+
+**The recommended ceilings are documented on the struct, not on `Default`.**
+The Drawbacks section above expects `Default`'s rustdoc to carry what `new`
+used to, and the first draft did exactly that. It read badly: `Default` is an
+impl-block item, a reader lands on the type and sees the fields, and the
+paragraph explaining when to pick your own ceilings was two screens away under
+a trait heading. The `# Choosing a value` section on the struct now carries it
+-- pass `PumpBudget::default()`, reach for a struct literal only to tighten or
+widen -- and each field says what a zero in it means. `Default`'s own doc is a
+two-line pointer at the struct. The ceilings still live in exactly one place in
+code (`impl Default`), which is what the Drawbacks line was protecting; only
+the prose moved.
+
+**`Default` is kept, so no `none()` or `unbounded()`.** This RFC leaves the
+`Default` question open and the sibling proposal wanted the two named
+constructors. Keeping `Default` answers it: it already carries the recommended
+64 KiB / 64 syscall ceiling, which is the value most callers want, and neither
+`none()` nor `unbounded()` has a caller in this repository. `PumpBudget { bytes:
+0, syscalls: 0 }` is what a fixture that wants no work writes, and it says so
+at the call site.
+
+The four call sites all moved to struct literals or `default()`, and the test
+that pinned `default.bytes()` / `default.syscalls()` now reads the fields
+directly -- the asserts that just restated the field values were dropped along
+with the getters, since the struct literal above them already says it.
+
+One comment was wrong and was fixed rather than carried: a test built
+`PumpBudget { bytes: 0, syscalls: 1 }` under the comment "budget of one
+syscall". `bytes: 0` is what makes the pump stop, and the syscall count is
+never reached. The comment now says so.
+
+The scope is unchanged from what is described above.
