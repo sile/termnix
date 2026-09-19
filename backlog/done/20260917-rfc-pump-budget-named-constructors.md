@@ -1,6 +1,6 @@
 # RFC: Add named constructors for `PumpBudget`
 
-- Status: draft
+- Status: rejected
 
 ## Summary
 
@@ -112,3 +112,48 @@ the absence of one.
 - Does `unbounded()` need to exist, or is the whole case a caller that should be
   calling `pump_io` in a loop instead? The RFC includes it because `usize::MAX`
   is a worse thing to see in a call site than a name.
+
+## Outcome
+
+Rejected. No pull request: the proposal was decided against before any of it
+was written, and neither constructor exists.
+
+The RFC is sound about the problem. `PumpBudget::new(0, 1)` in a test does read
+as an off-by-one, and the `1` was not even load-bearing: it was the budget that
+stopped the pump, and the syscall count was never reached. That call site now
+writes `PumpBudget { bytes: 0, syscalls: 0 }` and cannot be misread.
+
+What the RFC gets wrong is the diagnosis. It reads `new(0, 1)` as a *naming*
+problem, but it was a *positional argument* problem, and both examples in the
+Motivation are fixed by public fields rather than by names. The sibling
+proposal's struct literal says which number is which at the call site, in the
+same words the rest of the crate uses, and it needs no library change beyond
+removing `new`. Once that landed, `none()` would be an alias for
+`PumpBudget { bytes: 0, syscalls: 0 }` and `unbounded()` for
+`PumpBudget { bytes: usize::MAX, syscalls: usize::MAX }` -- two more names to
+learn for values that are already one line, in a type whose whole justification
+for being a plain struct is that it has no invariant to express.
+
+The Alternatives section already doubted `unbounded()`: it "encourages
+draining a session in one call", which the Drawbacks note is the fairness
+hazard the enumeration RFC describes. Adding a name does not make that hazard
+worse, but it does make the choice one word away, and the Open questions ask
+whether the caller should simply be calling `pump_io` in a loop. No caller in
+this repository wants it. The one place that needs a wide ceiling is a
+scheduling decision with its own reasoning, not a value to reach for by name.
+
+`none()` is closer to earning its place, since "do nothing" is an intent and
+not just two numbers. It still has no caller: the fixture that wants no work
+writes the struct literal, and if it turns out that this appears in many
+external tests the name can be added later without a migration, because the
+struct literal stays valid either way. The cost of adding `none()` after the
+fact is one method; the cost of adding it now is a second vocabulary for value
+construction in a type that was just reduced to one.
+
+`Default` is kept, and that is the remaining decision the RFC left open. It
+carries the recommended 64 KiB / 64 syscall ceiling, which is the value a
+caller with no opinion wants, so "the recommended value" already has a name
+that a reader cannot confuse with `Option::None`. The three constructs a caller
+now sees are `PumpBudget::default()` for the recommendation and a struct
+literal for anything deliberate -- which is what the sibling proposal intended
+`none()` and `unbounded()` to share with it, minus the names.
