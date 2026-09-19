@@ -271,16 +271,6 @@ impl Default for TerminalModes {
     }
 }
 
-/// Side effect produced while feeding the emulator.
-///
-/// The emulator never writes to a PTY itself; the caller applies these
-/// actions (typically by writing to the PTY master).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TerminalAction {
-    /// Bytes that should be written to the PTY master (for example CPR or DA replies).
-    WritePty(Vec<u8>),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SavedCursor {
     pub cursor: Position,

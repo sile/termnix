@@ -3,7 +3,7 @@
 //! Two layers share this file:
 //!
 //! - Deterministic example tests for the public emulator API (text,
-//!   controls, wide characters, resizing, private modes, actions, and the
+//!   controls, wide characters, resizing, private modes, query replies, and the
 //!   visible-state revision counter).
 //! - Property tests for chunk-independent feeding and parser continuation
 //!   equivalence. The oracle is a metamorphic relation: the same logical byte
@@ -114,17 +114,17 @@ fn feed_with_cuts(term: &mut termnix::TerminalState, bytes: &[u8], cuts: &[usize
     term.feed(&bytes[start..]);
 }
 
-/// Compares every public observable of two states, then drains and compares
-/// the action queues (contents and order). The comparison is written out field
-/// by field rather than delegating to a `PartialEq` impl, so it covers exactly
-/// what the public API exposes: the parser's private continuation state, the
-/// saved cursor, wrap pending, and the scroll region have no accessor to read
-/// them through.
+/// Compares every public observable of two states, then compares their reply
+/// buffers (contents and order) and drains both. The comparison is written out
+/// field by field rather than delegating to a `PartialEq` impl, so it covers
+/// exactly what the public API exposes: the parser's private continuation
+/// state, the saved cursor, wrap pending, and the scroll region have no
+/// accessor to read them through.
 fn drain_and_compare(
     a: &mut termnix::TerminalState,
     b: &mut termnix::TerminalState,
     where_: &str,
-) -> Vec<termnix::TerminalAction> {
+) -> Vec<u8> {
     let size = a.size();
     assert_eq!(size, b.size(), "{where_}: size mismatch");
     assert_eq!(a.cursor(), b.cursor(), "{where_}: cursor mismatch");
@@ -152,10 +152,20 @@ fn drain_and_compare(
         b.scrollback_cells(),
         "{where_}: scrollback cell count mismatch"
     );
-    let actions_a = a.drain_actions();
-    let actions_b = b.drain_actions();
-    assert_eq!(actions_a, actions_b, "{where_}: action mismatch");
-    actions_a
+    let replies_a = a.pending_reply_bytes().to_vec();
+    let replies_b = b.pending_reply_bytes().to_vec();
+    assert_eq!(replies_a, replies_b, "{where_}: reply mismatch");
+    a.advance_reply_bytes(replies_a.len());
+    b.advance_reply_bytes(replies_b.len());
+    assert!(
+        a.pending_reply_bytes().is_empty(),
+        "{where_}: reply buffer did not empty after advancing its full length"
+    );
+    assert!(
+        b.pending_reply_bytes().is_empty(),
+        "{where_}: reply buffer did not empty after advancing its full length"
+    );
+    replies_a
 }
 
 fn sentinel_visible(term: &termnix::TerminalState) -> bool {
@@ -198,7 +208,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Completes a sequence interrupted by the prefix. Returns the probe, its
-/// completion, and whether the completion produces a query reply action.
+/// completion, and whether the completion produces a query reply.
 const GENERAL_PROBES: &[(&[u8], &[u8])] = &[
     (b"\x1b", b"M"),
     (b"\x1b[", b"6n"),
@@ -494,7 +504,7 @@ fn gen_utf8(ctx: &mut noprop::TestCaseContext) -> Case {
 }
 
 /// Prefix cut inside an incomplete terminal query, suffix completing it and
-/// producing a reply action.
+/// producing a reply.
 fn gen_query(ctx: &mut noprop::TestCaseContext) -> Case {
     const TARGETS: &[&[u8]] = &[b"\x1b[6n", b"\x1b[5n", b"\x1b[0c", b"\x1b[c"];
     const PROBES: &[(&[u8], &[u8])] = &[
@@ -742,7 +752,7 @@ fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult
             prefix_action.set(prefix_action.get() + 1);
         }
         if case.expect_prefix_action && prefix_actions.is_empty() {
-            panic!("{case_desc}: expected a query reply action after the prefix");
+            panic!("{case_desc}: expected a query reply after the prefix");
         }
 
         // Suffix: identical cuts on both states, compared after every chunk.
@@ -775,7 +785,7 @@ fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult
             suffix_action.set(suffix_action.get() + 1);
         }
         if case.expect_suffix_action && suffix_actions.is_empty() {
-            panic!("{case_desc}: expected a query reply action after the suffix");
+            panic!("{case_desc}: expected a query reply after the suffix");
         }
 
         // Scenario-specific semantic effects, observed after the suffix
@@ -1168,14 +1178,12 @@ fn osc_title_is_stored() {
 }
 
 #[test]
-fn cursor_position_report_is_an_action() {
+fn cursor_position_report_is_a_pending_reply() {
     let mut t = term(5, 10);
     t.feed(b"\x1b[3;4H\x1b[6n");
-    let actions = t.drain_actions();
-    assert_eq!(
-        actions,
-        vec![termnix::TerminalAction::WritePty(b"\x1b[3;4R".to_vec())]
-    );
+    assert_eq!(t.pending_reply_bytes(), b"\x1b[3;4R");
+    t.advance_reply_bytes(6);
+    assert!(t.pending_reply_bytes().is_empty());
 }
 
 #[test]

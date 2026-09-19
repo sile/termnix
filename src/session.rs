@@ -67,7 +67,7 @@ use crate::{
     input::Input,
     pty::{ClosingPtyProcess, PtyProcess, SignalOutcome},
     size::Size,
-    terminal::{TerminalAction, TerminalState},
+    terminal::TerminalState,
 };
 
 /// Maximum size of a single pending terminal reply.
@@ -1101,31 +1101,34 @@ impl Session {
     /// chronological order behind previously accepted input, and decoding
     /// pauses until that reply is fully written. At most one reply is pending
     /// at a time because no further bytes are decoded while paused.
+    ///
+    /// The emulator keeps its reply until the caller says it was written, but
+    /// the session is the caller that writes it: it copies the bytes into
+    /// `outbound` here and advances the emulator buffer in the same step, so
+    /// ownership moves in one hop and `pending_reply_range` (not the emulator
+    /// buffer) is what keeps a reply ordered ahead of later input.
     fn decode_byte(&mut self, byte: u8) -> io::Result<()> {
         self.term.feed(&[byte]);
-        let actions = self.term.drain_actions();
-        let mut reply = Vec::new();
-        for action in actions {
-            let TerminalAction::WritePty(bytes) = action;
-            reply.extend_from_slice(&bytes);
-        }
+        let replies = self.term.pending_reply_bytes();
         // Scrollback may have grown even when no reply was produced.
-        if reply.is_empty() {
+        if replies.is_empty() {
             return Ok(());
         }
-        if reply.len() > MAX_PENDING_REPLY_BYTES {
+        if replies.len() > MAX_PENDING_REPLY_BYTES {
             return Err(io::Error::new(
                 ErrorKind::InvalidData,
                 "terminal reply exceeds the internal pending reply bound",
             ));
         }
         let start = self.outbound.len();
-        self.outbound.extend_from_slice(&reply);
+        self.outbound.extend_from_slice(replies);
+        let len = replies.len();
+        self.term.advance_reply_bytes(len);
         self.counters.terminal_reply_bytes_generated = self
             .counters
             .terminal_reply_bytes_generated
-            .saturating_add(reply.len() as u64);
-        self.pending_reply_range = Some(start..start + reply.len());
+            .saturating_add(len as u64);
+        self.pending_reply_range = Some(start..start + len);
         Ok(())
     }
 }

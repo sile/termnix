@@ -1,8 +1,9 @@
 //! I/O-free terminal emulator state.
 //!
 //! [`TerminalState`] accepts PTY output through [`TerminalState::feed()`] and
-//! updates cells, styles, cursor, and modes. Query replies are returned as
-//! [`TerminalAction`] values; this type never writes to a file descriptor.
+//! updates cells, styles, cursor, and modes. Query replies are held until the
+//! caller reads them with [`TerminalState::pending_reply_bytes()`]; this type
+//! never writes to a file descriptor.
 //!
 //! # Supported sequences (modes milestone)
 //!
@@ -35,7 +36,7 @@
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
 pub use crate::terminal_types::{
-    Cell, Color, MouseReporting, Position, ScrollbackLine, Style, TerminalAction, TerminalModes,
+    Cell, Color, MouseReporting, Position, ScrollbackLine, Style, TerminalModes,
 };
 
 use std::collections::VecDeque;
@@ -49,8 +50,10 @@ use crate::terminal_types::SavedCursor;
 /// Feed PTY bytes with [`feed()`](TerminalState::feed), then read the screen
 /// grid through [`rows()`](TerminalState::rows) and the retained history with
 /// [`scrollback_lines()`](TerminalState::scrollback_lines). Query replies are
-/// queued as [`TerminalAction`] values for the caller to write, so this type
-/// never touches a file descriptor.
+/// held in a buffer the caller reads with
+/// [`pending_reply_bytes()`](TerminalState::pending_reply_bytes) and releases
+/// with [`advance_reply_bytes()`](TerminalState::advance_reply_bytes), so this
+/// type never touches a file descriptor.
 ///
 /// The supported sequences are:
 ///
@@ -63,8 +66,8 @@ use crate::terminal_types::SavedCursor;
 ///   cursor visibility, bracketed paste, mouse reporting (including SGR)
 /// - **Alternate screen**: `?1049`, `?47`, `?1047`
 /// - **OSC 0/2**: window title (stored)
-/// - **Queries**: DSR, CPR, and primary DA, answered with
-///   [`TerminalAction::WritePty`](TerminalAction::WritePty)
+/// - **Queries**: DSR, CPR, and primary DA, answered through
+///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes)
 ///
 /// Sixel, Kitty graphics, iTerm2 images, and DCS payloads are ignored without
 /// becoming visible text.
@@ -82,7 +85,7 @@ pub struct TerminalState {
     pub(crate) title: String,
     pub(crate) scroll_top: u16,
     pub(crate) scroll_bottom: u16,
-    pub(crate) actions: Vec<TerminalAction>,
+    pub(crate) replies: ReplyBuf,
     pub(crate) scrollback: VecDeque<ScrollbackLine>,
     pub(crate) scrollback_cells: usize,
     pub(crate) revision: u64,
@@ -109,6 +112,53 @@ struct VisibleScalars {
     modes: TerminalModes,
 }
 
+/// Bytes produced by the emulator that the caller still owes the PTY master.
+///
+/// Replies are appended in one piece (a reply is never split while being
+/// generated), so [`pending()`](ReplyBuf::pending) is never a partial escape
+/// sequence. The `bytes + offset` shape mirrors the session's read and write
+/// queues: advancing a prefix just moves `offset`, and draining the last byte
+/// reclaims the allocation so a long run of small replies does not grow the
+/// buffer without bound.
+#[derive(Debug)]
+pub(crate) struct ReplyBuf {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
+impl ReplyBuf {
+    fn new() -> Self {
+        Self {
+            bytes: Vec::new(),
+            offset: 0,
+        }
+    }
+
+    /// Bytes produced but not yet consumed.
+    pub(crate) fn pending(&self) -> &[u8] {
+        &self.bytes[self.offset..]
+    }
+
+    /// Appends a reply.
+    pub(crate) fn push(&mut self, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    /// Marks `n` bytes consumed, reclaiming the buffer when fully drained.
+    pub(crate) fn advance(&mut self, n: usize) {
+        let len = self.pending().len();
+        assert!(
+            n <= len,
+            "advanced {n} reply bytes, but only {len} are pending"
+        );
+        self.offset += n;
+        if self.offset == self.bytes.len() {
+            self.bytes.clear();
+            self.offset = 0;
+        }
+    }
+}
+
 impl std::fmt::Debug for TerminalState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TerminalState")
@@ -124,7 +174,7 @@ impl std::fmt::Debug for TerminalState {
             .field("title", &self.title)
             .field("scroll_top", &self.scroll_top)
             .field("scroll_bottom", &self.scroll_bottom)
-            .field("actions", &self.actions)
+            .field("replies", &self.replies)
             .field("scrollback", &self.scrollback)
             .field("scrollback_cells", &self.scrollback_cells)
             .finish_non_exhaustive()
@@ -150,7 +200,7 @@ impl TerminalState {
             title: String::new(),
             scroll_top: 0,
             scroll_bottom: size.rows.get().saturating_sub(1),
-            actions: Vec::new(),
+            replies: ReplyBuf::new(),
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
             revision: 0,
@@ -165,7 +215,7 @@ impl TerminalState {
     /// cursor visibility, autowrap, mouse reporting, and alternate-screen
     /// selection), the screen size, and the window title. It deliberately
     /// excludes parser-internal progress (a partial sequence), scrollback-only
-    /// changes, and undrained actions.
+    /// changes, and undrained replies.
     ///
     /// The counter only guarantees *whether* the visible state changed since a
     /// previous read, not how many cells or bytes did; a single `feed` may
@@ -202,8 +252,10 @@ impl TerminalState {
     /// Feeds output bytes into the emulator.
     ///
     /// Bytes may end mid-sequence or mid-UTF-8 code unit; state is kept until
-    /// a later `feed` completes the sequence. Query replies are appended to
-    /// the action queue; call [`TerminalState::drain_actions()`] to collect them.
+    /// a later `feed` completes the sequence. Query replies are appended to the
+    /// reply buffer; read them with
+    /// [`TerminalState::pending_reply_bytes()`] and report what you wrote with
+    /// [`TerminalState::advance_reply_bytes()`].
     ///
     /// One `feed` bumps [`revision()`](TerminalState::revision) at most once,
     /// no matter how many cells changed within it.
@@ -227,9 +279,40 @@ impl TerminalState {
         }
     }
 
-    /// Removes and returns actions produced since the last drain (or creation).
-    pub fn drain_actions(&mut self) -> Vec<TerminalAction> {
-        std::mem::take(&mut self.actions)
+    /// Returns the bytes the emulator wants written to the PTY master, if any.
+    ///
+    /// These are replies to queries the terminal was sent (DSR, CPR, primary
+    /// DA). Whenever the slice is non-empty the caller should write it to the
+    /// PTY and then report how much it wrote with
+    /// [`advance_reply_bytes()`](TerminalState::advance_reply_bytes). A caller
+    /// that writes the whole slice advances by its length; a caller whose write
+    /// was short advances by the number of bytes it actually wrote and leaves
+    /// the rest pending for a later call.
+    ///
+    /// Bytes stay in the buffer until advanced past, so a reply is never lost
+    /// by forgetting to look. This is the opposite of the old `drain_actions()`,
+    /// which took the queue and made a missed read indistinguishable from no
+    /// reply.
+    pub fn pending_reply_bytes(&self) -> &[u8] {
+        self.replies.pending()
+    }
+
+    /// Marks `n` bytes of [`pending_reply_bytes()`](TerminalState::pending_reply_bytes)
+    /// as written to the PTY master.
+    ///
+    /// `n == 0` is a no-op and is always valid. Advancing past the whole slice
+    /// drains the buffer and reclaims it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n` is greater than the current
+    /// [`pending_reply_bytes()`](TerminalState::pending_reply_bytes) length.
+    /// The check runs in release builds too, because an out-of-range count means
+    /// the caller miscounted what it wrote and clamping would silently mark a
+    /// reply consumed that never reached the PTY, with no later point at which
+    /// to notice.
+    pub fn advance_reply_bytes(&mut self, n: usize) {
+        self.replies.advance(n);
     }
 
     /// Returns the current screen size.
