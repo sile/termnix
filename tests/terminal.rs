@@ -583,12 +583,10 @@ fn chunk_boundaries_do_not_change_terminal_state() -> noprop::TestResult {
             saw_split.set(true);
         }
 
-        let mut whole =
-            termnix::TerminalState::new(termnix::Size::new(rows, cols).expect("nonzero size"));
+        let mut whole = termnix::TerminalState::new(size(rows, cols));
         whole.feed(&input);
 
-        let mut split =
-            termnix::TerminalState::new(termnix::Size::new(rows, cols).expect("nonzero size"));
+        let mut split = termnix::TerminalState::new(size(rows, cols));
         feed_with_cuts(&mut split, &input, &cuts);
 
         assert_eq!(whole, split);
@@ -684,7 +682,7 @@ fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult
     runner.run(CASE_BUDGET, |ctx| {
         let rows = sample_dimension(ctx, MAX_ROWS);
         let cols = sample_dimension(ctx, MAX_COLS);
-        let size = termnix::Size::new(rows, cols).expect("nonzero size");
+        let grid = size(rows, cols);
         let case = generate_case(ctx);
 
         // The guaranteed strict cut inside the completed target, plus optional
@@ -706,10 +704,10 @@ fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult
         prefix_cuts.sort_unstable();
         prefix_cuts.dedup();
 
-        let mut whole = termnix::TerminalState::new(size);
+        let mut whole = termnix::TerminalState::new(grid);
         whole.feed(&case.prefix);
 
-        let mut split = termnix::TerminalState::new(size);
+        let mut split = termnix::TerminalState::new(grid);
         feed_with_cuts(&mut split, &case.prefix, &prefix_cuts);
 
         let case_desc = format!(
@@ -825,8 +823,17 @@ fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult
     Ok(())
 }
 
+/// Builds a grid size from two dimensions the sampler has already bounded to
+/// at least 1, so the non-zero conversion cannot fail.
+fn size(rows: u16, cols: u16) -> termnix::Size {
+    termnix::Size {
+        rows: std::num::NonZeroU16::new(rows).expect("rows is non-zero"),
+        cols: std::num::NonZeroU16::new(cols).expect("cols is non-zero"),
+    }
+}
+
 fn term(rows: u16, cols: u16) -> termnix::TerminalState {
-    termnix::TerminalState::new(termnix::Size::new(rows, cols).expect("nonzero size"))
+    termnix::TerminalState::new(size(rows, cols))
 }
 
 fn text_at(term: &termnix::TerminalState, row: u16) -> String {
@@ -1007,8 +1014,8 @@ fn resize_preserves_overlap_and_clamps_cursor() {
     let mut t = term(2, 4);
     t.feed(b"abcd");
     t.feed(b"xy");
-    t.resize(termnix::Size::new(1, 2).expect("nonzero size"));
-    assert_eq!(t.size(), termnix::Size::new(1, 2).expect("nonzero size"));
+    t.resize(size(1, 2));
+    assert_eq!(t.size(), size(1, 2));
     assert_eq!(text_at(&t, 0), "ab");
     assert_eq!(t.cursor(), termnix::Position { row: 0, col: 1 });
 }
@@ -1017,7 +1024,7 @@ fn resize_preserves_overlap_and_clamps_cursor() {
 fn resize_clears_clipped_wide_character() {
     let mut t = term(1, 4);
     t.feed("あ".as_bytes());
-    t.resize(termnix::Size::new(1, 1).expect("nonzero size"));
+    t.resize(size(1, 1));
     assert_eq!(
         t.cell(termnix::Position { row: 0, col: 0 }),
         Some(termnix::Cell::EMPTY)
@@ -1208,7 +1215,7 @@ fn revision_advances_on_visible_changes() {
         "title change is a visible change"
     );
 
-    t.resize(termnix::Size::new(3, 9).expect("nonzero size"));
+    t.resize(size(3, 9));
     assert_ne!(t.revision(), after_title, "resize is a visible change");
 }
 
@@ -1353,7 +1360,7 @@ fn rows_follow_the_active_screen_through_resize_and_alternate_screen() {
 
     // Resizing re-lays the cells; the first row is still reachable through
     // the same accessor.
-    t.resize(termnix::Size::new(2, 6).expect("nonzero size"));
+    t.resize(size(2, 6));
     assert_eq!(t.row(0).expect("row 0").len(), 6);
     assert_eq!(text_at(&t, 0), "ab");
 

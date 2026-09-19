@@ -8,6 +8,7 @@
 
 use std::{
     io::{Error, ErrorKind},
+    num::NonZeroU16,
     os::fd::RawFd,
     process::Command,
     time::{Duration, Instant},
@@ -27,7 +28,15 @@ const POLL_TIMEOUT_MS: libc::c_int = 10;
 
 /// The `24x80` grid used by every session in the workflow test.
 pub fn default_size() -> Size {
-    Size::new(24, 80).expect("24x80 is non-zero")
+    size(24, 80)
+}
+
+/// Builds a grid size from two dimensions known non-zero at the call site.
+pub fn size(rows: u16, cols: u16) -> Size {
+    Size {
+        rows: NonZeroU16::new(rows).expect("rows is non-zero"),
+        cols: NonZeroU16::new(cols).expect("cols is non-zero"),
+    }
 }
 
 /// Spawns `/bin/sh -c <script>` in a PTY-backed session of `size`.

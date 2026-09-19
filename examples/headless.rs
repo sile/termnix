@@ -24,6 +24,7 @@
 
 use std::{
     io::{self, ErrorKind},
+    num::NonZeroU16,
     os::fd::RawFd,
     process::Command,
     time::{Duration, Instant},
@@ -74,7 +75,10 @@ fn spawn_session() -> Result<termnix::Session, AppError> {
     let script = child_script();
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(script);
-    let size = termnix::Size::new(24, 80).expect("non-zero size");
+    let size = termnix::Size {
+        rows: NonZeroU16::new(24).expect("non-zero rows"),
+        cols: NonZeroU16::new(80).expect("non-zero cols"),
+    };
     termnix::Session::new(&mut command, size).map_err(AppError::io)
 }
 
@@ -422,7 +426,10 @@ mod tests {
 
     #[test]
     fn visible_rows_keep_row_boundaries() {
-        let mut term = termnix::TerminalState::new(termnix::Size::new(2, 4).expect("size"));
+        let mut term = termnix::TerminalState::new(termnix::Size {
+            rows: NonZeroU16::new(2).expect("non-zero rows"),
+            cols: NonZeroU16::new(4).expect("non-zero cols"),
+        });
         term.feed(b"ab\r\ncd");
         let rows = visible_rows(&term);
         assert!(rows.iter().any(|row| row == "ab"), "rows={rows:?}");
