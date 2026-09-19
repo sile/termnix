@@ -356,9 +356,7 @@ a type shared with `Session` (not now; see Future possibilities).
 
 ## Outcome
 
-Implemented on branch `refactor/terminal-reply-buffer`. The version bump is
-left to the maintainer; the change is breaking (`TerminalAction` and
-`drain_actions()` are removed from the public API).
+Implemented in [#8](https://github.com/sile/termnix/pull/8) (merged as `64a25c5`).
 
 `TerminalAction` and `drain_actions()` are gone, `pending_reply_bytes()` /
 `advance_reply_bytes()` are the new public surface, `advance` panics (checked
@@ -376,3 +374,5 @@ compares and drains the reply buffer instead of a `Vec<TerminalAction>`,
 `cursor_position_report_is_a_pending_reply` and compares bytes, and
 `tests/terminal_state.rs::assert_same_public_state` needed no change. All tests,
 clippy with `-D warnings`, and `cargo fmt --check` pass.
+
+The scope is unchanged from what is described above.
