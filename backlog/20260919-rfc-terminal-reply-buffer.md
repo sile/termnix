@@ -92,15 +92,16 @@ how many it managed to write:
 ```rust
 state.feed(b"\x1b[6n");
 let mut written = 0;
-while written < state.pending_reply().len() {
-    let n = pty.write(&state.pending_reply()[written..])?; // partial writes are fine
+while written < state.pending_reply_bytes().len() {
+    let n = pty.write(&state.pending_reply_bytes()[written..])?; // partial writes are fine
     written += n;
 }
-state.advance_reply(written);
+state.advance_reply_bytes(written);
 ```
 
 A caller that always writes everything it can simply does
-`state.advance_reply(state.pending_reply().len())`. A caller that wrote part of
+`state.advance_reply_bytes(state.pending_reply_bytes().len())`. A caller that
+wrote part of
 it passes the count it actually wrote, and the rest stays pending for the next
 attempt. Nothing about *when* bytes are produced changes; only how the caller
 gets them.
@@ -137,14 +138,30 @@ and exposes it as:
 
 ```rust
 /// Returns the bytes the emulator wants written to the PTY master, if any.
-pub fn pending_reply(&self) -> &[u8];
+pub fn pending_reply_bytes(&self) -> &[u8];
 
-/// Marks `n` bytes of `pending_reply()` as written.
+/// Marks `n` bytes of `pending_reply_bytes()` as written.
 ///
 /// # Panics
-/// Panics if `n > self.pending_reply().len()`.
-pub fn advance_reply(&mut self, n: usize);
+/// Panics if `n > self.pending_reply_bytes().len()`.
+pub fn advance_reply_bytes(&mut self, n: usize);
 ```
+
+The bound is checked on every call, in release builds as well as debug. This
+diverges from `Buf::advance`, which documents the same precondition but only
+asserts it in debug builds; here the panic is not a debug aid but the contract.
+An out-of-range `n` means the caller miscounted what it wrote, and clamping
+would silently mark a reply consumed that never reached the PTY. A missing
+reply to a query is a protocol failure with no later detection point, so it is
+worth one comparison per call. Replies are produced by queries and advance is
+called at most once per reply, so the branch is not on any hot path.
+
+The names carry three facts: `pending` that the bytes are produced but not yet
+written, `reply` that they answer a query (not, say, a bell or a title change),
+and `_bytes` that the value is a byte slice rather than a reply object. The
+`_bytes` suffix matches the vocabulary `SessionCounters` already uses
+(`terminal_reply_bytes_generated`, `reply_bytes_written`), and applies to both
+methods so the pair reads as two verbs on the same noun.
 
 The reply sites write into the buffer directly, so the per-reply `Vec`
 disappears:
@@ -159,15 +176,22 @@ write!(buf, "\x1b[{row};{col}R").expect("write to Vec<u8> is infallible");
 
 Invariants:
 
-- `pending_reply()` is empty when no reply is outstanding; it is never a
+- `pending_reply_bytes()` is empty when no reply is outstanding; it is never a
   partial escape sequence, because a reply is appended in one step.
-- `advance_reply(0)` is a no-op and is always valid.
-- `advance_reply(n)` for the full length drains the buffer and resets the
+- `advance_reply_bytes(0)` is a no-op and is always valid.
+- `advance_reply_bytes(n)` is checked against the current
+  `pending_reply_bytes().len()` on every call; `n == len` is in range and drains
+  the buffer, `n > len` panics rather than clamping (see the API comment above).
+- `advance_reply_bytes(n)` for the full length drains the buffer and resets the
   offset, so a steady state of small replies does not grow `bytes` without
   bound. `Session`'s `compact_outbound_if_needed()` is the existing precedent
   for this reclamation.
 - Reply bytes are produced in the order the queries arrived, and
-  `pending_reply()` preserves that order because it is one buffer.
+  `pending_reply_bytes()` preserves that order because it is one buffer.
+- There is exactly one reply buffer on `TerminalState`. It is not owned by a
+  `Screen`, so neither `soft_reset` (RIS) nor a primary/alternate switch drops
+  a reply that is still owed to the PTY. This preserves today's behavior, where
+  `actions` is top-level and `soft_reset` leaves it untouched.
 
 `Session::decode_byte` becomes an append followed by a pass-through, with no
 intermediate `Vec` and no `TerminalAction` match; `pending_reply_range` and
@@ -183,9 +207,11 @@ input from `enqueue_input`, so the two directions stop sharing one queue and
   the caller must report what it wrote, and a caller that forgets to advance
   re-writes the same reply on its next poll. `drain_actions()` could not be
   forgotten in this way because taking was the only option.
-- The panic contract on `advance_reply` is a new failure mode where
+- The panic contract on `advance_reply_bytes` is a new failure mode where
   `drain_actions()` had none. A caller that passes a count from a stale
-  `pending_reply()` length panics instead of silently misbehaving.
+  `pending_reply_bytes()` length panics instead of silently misbehaving. The
+  check runs in release builds too, so this is a real panic rather than a
+  debug-only assertion that would clamp in practice.
 - `TerminalState` gains mutable I/O-shaped state, which is closer to the
   boundary the module documents itself as staying behind. It stays Sans I/O —
   nothing is written to a descriptor — but "the emulator has a queue" is a
@@ -210,6 +236,18 @@ that are awkward for a partial write: a caller that can only write part of the
 reply has nothing to do with the rest, because `drain_actions()` already gave
 it up. The buffer-and-advance shape handles partial writes, which PTY masters
 genuinely produce when the reader is slow.
+
+### Keep the reply buffer per screen (primary/alternate)
+
+Rejected. A reply is produced by a query, not by screen content, so it is an
+obligation to the PTY rather than a property of either screen. Splitting the
+buffer would make `\x1b[?1049h` (or RIS) hide a reply that is still owed: a
+caller that asked for the cursor position and has not yet written the answer
+would find it silently gone from `pending_reply_bytes()`. It would also break
+`advance_reply_bytes`: a count read from `pending_reply_bytes()` before a switch
+would refer to a different buffer after it, turning a simple call into a panic
+or a wrong-buffer write. One buffer matches the single outbound stream the
+terminal actually has, and matches today's top-level `actions` field.
 
 ### Make the reply buffer a type the caller owns
 
@@ -248,28 +286,25 @@ The tests compensate explicitly:
 
 - `drain_and_compare` in `tests/terminal.rs` compared the drained
   `Vec<TerminalAction>` values of the two states. Under the buffer model that
-  line becomes a comparison of `pending_reply()` for each state, preserving the
-  existing requirement that the two states produce the same reply bytes.
+  line becomes a comparison of `pending_reply_bytes()` for each state,
+  preserving the existing requirement that the two states produce the same
+  reply bytes.
 - `assert_same_public_state` in `tests/terminal_state.rs` compares only
   persistent observables and never looked at pending output, so it needs no
   change; if we want it to also witness that a reply is pending, that is an
   addition, not a repair.
 - `cursor_position_report_is_an_action` in `tests/terminal.rs` builds a
   `vec![TerminalAction::WritePty(...)]` literal; it becomes a byte comparison
-  against `pending_reply()`, and the test name loses "action".
+  against `pending_reply_bytes()`, and the test name loses "action".
 
 ## Unresolved questions
 
-- Whether the reply buffer is one buffer across all replies or one buffer per
-  screen (primary/alternate). This RFC assumes one: a reply is produced by a
-  query rather than by screen content, so a screen switch must not drop a reply
-  that is still owed to the PTY. This preserves today's behavior, where
-  `soft_reset`/`hard_reset` do not clear the queued actions either.
 - Whether the buffer eventually becomes a shared `Buf` type used by `Session`
-  for its input queue too (see Future possibilities). Naming (`pending_reply`
-  vs. a shorter `pending`) is deferred until then; while the buffer is private
-  to `TerminalState` and `Session` already has `outbound`/`write_offset`,
-  `pending_reply` names *what* is pending.
+  for its input queue too (see Future possibilities). If it does, the method
+  names are re-examined there; for now `pending_reply_bytes` /
+  `advance_reply_bytes` are settled, and the `_bytes` suffix matches the naming
+  `SessionCounters` already uses (`terminal_reply_bytes_generated`,
+  `reply_bytes_written`).
 
 ## Future possibilities
 
