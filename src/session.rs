@@ -8,10 +8,15 @@
 //! # let mut session: termnix::Session = unimplemented!();
 //! loop {
 //!     // 1. Run everything that can be done without a new readiness edge.
-//!     //    An edge-triggered loop must drain this before blocking, or the
-//!     //    poll can miss the edge that a later pump would have consumed.
-//!     //    Draining is right for one session; with several, visit each
-//!     //    runnable session once per round instead (see below).
+//!     //    Pump once unconditionally, then keep going while work remains:
+//!     //    `needs_pump()` is false after a `WouldBlock`, and only `pump_io`
+//!     //    clears that, so gating the first pump on it would skip the very
+//!     //    call that makes progress. An edge-triggered loop must drain this
+//!     //    before blocking, or the poll can miss the edge that a later pump
+//!     //    would have consumed. Draining is right for one session; with
+//!     //    several, visit each runnable session once per round instead (see
+//!     //    below).
+//!     session.pump_io(termnix::PumpBudget::default())?;
 //!     while session.needs_pump() {
 //!         session.pump_io(termnix::PumpBudget::default())?;
 //!     }
