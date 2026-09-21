@@ -1,6 +1,6 @@
 # Bug: the `Session` crate example gates the first pump on `needs_pump()`
 
-- Status: open
+- Status: fixed
 
 ## Summary
 
@@ -83,3 +83,13 @@ settled that an edge-triggered loop must drain before blocking — but the extra
 unconditional call before it has to appear in the crate example, since that is
 the one place a reader is most likely to copy and it is currently the only one
 of the four that omits it.
+
+## Outcome
+
+Fixed in [#9](https://github.com/sile/termnix/pull/9) (merged as `b3e623f`).
+
+The crate example now pumps unconditionally before its `while session.needs_pump()` drain, so the first pump of a round is no longer gated on a predicate that only `pump_io` itself can clear. The comment above it says why, and the example now matches the shape in `README.md` and `tests/session.rs::pump_all`.
+
+The fix stayed in the example; the `needs_pump()` contract is unchanged.
+
+The scope is unchanged from what is described above.
