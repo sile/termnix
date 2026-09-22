@@ -1,6 +1,6 @@
 # RFC: Encode mouse input for the PTY
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -281,3 +281,36 @@ held button in one variant, with the caller tracking it.
   paste; mouse completes the set the host can produce, leaving only protocol
   replies (the terminal answering `CSI ... t` queries), which are a different
   concern.
+
+## Outcome
+
+Implemented in [#10](https://github.com/sile/termnix/pull/10) (merged as `6dc4a33`).
+
+`MouseEvent` / `MouseEventKind` and `Input::Mouse` landed as designed: the
+encoder reads `TerminalModes` at enqueue time and shares the `byte_len` /
+`write_to` split with `Key` and `Paste`, so `enqueue_input` stays total and a
+disabled mode emits zero bytes.
+
+Two behaviors the draft text had not pinned down were settled by the encoder
+tests. A release is button `3` only in the legacy `CSI M` form, which has no
+other way to spell it; SGR keeps the real button code and marks the release
+with a trailing `m`. And a bare move (no button held) is button `3` plus the
+motion bit, while a drag carries the held button. Both were wrong in the first
+implementation and the tests caught it.
+
+The legacy coordinate clamp (xterm-compatible 223, computed in `u32` before the
+cast) and the X10 gate (presses of the three real buttons only, so no wheel and
+no motion) are covered by a table-driven matrix plus noprop property tests over
+the whole mode/kind/button/modifier/coordinate domain, checked against an
+independently written model. The suite was shown to fail when each of the four
+behaviors was deliberately reintroduced.
+
+The `Motion { button: Option<MouseButton> }` shape keeps the session stateless:
+the caller owns button-down tracking, so `byte_len` depends only on the event
+and the modes. The design decisions are recorded on the type.
+
+Out of scope and left for follow-ups: `?1004` (focus) and `?1016` (pixel
+coordinates) reports, and replacing the hand-rolled `push_u32` with the buffered
+integer formatting added in Rust 1.98, which also needs an MSRV bump.
+
+The scope is unchanged from what is described above.
