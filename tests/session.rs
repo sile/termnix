@@ -546,11 +546,25 @@ fn write_to_a_gone_child_is_not_an_error() {
 
     // The write half being gone is end-of-stream, not a spent session: the
     // state, counters and process polling stay available until a reap.
+    //
+    // EOF says the master saw the slave's last close, which happens when the
+    // child exits; it does not mean the parent has reaped it yet. Check the
+    // Eof state first, then wait for the reapable status instead of assuming
+    // it is available the moment Eof is, or a scheduler delay between the
+    // child's exit and the parent's waitpid makes this test flaky.
     assert_eq!(session.status(), termnix::SessionStatus::Eof);
-    assert_eq!(
-        session.try_wait().expect("try_wait").map(|s| s.code()),
-        Some(Some(0))
-    );
+    let deadline = Instant::now() + DEADLINE;
+    let status = loop {
+        if let Some(status) = session.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the child never became reapable after Eof"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(0));
 }
 
 #[test]
