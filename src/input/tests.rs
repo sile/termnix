@@ -958,68 +958,18 @@ fn sgr_coordinates_are_unbounded_and_legacy_ones_clamp_per_axis() -> noprop::Tes
     Ok(())
 }
 
+/// One `NumBuffer` is reused across the coordinates of a single report, so a
+/// later call must not read a stale prefix left by an earlier, longer one.
+///
+/// `format_into`'s own decimal output is std's contract, covered by std's
+/// tests; what is ours is the reuse, which is what this pins.
 #[test]
-fn push_u32_agrees_with_decimal_formatting_over_the_whole_domain() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("TERMNIX_PBT_SEED")?;
-    let max_seen = std::cell::Cell::new(0u32);
-
-    let mut runner = noprop::Runner::new(seed);
-    runner.run(2048, |ctx| {
-        let value = noprop::sample_u32(ctx);
-        let mut out = Vec::new();
-        push_u32(&mut out, value);
-        assert_eq!(
-            out,
-            value.to_string().into_bytes(),
-            "push_u32({value}) produced {out:02x?}"
-        );
-        max_seen.set(max_seen.get().max(value));
-        Ok(())
-    })?;
-
-    assert!(
-        max_seen.get() >= 1_000_000,
-        "no large value was generated, so the multi-digit path is untested\n{runner}"
-    );
-    Ok(())
-}
-
-/// The scratch buffer is sized for the widest `u32`, so every decimal width
-/// up to ten digits must round-trip without panicking or truncating.
-#[test]
-fn push_u32_covers_every_decimal_width_up_to_u32_max() {
-    let cases: [(u32, &str); 12] = [
-        (0, "0"),
-        (1, "1"),
-        (9, "9"),
-        (10, "10"),
-        (99, "99"),
-        (100, "100"),
-        (999_999_999, "999999999"),
-        (1_000_000_000, "1000000000"),
-        (4_000_000_000, "4000000000"),
-        (4_294_967_294, "4294967294"),
-        (4_294_967_295, "4294967295"),
-        (u32::MAX, "4294967295"),
-    ];
-
-    let mut ten_digit = 0usize;
-    for (value, expected) in cases {
-        let mut out = Vec::new();
-        push_u32(&mut out, value);
-        assert_eq!(
-            out,
-            expected.as_bytes(),
-            "push_u32({value}) produced {out:02x?}"
-        );
-        assert_eq!(out.len(), expected.len(), "width mismatch for {value}");
-        if out.len() == 10 {
-            ten_digit += 1;
-        }
+fn push_u32_reuses_one_buffer_without_stale_digits() {
+    let mut scratch = NumBuffer::<u32>::new();
+    let mut out = Vec::new();
+    for value in [u32::MAX, 0u32, 7, u32::MAX, 12] {
+        out.push(b';');
+        push_u32(&mut out, &mut scratch, value);
     }
-
-    assert!(
-        ten_digit > 0,
-        "no case exercised the ten-digit buffer boundary"
-    );
+    assert_eq!(out, b";4294967295;0;7;4294967295;12");
 }
