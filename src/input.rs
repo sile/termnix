@@ -145,6 +145,22 @@ pub enum MouseButton {
     WheelDown,
 }
 
+impl MouseButton {
+    /// The button's report-code low bits, as defined by the mouse protocol.
+    ///
+    /// The values only encode the button identity; the release and motion
+    /// bits are added by the report encoder.
+    fn code(self) -> u32 {
+        match self {
+            Self::Left => 0,
+            Self::Middle => 1,
+            Self::Right => 2,
+            Self::WheelUp => 64,
+            Self::WheelDown => 65,
+        }
+    }
+}
+
 /// What happened to the mouse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MouseEventKind {
@@ -314,25 +330,15 @@ fn should_report(kind: MouseEventKind, mode: MouseReporting) -> bool {
 /// motion bit.
 fn button_code(kind: MouseEventKind, sgr: bool) -> u32 {
     match kind {
-        MouseEventKind::Press(button) => button_code_of(button),
+        MouseEventKind::Press(button) => button.code(),
         MouseEventKind::Release(button) => {
             if sgr {
-                button_code_of(button)
+                button.code()
             } else {
                 3
             }
         }
-        MouseEventKind::Motion { button } => button.map_or(3, button_code_of) | 32,
-    }
-}
-
-fn button_code_of(button: MouseButton) -> u32 {
-    match button {
-        MouseButton::Left => 0,
-        MouseButton::Middle => 1,
-        MouseButton::Right => 2,
-        MouseButton::WheelUp => 64,
-        MouseButton::WheelDown => 65,
+        MouseEventKind::Motion { button } => button.map_or(3, MouseButton::code) | 32,
     }
 }
 
