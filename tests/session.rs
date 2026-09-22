@@ -204,6 +204,59 @@ fn key_text_paste_and_raw_reach_the_child() {
 }
 
 #[test]
+fn mouse_input_encodes_from_the_childs_current_modes() {
+    // The child turns on ?1000 (normal tracking) + ?1006 (SGR) and signals
+    // readiness; the emulator picks both up from that output, so an
+    // Input::Mouse enqueued afterwards must encode as SGR.
+    let mut session = spawn_session(
+        "stty raw -echo; printf '\\033[?1000h\\033[?1006hREADY\\n'; \
+         r=$(dd bs=1 count=10 2>/dev/null | od -An -v -tu1); printf 'GOT:%s\\n' \"$r\"",
+    );
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        visible_text(&sessions[0]).contains("READY")
+    });
+
+    // Left press at zero-based (row 4, col 9) -> \x1b[<0;10;5M (10 bytes).
+    session
+        .enqueue_input(termnix::Input::Mouse(termnix::MouseEvent {
+            kind: termnix::MouseEventKind::Press(termnix::MouseButton::Left),
+            position: termnix::Position { row: 4, col: 9 },
+            modifiers: termnix::Modifiers::new(),
+        }))
+        .expect("mouse press");
+
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        visible_text(&sessions[0]).contains("GOT:")
+    });
+    let normalized: String = visible_text(&session).split_whitespace().collect();
+    // ESC [ < 0 ; 1 0 ; 5 M => 27 91 60 48 59 49 48 59 53 77.
+    assert!(
+        normalized.contains("GOT:27916048594948595377"),
+        "captured bytes mismatch, text={normalized:?}"
+    );
+}
+
+#[test]
+fn mouse_input_off_adds_no_bytes() {
+    // With no mouse mode set, the event encodes to nothing, so the session
+    // stays total and the child's read stays blocked (no GOT line).
+    let mut session = spawn_session(
+        "stty raw -echo; printf 'READY\\n'; r=$(dd bs=1 count=1 2>/dev/null | od -An -v -tu1); printf 'GOT:%s\\n' \"$r\"",
+    );
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        visible_text(&sessions[0]).contains("READY")
+    });
+    session
+        .enqueue_input(termnix::Input::Mouse(termnix::MouseEvent {
+            kind: termnix::MouseEventKind::Press(termnix::MouseButton::Left),
+            position: termnix::Position { row: 4, col: 9 },
+            modifiers: termnix::Modifiers::new(),
+        }))
+        .expect("mouse press");
+    assert_eq!(session.write_queue_len(), 0);
+}
+
+#[test]
 fn pump_io_flushes_input_after_read_would_block() {
     // Reproduce a pump scheduling edge: after draining READY, a first enqueue +
     // pump can leave direction on Read (WouldBlock). A second enqueue must still
@@ -493,11 +546,25 @@ fn write_to_a_gone_child_is_not_an_error() {
 
     // The write half being gone is end-of-stream, not a spent session: the
     // state, counters and process polling stay available until a reap.
+    //
+    // EOF says the master saw the slave's last close, which happens when the
+    // child exits; it does not mean the parent has reaped it yet. Check the
+    // Eof state first, then wait for the reapable status instead of assuming
+    // it is available the moment Eof is, or a scheduler delay between the
+    // child's exit and the parent's waitpid makes this test flaky.
     assert_eq!(session.status(), termnix::SessionStatus::Eof);
-    assert_eq!(
-        session.try_wait().expect("try_wait").map(|s| s.code()),
-        Some(Some(0))
-    );
+    let deadline = Instant::now() + DEADLINE;
+    let status = loop {
+        if let Some(status) = session.try_wait().expect("try_wait") {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the child never became reapable after Eof"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(0));
 }
 
 #[test]

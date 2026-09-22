@@ -21,7 +21,7 @@ mod terminal_emu;
 mod terminal_scrollback;
 mod terminal_types;
 
-pub use input::{Input, KeyCode, KeyEvent, Modifiers, MouseButton};
+pub use input::{Input, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseEventKind};
 pub use pty::SignalOutcome;
 pub use session::{Interests, PumpBudget, Session, SessionCounters, SessionStatus};
 pub use size::Size;

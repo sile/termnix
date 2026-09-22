@@ -14,7 +14,7 @@
 //!   itself is never the differing cut.
 //!
 //! Reproduction:
-//! `MUXNIX_PROPTEST_SEED=<seed> cargo test --test terminal <name> -- --exact --nocapture`
+//! `TERMNIX_PBT_SEED=<seed> cargo test --test terminal <name> -- --exact --nocapture`
 
 const MAX_ROWS: u16 = 8;
 const MAX_COLS: u16 = 16;
@@ -584,7 +584,7 @@ fn generate_case(ctx: &mut noprop::TestCaseContext) -> Case {
 
 #[test]
 fn chunk_boundaries_do_not_change_terminal_state() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
+    let seed = noprop::seed_from_env_or_time("TERMNIX_PBT_SEED")?;
     let saw_split = std::cell::Cell::new(false);
     let saw_nonempty = std::cell::Cell::new(false);
     let saw_escape = std::cell::Cell::new(false);
@@ -694,7 +694,7 @@ fn sample_legacy_cuts(ctx: &mut noprop::TestCaseContext, len: usize) -> Vec<usiz
 
 #[test]
 fn continuation_equivalence_holds_across_feed_partitions() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
+    let seed = noprop::seed_from_env_or_time("TERMNIX_PBT_SEED")?;
     let target_split = std::cell::Cell::new(0usize);
     let prefix_action = std::cell::Cell::new(0usize);
     let suffix_action = std::cell::Cell::new(0usize);
