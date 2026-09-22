@@ -16,6 +16,8 @@
 //! modes and the SGR (`?1006`) encoding, chosen from the same modes at enqueue
 //! time. Grid coordinates reuse [`Position`](crate::Position).
 
+use core::fmt::NumBuffer;
+
 use crate::terminal_types::{MouseReporting, Position, TerminalModes};
 
 /// Modifier keys held with a logical key.
@@ -284,12 +286,13 @@ fn write_mouse(out: &mut Vec<u8>, event: MouseEvent, modes: TerminalModes) {
 
     if modes.mouse_sgr {
         let final_byte = if is_release(event.kind) { b'm' } else { b'M' };
+        let mut scratch = NumBuffer::<u32>::new();
         out.extend_from_slice(b"\x1b[<");
-        push_u32(out, code);
+        push_u32(out, &mut scratch, code);
         out.push(b';');
-        push_u32(out, x);
+        push_u32(out, &mut scratch, x);
         out.push(b';');
-        push_u32(out, y);
+        push_u32(out, &mut scratch, y);
         out.push(final_byte);
     } else {
         // The legacy form cannot represent a coordinate above 223. Clamp, as
@@ -347,19 +350,12 @@ fn is_release(kind: MouseEventKind) -> bool {
 }
 
 /// Appends a decimal `u32` without allocating.
-fn push_u32(out: &mut Vec<u8>, mut value: u32) {
-    if value == 0 {
-        out.push(b'0');
-        return;
-    }
-    let mut buf = [0u8; 10];
-    let mut idx = buf.len();
-    while value > 0 {
-        idx -= 1;
-        buf[idx] = b'0' + (value % 10) as u8;
-        value /= 10;
-    }
-    out.extend_from_slice(&buf[idx..]);
+///
+/// `format_into` writes into `scratch` and returns a `&str` borrowed from it,
+/// so the buffer is reused across the coordinates of one report. The borrow
+/// ends before the next call, which is why one buffer can serve all three.
+fn push_u32(out: &mut Vec<u8>, scratch: &mut NumBuffer<u32>, value: u32) {
+    out.extend_from_slice(value.format_into(scratch).as_bytes());
 }
 
 fn write_key_body(out: &mut Vec<u8>, event: KeyEvent, modes: TerminalModes) {
