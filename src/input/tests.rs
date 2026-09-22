@@ -331,3 +331,239 @@ fn mouse_byte_len_matches_written_bytes_and_can_be_zero() {
     assert_eq!(press.byte_len(modes), bytes(press, modes).len());
     assert_eq!(press.byte_len(modes_normal()), 0);
 }
+
+/// Every combination of tracking mode, event kind, and encoding, with the
+/// bytes each must produce (or `None` when the mode does not report it). This
+/// pins the whole `should_report` + `button_code` matrix in one place, so a
+/// regression in any single cell fails here rather than only in the mode that
+/// happens to have a focused test.
+#[test]
+fn reporting_matrix_covers_every_mode_and_kind() {
+    let left = MouseButton::Left;
+    let middle = MouseButton::Middle;
+    let right = MouseButton::Right;
+    let wheel_up = MouseButton::WheelUp;
+    let drag = MouseEventKind::Motion { button: Some(left) };
+    let bare = MouseEventKind::Motion { button: None };
+
+    // (mode, sgr, kind, expected bytes)
+    let cases: &[(MouseReporting, bool, MouseEventKind, Option<&[u8]>)] = &[
+        // Off: nothing, in either encoding.
+        (MouseReporting::Off, true, MouseEventKind::Press(left), None),
+        (
+            MouseReporting::Off,
+            false,
+            MouseEventKind::Press(left),
+            None,
+        ),
+        // X10: only left/middle/right presses; no releases, motions, wheels.
+        (
+            MouseReporting::X10,
+            true,
+            MouseEventKind::Press(left),
+            Some(b"\x1b[<0;1;1M"),
+        ),
+        (
+            MouseReporting::X10,
+            true,
+            MouseEventKind::Press(middle),
+            Some(b"\x1b[<1;1;1M"),
+        ),
+        (
+            MouseReporting::X10,
+            true,
+            MouseEventKind::Press(right),
+            Some(b"\x1b[<2;1;1M"),
+        ),
+        (
+            MouseReporting::X10,
+            true,
+            MouseEventKind::Press(wheel_up),
+            None,
+        ),
+        (
+            MouseReporting::X10,
+            true,
+            MouseEventKind::Release(left),
+            None,
+        ),
+        (MouseReporting::X10, true, drag, None),
+        (MouseReporting::X10, true, bare, None),
+        // Normal: press and release, no motion.
+        (
+            MouseReporting::Normal,
+            true,
+            MouseEventKind::Press(left),
+            Some(b"\x1b[<0;1;1M"),
+        ),
+        (
+            MouseReporting::Normal,
+            true,
+            MouseEventKind::Release(left),
+            Some(b"\x1b[<0;1;1m"),
+        ),
+        (
+            MouseReporting::Normal,
+            true,
+            MouseEventKind::Press(wheel_up),
+            Some(b"\x1b[<64;1;1M"),
+        ),
+        (MouseReporting::Normal, true, drag, None),
+        (MouseReporting::Normal, true, bare, None),
+        // ButtonEvent: press, release, and drags; no bare motion.
+        (
+            MouseReporting::ButtonEvent,
+            true,
+            MouseEventKind::Press(left),
+            Some(b"\x1b[<0;1;1M"),
+        ),
+        (
+            MouseReporting::ButtonEvent,
+            true,
+            MouseEventKind::Release(left),
+            Some(b"\x1b[<0;1;1m"),
+        ),
+        (
+            MouseReporting::ButtonEvent,
+            true,
+            drag,
+            Some(b"\x1b[<32;1;1M"),
+        ),
+        (MouseReporting::ButtonEvent, true, bare, None),
+        // AnyEvent: everything, bare motion as button 3 + motion bit.
+        (
+            MouseReporting::AnyEvent,
+            true,
+            MouseEventKind::Press(left),
+            Some(b"\x1b[<0;1;1M"),
+        ),
+        (
+            MouseReporting::AnyEvent,
+            true,
+            MouseEventKind::Release(left),
+            Some(b"\x1b[<0;1;1m"),
+        ),
+        (MouseReporting::AnyEvent, true, drag, Some(b"\x1b[<32;1;1M")),
+        (MouseReporting::AnyEvent, true, bare, Some(b"\x1b[<35;1;1M")),
+    ];
+
+    for &(mode, sgr, kind, expected) in cases {
+        let modes = modes_mouse(mode, sgr);
+        let input = Input::Mouse(mouse(kind, 0, 0));
+        let got = bytes(input, modes);
+        match expected {
+            Some(want) => {
+                assert_eq!(got, want, "{mode:?} sgr={sgr} {kind:?}");
+                assert_eq!(
+                    input.byte_len(modes),
+                    want.len(),
+                    "byte_len {mode:?} {kind:?}"
+                );
+            }
+            None => {
+                assert!(
+                    got.is_empty(),
+                    "{mode:?} sgr={sgr} {kind:?} should be silent"
+                );
+                assert_eq!(input.byte_len(modes), 0, "byte_len {mode:?} {kind:?}");
+            }
+        }
+    }
+}
+
+/// The release button code differs by encoding: SGR keeps the real button
+/// code and marks the release with a trailing `m`; the legacy form cannot,
+/// so it always spells release as button `3`. Check every button, since the
+/// SGR case was the subtle one.
+#[test]
+fn sgr_release_keeps_button_code_and_legacy_release_is_three() {
+    let sgr = modes_mouse(MouseReporting::Normal, true);
+    let legacy = modes_mouse(MouseReporting::Normal, false);
+    let releases = [
+        (MouseButton::Left, 0u8),
+        (MouseButton::Middle, 1),
+        (MouseButton::Right, 2),
+    ];
+    for (button, code) in releases {
+        let event = mouse(MouseEventKind::Release(button), 0, 0);
+        let sgr_expected = format!("\x1b[<{code};1;1m").into_bytes();
+        assert_eq!(
+            bytes(Input::Mouse(event), sgr),
+            sgr_expected,
+            "sgr {button:?}"
+        );
+        assert_eq!(
+            bytes(Input::Mouse(event), legacy),
+            vec![0x1b, b'[', b'M', 0x20 + 3, 0x21, 0x21],
+            "legacy {button:?}"
+        );
+    }
+}
+
+/// Motion under `?1002`/`?1003` carries the held button and the motion bit;
+/// a drag with the middle or right button must report that button, not left.
+/// This is the case a `Motion` variant that discarded its button would fail.
+#[test]
+fn drag_reports_the_held_button() {
+    let modes = modes_mouse(MouseReporting::ButtonEvent, true);
+    let drags = [
+        (MouseButton::Left, 32u32),
+        (MouseButton::Middle, 33),
+        (MouseButton::Right, 34),
+    ];
+    for (button, code) in drags {
+        let event = mouse(
+            MouseEventKind::Motion {
+                button: Some(button),
+            },
+            0,
+            0,
+        );
+        let expected = format!("\x1b[<{code};1;1M").into_bytes();
+        assert_eq!(bytes(Input::Mouse(event), modes), expected, "{button:?}");
+    }
+}
+
+/// Each modifier bit must land in its own position; checking them only as a
+/// sum would let a swap between two bits pass.
+#[test]
+fn modifiers_set_independent_bits() {
+    let modes = modes_mouse(MouseReporting::Normal, true);
+    let single = [
+        (Modifiers::new().shift(), 4u32),
+        (Modifiers::new().alt(), 8),
+        (Modifiers::new().ctrl(), 16),
+    ];
+    for (modifiers, code) in single {
+        let event = MouseEvent {
+            kind: MouseEventKind::Press(MouseButton::Left),
+            position: Position { row: 0, col: 0 },
+            modifiers,
+        };
+        let expected = format!("\x1b[<{code};1;1M").into_bytes();
+        assert_eq!(bytes(Input::Mouse(event), modes), expected, "{modifiers:?}");
+    }
+}
+
+/// The clamp only touches the legacy coordinate bytes; SGR must carry the
+/// exact coordinate past 223, and both dimensions clamp independently.
+#[test]
+fn clamping_is_independent_per_axis_and_legacy_only() {
+    let legacy = modes_mouse(MouseReporting::Normal, false);
+    let sgr = modes_mouse(MouseReporting::Normal, true);
+
+    // x clamps, y stays exact.
+    let wide = mouse(MouseEventKind::Press(MouseButton::Left), 9, 500);
+    assert_eq!(
+        bytes(Input::Mouse(wide), legacy),
+        vec![0x1b, b'[', b'M', 0x20, 0xff, 0x21 + 9]
+    );
+    // y clamps, x stays exact.
+    let tall = mouse(MouseEventKind::Press(MouseButton::Left), 500, 9);
+    assert_eq!(
+        bytes(Input::Mouse(tall), legacy),
+        vec![0x1b, b'[', b'M', 0x20, 0x21 + 9, 0xff]
+    );
+    // SGR is not clamped.
+    assert_eq!(bytes(Input::Mouse(wide), sgr), b"\x1b[<0;501;10M".to_vec());
+}
