@@ -1,5 +1,5 @@
 use super::*;
-use crate::terminal_types::TerminalModes;
+use crate::terminal_types::{MouseReporting, TerminalModes};
 
 fn modes_normal() -> TerminalModes {
     TerminalModes::default()
@@ -140,6 +140,22 @@ fn function_keys_use_xterm_defaults() {
     );
 }
 
+fn modes_mouse(mode: MouseReporting, sgr: bool) -> TerminalModes {
+    TerminalModes {
+        mouse: mode,
+        mouse_sgr: sgr,
+        ..TerminalModes::default()
+    }
+}
+
+fn mouse(kind: MouseEventKind, row: u16, col: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        position: Position { row, col },
+        modifiers: Modifiers::new(),
+    }
+}
+
 #[test]
 fn byte_len_matches_written_bytes() {
     let key = Input::Key(key(KeyCode::Up));
@@ -157,7 +173,161 @@ fn byte_len_matches_written_bytes() {
 }
 
 #[test]
-fn mouse_button_and_position_are_available_for_later_reporting() {
-    let _pos = crate::Position { row: 1, col: 2 };
-    let _btn = MouseButton::Left;
+fn mouse_off_emits_nothing() {
+    let event = mouse(MouseEventKind::Press(MouseButton::Left), 4, 9);
+    assert!(bytes(Input::Mouse(event), modes_normal()).is_empty());
+    assert_eq!(Input::Mouse(event).byte_len(modes_normal()), 0);
+}
+
+#[test]
+fn sgr_press_release_and_coordinates_are_one_based() {
+    let modes = modes_mouse(MouseReporting::Normal, true);
+    // Zero-based (row 4, col 9) is 1-based (x 10, y 5).
+    let press = mouse(MouseEventKind::Press(MouseButton::Left), 4, 9);
+    assert_eq!(bytes(Input::Mouse(press), modes), b"\x1b[<0;10;5M".to_vec());
+    let release = mouse(MouseEventKind::Release(MouseButton::Left), 4, 9);
+    assert_eq!(
+        bytes(Input::Mouse(release), modes),
+        b"\x1b[<0;10;5m".to_vec()
+    );
+}
+
+#[test]
+fn sgr_button_codes() {
+    let modes = modes_mouse(MouseReporting::Normal, true);
+    let at = |b| mouse(MouseEventKind::Press(b), 0, 0);
+    assert_eq!(
+        bytes(Input::Mouse(at(MouseButton::Middle)), modes),
+        b"\x1b[<1;1;1M".to_vec()
+    );
+    assert_eq!(
+        bytes(Input::Mouse(at(MouseButton::Right)), modes),
+        b"\x1b[<2;1;1M".to_vec()
+    );
+    assert_eq!(
+        bytes(Input::Mouse(at(MouseButton::WheelUp)), modes),
+        b"\x1b[<64;1;1M".to_vec()
+    );
+    assert_eq!(
+        bytes(Input::Mouse(at(MouseButton::WheelDown)), modes),
+        b"\x1b[<65;1;1M".to_vec()
+    );
+}
+
+#[test]
+fn legacy_form_uses_byte_offsets() {
+    let modes = modes_mouse(MouseReporting::Normal, false);
+    // b=0, x=10, y=5 -> 0x20, 0x2a, 0x25.
+    let press = mouse(MouseEventKind::Press(MouseButton::Left), 4, 9);
+    assert_eq!(
+        bytes(Input::Mouse(press), modes),
+        vec![0x1b, b'[', b'M', 0x20, 0x2a, 0x25]
+    );
+    // Release encodes as button 3 in the legacy form, not the `m` suffix.
+    let release = mouse(MouseEventKind::Release(MouseButton::Left), 4, 9);
+    assert_eq!(
+        bytes(Input::Mouse(release), modes),
+        vec![0x1b, b'[', b'M', 0x23, 0x2a, 0x25]
+    );
+}
+
+#[test]
+fn legacy_coordinates_above_223_are_clamped() {
+    let modes = modes_mouse(MouseReporting::Normal, false);
+    let press = mouse(MouseEventKind::Press(MouseButton::Left), 300, 400);
+    assert_eq!(
+        bytes(Input::Mouse(press), modes),
+        vec![0x1b, b'[', b'M', 0x20, 0xff, 0xff]
+    );
+    // 223 is the last exact cell; 224 clamps.
+    let last = mouse(MouseEventKind::Press(MouseButton::Left), 222, 222);
+    assert_eq!(
+        bytes(Input::Mouse(last), modes),
+        vec![0x1b, b'[', b'M', 0x20, 0xff, 0xff]
+    );
+    let next = mouse(MouseEventKind::Press(MouseButton::Left), 223, 223);
+    assert_eq!(
+        bytes(Input::Mouse(next), modes),
+        vec![0x1b, b'[', b'M', 0x20, 0xff, 0xff]
+    );
+}
+
+#[test]
+fn x10_reports_only_button_presses() {
+    let modes = modes_mouse(MouseReporting::X10, true);
+    let press = mouse(MouseEventKind::Press(MouseButton::Left), 0, 0);
+    assert_eq!(bytes(Input::Mouse(press), modes), b"\x1b[<0;1;1M".to_vec());
+
+    let release = mouse(MouseEventKind::Release(MouseButton::Left), 0, 0);
+    assert!(bytes(Input::Mouse(release), modes).is_empty());
+
+    // The wheel was added after ?9; an X10 child must not receive it.
+    let wheel = mouse(MouseEventKind::Press(MouseButton::WheelUp), 0, 0);
+    assert!(bytes(Input::Mouse(wheel), modes).is_empty());
+}
+
+#[test]
+fn normal_tracking_ignores_motion() {
+    let modes = modes_mouse(MouseReporting::Normal, true);
+    let motion = mouse(
+        MouseEventKind::Motion {
+            button: Some(MouseButton::Left),
+        },
+        0,
+        0,
+    );
+    assert!(bytes(Input::Mouse(motion), modes).is_empty());
+}
+
+#[test]
+fn button_event_tracking_reports_drag_but_not_bare_motion() {
+    let modes = modes_mouse(MouseReporting::ButtonEvent, true);
+    let drag = mouse(
+        MouseEventKind::Motion {
+            button: Some(MouseButton::Left),
+        },
+        9,
+        19,
+    );
+    // Button 0 with the motion bit (32): x=20, y=10.
+    assert_eq!(
+        bytes(Input::Mouse(drag), modes),
+        b"\x1b[<32;20;10M".to_vec()
+    );
+
+    let bare = mouse(MouseEventKind::Motion { button: None }, 9, 19);
+    assert!(bytes(Input::Mouse(bare), modes).is_empty());
+}
+
+#[test]
+fn any_event_tracking_reports_bare_motion_as_button_three() {
+    let modes = modes_mouse(MouseReporting::AnyEvent, true);
+    let bare = mouse(MouseEventKind::Motion { button: None }, 0, 0);
+    // Button 3 (no button) plus the motion bit: 35.
+    assert_eq!(bytes(Input::Mouse(bare), modes), b"\x1b[<35;1;1M".to_vec());
+}
+
+#[test]
+fn modifiers_add_xterm_bits_in_sgr_and_legacy() {
+    let sgr = modes_mouse(MouseReporting::Normal, true);
+    let legacy = modes_mouse(MouseReporting::Normal, false);
+    let event = MouseEvent {
+        kind: MouseEventKind::Press(MouseButton::Left),
+        position: Position { row: 0, col: 0 },
+        modifiers: Modifiers::new().shift().alt().ctrl(),
+    };
+    // 0 + shift 4 + alt 8 + ctrl 16 = 28.
+    assert_eq!(bytes(Input::Mouse(event), sgr), b"\x1b[<28;1;1M".to_vec());
+    assert_eq!(
+        bytes(Input::Mouse(event), legacy),
+        vec![0x1b, b'[', b'M', 0x20 + 28, 0x21, 0x21]
+    );
+}
+
+#[test]
+fn mouse_byte_len_matches_written_bytes_and_can_be_zero() {
+    let press = Input::Mouse(mouse(MouseEventKind::Press(MouseButton::Left), 4, 9));
+    let modes = modes_mouse(MouseReporting::Normal, true);
+    assert_eq!(press.byte_len(modes), bytes(press, modes).len());
+    assert_eq!(press.byte_len(modes_normal()), 0);
 }

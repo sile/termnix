@@ -12,11 +12,11 @@
 //! `CSI 201~`. These identifiers may evolve with host terminals; termnix stores
 //! modes separately from I/O and applies them when enqueueing input.
 //!
-//! Mouse report byte sequences are out of scope here; only [`MouseButton`]
-//! is defined so application-side routing can share button identity. Grid
-//! coordinates reuse [`Position`](crate::Position).
+//! Mouse reports follow xterm's X10 / `?1000` / `?1002` / `?1003` tracking
+//! modes and the SGR (`?1006`) encoding, chosen from the same modes at enqueue
+//! time. Grid coordinates reuse [`Position`](crate::Position).
 
-use crate::terminal_types::TerminalModes;
+use crate::terminal_types::{MouseReporting, Position, TerminalModes};
 
 /// Modifier keys held with a logical key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -128,7 +128,7 @@ impl KeyEvent {
     }
 }
 
-/// Mouse button identity for later report encoding.
+/// Mouse button identity for report encoding.
 ///
 /// Report coordinates use [`Position`](crate::Position) (grid-local, zero-based cells).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -145,10 +145,45 @@ pub enum MouseButton {
     WheelDown,
 }
 
+/// What happened to the mouse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MouseEventKind {
+    /// A button went down.
+    Press(MouseButton),
+    /// A button came up.
+    Release(MouseButton),
+    /// The pointer moved. `button` is the held button, if any.
+    ///
+    /// The caller tracks which button is down: a session keeps no
+    /// mouse-button state, so a drag is reported as `Some(button)` and a bare
+    /// move as `None`. A held button has to be supplied by the caller rather
+    /// than inferred, or the encoder cannot tell a drag from a bare move
+    /// under `?1002`. Tracking it in the session would also make
+    /// [`Input::byte_len`] depend on hidden state instead of on the event and
+    /// the modes alone.
+    Motion {
+        /// The button held while moving, or `None` for a bare move.
+        button: Option<MouseButton>,
+    },
+}
+
+/// A logical mouse event at a grid position.
+///
+/// Report bytes follow the child's current [`TerminalModes`] at enqueue time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MouseEvent {
+    /// What happened.
+    pub kind: MouseEventKind,
+    /// Zero-based position on the active screen.
+    pub position: Position,
+    /// Held modifiers (Shift / Alt / Ctrl).
+    pub modifiers: Modifiers,
+}
+
 /// Application input to enqueue on a [`Session`](crate::Session).
 ///
-/// `Key` and `Paste` are turned into PTY bytes with the session's current
-/// modes at enqueue time. `Raw` is appended unchanged.
+/// `Key`, `Paste`, and `Mouse` are turned into PTY bytes with the session's
+/// current modes at enqueue time. `Raw` is appended unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Input<'a> {
     /// Already-formed PTY bytes.
@@ -157,6 +192,8 @@ pub enum Input<'a> {
     Key(KeyEvent),
     /// Paste text; bracketed-paste markers follow the current modes.
     Paste(&'a str),
+    /// A mouse event; report bytes follow the current modes.
+    Mouse(MouseEvent),
 }
 
 impl<'a> Input<'a> {
@@ -168,7 +205,7 @@ impl<'a> Input<'a> {
     pub fn byte_len(self, modes: TerminalModes) -> usize {
         match self {
             Self::Raw(bytes) => bytes.len(),
-            Self::Key(_) | Self::Paste(_) => {
+            Self::Key(_) | Self::Paste(_) | Self::Mouse(_) => {
                 let mut buf = Vec::new();
                 self.write_to(modes, &mut buf);
                 buf.len()
@@ -182,6 +219,7 @@ impl<'a> Input<'a> {
             Self::Raw(bytes) => out.extend_from_slice(bytes),
             Self::Key(event) => write_key(out, event, modes),
             Self::Paste(text) => write_paste(out, text, modes),
+            Self::Mouse(event) => write_mouse(out, event, modes),
         }
     }
 }
@@ -201,6 +239,121 @@ fn write_paste(out: &mut Vec<u8>, text: &str, modes: TerminalModes) {
     } else {
         out.extend_from_slice(text.as_bytes());
     }
+}
+
+/// Highest coordinate the legacy `CSI M` form can represent.
+///
+/// The coordinate bytes are `0x20 + n`, so `n` must fit below `0xff - 0x20`.
+const LEGACY_COORD_MAX: u32 = 0xff - 0x20;
+
+fn write_mouse(out: &mut Vec<u8>, event: MouseEvent, modes: TerminalModes) {
+    if !should_report(event.kind, modes.mouse) {
+        return;
+    }
+
+    let mut code = button_code(event.kind, modes.mouse_sgr);
+    if event.modifiers.shift {
+        code |= 4;
+    }
+    if event.modifiers.alt {
+        code |= 8;
+    }
+    if event.modifiers.ctrl {
+        code |= 16;
+    }
+
+    // Coordinates are 1-based on the wire; the event carries zero-based cells.
+    let x = u32::from(event.position.col) + 1;
+    let y = u32::from(event.position.row) + 1;
+
+    if modes.mouse_sgr {
+        let final_byte = if is_release(event.kind) { b'm' } else { b'M' };
+        out.extend_from_slice(b"\x1b[<");
+        push_u32(out, code);
+        out.push(b';');
+        push_u32(out, x);
+        out.push(b';');
+        push_u32(out, y);
+        out.push(final_byte);
+    } else {
+        // The legacy form cannot represent a coordinate above 223. Clamp, as
+        // xterm does, rather than wrap to a wrong cell.
+        let x = x.min(LEGACY_COORD_MAX) as u8;
+        let y = y.min(LEGACY_COORD_MAX) as u8;
+        out.extend_from_slice(&[0x1b, b'[', b'M', 0x20 + code as u8, 0x20 + x, 0x20 + y]);
+    }
+}
+
+/// Returns whether `mode` tracks this event at all.
+///
+/// The wheel buttons (`64`/`65`) were added with `?1000`, after `?9`, so `X10`
+/// reports only `Left`/`Middle`/`Right` presses.
+fn should_report(kind: MouseEventKind, mode: MouseReporting) -> bool {
+    match mode {
+        MouseReporting::Off => false,
+        MouseReporting::X10 => matches!(
+            kind,
+            MouseEventKind::Press(MouseButton::Left | MouseButton::Middle | MouseButton::Right)
+        ),
+        MouseReporting::Normal => {
+            matches!(kind, MouseEventKind::Press(_) | MouseEventKind::Release(_))
+        }
+        MouseReporting::ButtonEvent => match kind {
+            MouseEventKind::Press(_) | MouseEventKind::Release(_) => true,
+            MouseEventKind::Motion { button } => button.is_some(),
+        },
+        MouseReporting::AnyEvent => true,
+    }
+}
+
+/// Low bits of the report code for a reported event.
+///
+/// A release is button `3` only in the legacy form, which has no other way to
+/// spell it; SGR keeps the real button code and marks the release with a
+/// trailing `m`. A bare move is also button `3` (no button held) plus the
+/// motion bit.
+fn button_code(kind: MouseEventKind, sgr: bool) -> u32 {
+    match kind {
+        MouseEventKind::Press(button) => button_code_of(button),
+        MouseEventKind::Release(button) => {
+            if sgr {
+                button_code_of(button)
+            } else {
+                3
+            }
+        }
+        MouseEventKind::Motion { button } => button.map_or(3, button_code_of) | 32,
+    }
+}
+
+fn button_code_of(button: MouseButton) -> u32 {
+    match button {
+        MouseButton::Left => 0,
+        MouseButton::Middle => 1,
+        MouseButton::Right => 2,
+        MouseButton::WheelUp => 64,
+        MouseButton::WheelDown => 65,
+    }
+}
+
+fn is_release(kind: MouseEventKind) -> bool {
+    matches!(kind, MouseEventKind::Release(_))
+}
+
+/// Appends a decimal `u32` without allocating.
+fn push_u32(out: &mut Vec<u8>, mut value: u32) {
+    if value == 0 {
+        out.push(b'0');
+        return;
+    }
+    let mut buf = [0u8; 10];
+    let mut idx = buf.len();
+    while value > 0 {
+        idx -= 1;
+        buf[idx] = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+    out.extend_from_slice(&buf[idx..]);
 }
 
 fn write_key_body(out: &mut Vec<u8>, event: KeyEvent, modes: TerminalModes) {
