@@ -13,7 +13,7 @@
 //!   chunked feeding produce identical visible and scrollback content.
 //!
 //! Reproduction:
-//! `MUXNIX_PROPTEST_SEED=<seed> cargo test --test terminal_state <name> -- --exact --nocapture`
+//! `TERMNIX_PBT_SEED=<seed> cargo test --test terminal_state <name> -- --exact --nocapture`
 
 const MAX_ROWS: u16 = 8;
 const MAX_COLS: u16 = 12;
@@ -374,7 +374,7 @@ fn assert_within_bounds(
 
 #[test]
 fn snapshot_matches_reference_model() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
+    let seed = noprop::seed_from_env_or_time("TERMNIX_PBT_SEED")?;
     let saw_scroll = std::cell::Cell::new(false);
     let saw_wrap = std::cell::Cell::new(false);
     let saw_trim = std::cell::Cell::new(false);

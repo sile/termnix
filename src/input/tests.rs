@@ -738,7 +738,7 @@ fn mouse_encode_model(event: MouseEvent, mode: MouseReporting, sgr: bool) -> Vec
 
 #[test]
 fn mouse_report_matches_the_model_over_the_whole_domain() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
+    let seed = noprop::seed_from_env_or_time("TERMNIX_PBT_SEED")?;
 
     let reported = std::cell::Cell::new(0usize);
     let suppressed = std::cell::Cell::new(0usize);
@@ -832,7 +832,7 @@ fn mouse_report_matches_the_model_over_the_whole_domain() -> noprop::TestResult 
 
 #[test]
 fn x10_never_reports_wheel_or_motion() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
+    let seed = noprop::seed_from_env_or_time("TERMNIX_PBT_SEED")?;
     let x10_wheel = std::cell::Cell::new(0usize);
     let x10_press = std::cell::Cell::new(0usize);
 
@@ -895,7 +895,7 @@ fn x10_never_reports_wheel_or_motion() -> noprop::TestResult {
 
 #[test]
 fn sgr_coordinates_are_unbounded_and_legacy_ones_clamp_per_axis() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
+    let seed = noprop::seed_from_env_or_time("TERMNIX_PBT_SEED")?;
     let sgr_large = std::cell::Cell::new(0usize);
 
     let mut runner = noprop::Runner::new(seed);
@@ -960,7 +960,7 @@ fn sgr_coordinates_are_unbounded_and_legacy_ones_clamp_per_axis() -> noprop::Tes
 
 #[test]
 fn push_u32_agrees_with_decimal_formatting_over_the_whole_domain() -> noprop::TestResult {
-    let seed = noprop::seed_from_env_or_time("MUXNIX_PROPTEST_SEED")?;
+    let seed = noprop::seed_from_env_or_time("TERMNIX_PBT_SEED")?;
     let max_seen = std::cell::Cell::new(0u32);
 
     let mut runner = noprop::Runner::new(seed);
