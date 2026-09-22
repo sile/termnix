@@ -79,8 +79,9 @@ time, exactly as `Input::Key` decides whether an arrow key is `CSI A` or
 When the child has mouse reporting off, the event encodes to zero bytes. That
 is deliberate: a child that never turned mouse reporting on asked not to be
 told about the mouse, so a caller can forward unconditionally and let the
-session drop it. (Whether the caller wants to forward at all is a separate
-question; see "Unresolved questions".)
+session drop it. A caller that would rather not construct the event at all can
+check `modes().mouse.is_active()` itself; both shapes are fine, because
+`enqueue_input` stays total either way.
 
 ## Reference-level explanation
 
@@ -95,6 +96,14 @@ pub enum MouseEventKind {
     /// A button came up.
     Release(MouseButton),
     /// The pointer moved. `button` is the held button, if any.
+    ///
+    /// The caller tracks which button is down: a session keeps no
+    /// mouse-button state, so a drag is reported as `Some(button)` and a bare
+    /// move as `None`. A held button has to be supplied by the caller rather
+    /// than inferred, or the encoder cannot tell a drag from a bare move
+    /// under `?1002`. Tracking it in the session would also make
+    /// `Input::byte_len` depend on hidden state instead of on the event and
+    /// the modes alone.
     Motion {
         /// The button held while moving, or `None` for a bare move.
         button: Option<MouseButton>,
@@ -139,17 +148,27 @@ The encoder is a pure function of `(MouseEvent, TerminalModes)`, like
 1. **Reporting off** (`modes.mouse == MouseReporting::Off`): emit nothing.
 2. **Tracking gate by mode.** The mode decides which event kinds are reported
    at all:
-   - `X10` (`?9`): press only. Release and motion emit nothing.
+   - `X10` (`?9`): a press, and only for `Left`, `Middle` or `Right`. Release,
+     motion, and the wheel buttons emit nothing. The wheel codes (`64`/`65`)
+     were added with `?1000`, after `?9`; sending one under `?9` would hand the
+     child a button it did not ask for, so the wheel is not reported here. A
+     child that wants the wheel enables `?1000` or later.
    - `Normal` (`?1000`): press and release. Motion emits nothing.
-   - `ButtonEvent` (`?1002`): press, release, and motion while a button is held.
-   - `AnyEvent` (`?1003`): all of the above plus bare motion.
+   - `ButtonEvent` (`?1002`): press, release, and motion while a button is held
+     (`Motion { button: Some(..) }`). A bare move emits nothing.
+   - `AnyEvent` (`?1003`): all of the above plus bare motion
+     (`Motion { button: None }`).
 3. **Encode the reported event** in the current encoding:
    - `mouse_sgr` (`?1006`) on: `CSI < b ; x ; y M` for press/motion, `... m`
      for release, where `b` is the button code below, and `x`/`y` are 1-based.
    - `mouse_sgr` off: `CSI M` followed by three bytes
      `0x20 + b`, `0x20 + x`, `0x20 + y` with `x`/`y` 1-based. This form cannot
      represent a coordinate above 223 (`0xff - 0x20`); clamp rather than wrap,
-     which is what xterm does.
+     which is what xterm does. The clamp is silent but must be documented on
+     the public API: dropping the event instead would make "the child never
+     enabled mouse reporting" and "the coordinate did not fit" both look like
+     the same zero bytes, and the caller could not tell them apart. A child on
+     a grid larger than 223 that wants exact coordinates has to enable `?1006`.
 4. **Modifiers** add xterm's bits to `b`: Shift `+4`, Alt `+8`, Ctrl `+16`.
 
 Button codes in the low bits of `b`:
@@ -236,25 +255,17 @@ code and matches the mode the crate already stores.
 
 ## Unresolved questions
 
-- **Should the session drop, or should the caller decide?** With reporting off,
-  this proposal emits nothing, which lets a caller forward unconditionally. An
-  alternative is for the caller to check `modes().mouse.is_active()` itself and
-  not even construct the event. The proposal assumes "forward and let the
-  session drop" is the simpler contract; if reviewers prefer an explicit check,
-  the variant can stay (it is still needed for the on case) but the doc should
-  say so.
 - **Does `MouseEventKind` need a separate focus/past-events notion?** xterm's
   `?1004` (focus) and the `SGR-Pixels` (`?1016`) coordinate space are not
   modelled. Out of scope here; `mouse` is the only mouse mode the emulator
   stores today.
-- **Coordinates: is `Position` (u16) enough?** The legacy form tops out at 223;
-  the SGR form has no such limit. Nothing in the current `Position` type
-  restricts this, but the encoder must clamp for the legacy path, and the
-  question of whether clamping silently is right (versus dropping the event)
-  is open.
-- **Motion and the button field.** `MouseEventKind::Motion { button }` carries
-  the held button so a caller can distinguish a drag from a bare move. Is a
-  separate `MouseEventKind::Drag(MouseButton)` clearer than the `Option`?
+
+The four points this section used to raise are settled in the text above:
+reporting off emits zero bytes and the call stays total (so a caller may
+forward unconditionally or check `modes().mouse.is_active()` itself); the
+legacy coordinate clamp is `223` and is documented rather than made an error;
+`X10` does not report the wheel; and `Motion { button: Option<..> }` keeps the
+held button in one variant, with the caller tracking it.
 
 ## Future possibilities
 
