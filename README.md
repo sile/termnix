@@ -60,8 +60,10 @@ not implement instead of turning them into visible text. See the
 
 ### Input and backpressure
 
-Input is raw bytes, a decoded key event, or paste text. The latter two are
-encoded with the session's current modes. Application input and terminal
+Input is raw bytes, a decoded key event, or a paste payload. `Key` and `Paste`
+are encoded with the session's current modes, while `Raw` is appended
+unchanged; a paste payload is bytes rather than text, so a copy that is not
+valid UTF-8 is forwarded rather than dropped. Application input and terminal
 replies share one FIFO write queue, so replies are never reordered. The queue
 is unbounded: the session applies no backpressure policy of its own. Compare
 [`Session::write_queue_len()`][] plus [`Session::input_byte_len()`][] against a

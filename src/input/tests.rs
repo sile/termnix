@@ -84,7 +84,7 @@ fn ctrl_and_alt_modifiers_apply_to_characters() {
 
 #[test]
 fn bracketed_paste_markers_depend_on_mode() {
-    let payload = "pasted";
+    let payload = b"pasted";
     assert_eq!(
         bytes(Input::Paste(payload), modes_normal()),
         b"pasted".to_vec()
@@ -92,6 +92,32 @@ fn bracketed_paste_markers_depend_on_mode() {
     assert_eq!(
         bytes(Input::Paste(payload), modes_bracketed_paste()),
         b"\x1b[200~pasted\x1b[201~".to_vec()
+    );
+}
+
+/// A paste payload is bytes, not text, so it must survive a round trip even
+/// when it is not valid UTF-8: the markers wrap every byte, and the raw form
+/// appends every byte. Refusing to send it, or replacing the invalid bytes,
+/// would lose data the host asked to forward.
+#[test]
+fn paste_payload_may_be_non_utf8() {
+    // 0xff and 0xfe are never valid UTF-8 lead bytes, and 0x80 is a lone
+    // continuation byte, so this cannot be decoded as text at all.
+    let payload: &[u8] = &[b'A', 0xff, 0xfe, 0x80, b'B'];
+    assert_eq!(
+        bytes(Input::Paste(payload), modes_normal()),
+        vec![b'A', 0xff, 0xfe, 0x80, b'B']
+    );
+    assert_eq!(
+        bytes(Input::Paste(payload), modes_bracketed_paste()),
+        vec![
+            0x1b, b'[', b'2', b'0', b'0', b'~', b'A', 0xff, 0xfe, 0x80, b'B', 0x1b, b'[', b'2',
+            b'0', b'1', b'~'
+        ]
+    );
+    assert_eq!(
+        Input::Paste(payload).byte_len(modes_bracketed_paste()),
+        bytes(Input::Paste(payload), modes_bracketed_paste()).len()
     );
 }
 
@@ -163,7 +189,7 @@ fn byte_len_matches_written_bytes() {
         key.byte_len(modes_normal()),
         bytes(key, modes_normal()).len()
     );
-    let paste = Input::Paste("hi");
+    let paste = Input::Paste(b"hi");
     assert_eq!(
         paste.byte_len(modes_bracketed_paste()),
         bytes(paste, modes_bracketed_paste()).len()

@@ -185,7 +185,7 @@ fn key_text_paste_and_raw_reach_the_child() {
         )))
         .expect("enter");
     session
-        .enqueue_input(termnix::Input::Paste("CD"))
+        .enqueue_input(termnix::Input::Paste(b"CD"))
         .expect("paste");
     session
         .enqueue_input(termnix::Input::Raw(b"EFGH"))

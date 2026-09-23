@@ -208,8 +208,17 @@ pub enum Input<'a> {
     Raw(&'a [u8]),
     /// A logical key press.
     Key(KeyEvent),
-    /// Paste text; bracketed-paste markers follow the current modes.
-    Paste(&'a str),
+    /// A paste payload; bracketed-paste markers follow the current modes.
+    ///
+    /// The payload is bytes, not text: a paste is whatever the host terminal
+    /// sent between its bracketed-paste markers, and that need not be valid
+    /// UTF-8 (a copy out of a binary file, Latin-1 bytes, or a multi-byte
+    /// sequence split across the copy boundary). Like [`Input::Raw`], the
+    /// slice carries no validity contract, so a caller that wants to refuse
+    /// non-text pastes can do so above termnix; a caller that wants fidelity
+    /// gets it. It stays distinct from [`Input::Raw`] because the markers are
+    /// emitted here from the child's modes, which only the session knows.
+    Paste(&'a [u8]),
     /// A mouse event; report bytes follow the current modes.
     Mouse(MouseEvent),
 }
@@ -236,7 +245,7 @@ impl<'a> Input<'a> {
         match self {
             Self::Raw(bytes) => out.extend_from_slice(bytes),
             Self::Key(event) => write_key(out, event, modes),
-            Self::Paste(text) => write_paste(out, text, modes),
+            Self::Paste(bytes) => write_paste(out, bytes, modes),
             Self::Mouse(event) => write_mouse(out, event, modes),
         }
     }
@@ -249,13 +258,13 @@ fn write_key(out: &mut Vec<u8>, event: KeyEvent, modes: TerminalModes) {
     write_key_body(out, event, modes);
 }
 
-fn write_paste(out: &mut Vec<u8>, text: &str, modes: TerminalModes) {
+fn write_paste(out: &mut Vec<u8>, bytes: &[u8], modes: TerminalModes) {
     if modes.bracketed_paste {
         out.extend_from_slice(b"\x1b[200~");
-        out.extend_from_slice(text.as_bytes());
+        out.extend_from_slice(bytes);
         out.extend_from_slice(b"\x1b[201~");
     } else {
-        out.extend_from_slice(text.as_bytes());
+        out.extend_from_slice(bytes);
     }
 }
 
