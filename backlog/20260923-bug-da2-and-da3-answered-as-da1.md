@@ -14,26 +14,63 @@ reply it does receive is not in the shape the DA2 grammar allows.
 
 ## Reproduction
 
-```text
-let mut t = termnix::TerminalState::new(Size { rows: 5, cols: 10 });
+The whole bug is reachable from the public API, so it reproduces without a
+child process. Feed each of the four forms to a fresh emulator and read back
+what it queued for the caller to write:
+
+```rust
+use termnix::{Size, TerminalState};
+
+let mut t = TerminalState::new(Size { rows: 5, cols: 10 });
 
 t.feed(b"\x1b[>c");      // DA2, no parameters
-observed: pending_reply_bytes() == b"\x1b[?6c"
+// observed: pending_reply_bytes() == b"\x1b[?6c"
 
 t.feed(b"\x1b[>0c");     // DA2, parameter 0 (what tmux sends)
-observed: pending_reply_bytes() == b"\x1b[?6c"
+// observed: pending_reply_bytes() == b"\x1b[?6c"
 
 t.feed(b"\x1b[=c");      // DA3
-observed: pending_reply_bytes() == b"\x1b[?6c"
+// observed: pending_reply_bytes() == b"\x1b[?6c"
 
 t.feed(b"\x1b[c");       // DA1, the only form that should reply
-observed: pending_reply_bytes() == b"\x1b[?6c"
+// observed: pending_reply_bytes() == b"\x1b[?6c"
 ```
 
 All four inputs produce the identical bytes `1b 5b 3f 36 63`. The behavior does
 not depend on how the input is split; a single `feed` of the whole sequence and
 a `feed` per byte both reach the same reply, because the decision is made in
 `csi_dispatch` once the final byte arrives.
+
+The same fact as a regression test, after the fix (this is the shape that
+landed in `tests/terminal.rs`):
+
+```rust
+#[test]
+fn da2_and_da3_are_not_answered_with_the_da1_reply() {
+    for query in [
+        b"\x1b[>c".as_slice(),
+        b"\x1b[>0c",
+        b"\x1b[>1c",
+        b"\x1b[=c",
+        b"\x1b[=0c",
+    ] {
+        let mut t = term(5, 10);
+        t.feed(query);
+        assert!(
+            t.pending_reply_bytes().is_empty(),
+            "query={query:?} produced a reply"
+        );
+    }
+}
+```
+
+To watch the difference end to end, drive a real tmux child through a
+`termnix::Session` and read
+`SessionCounters::terminal_reply_bytes_generated` once tmux has painted its
+status bar. tmux probes with `ESC [ c` (DA1) and `ESC [ > c` (DA2) at startup,
+so a correct terminal generates exactly one 5-byte reply; before the fix both
+probes were answered and the counter read 10. Because the DA2 reply was shaped
+like DA1, it reached tmux as terminal *input* and was consumed as stray bytes.
 
 ## Observed behavior
 
