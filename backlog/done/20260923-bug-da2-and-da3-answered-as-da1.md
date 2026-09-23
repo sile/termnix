@@ -1,6 +1,6 @@
 # Bug: DA2 and DA3 are answered with the DA1 reply
 
-- Status: open
+- Status: fixed
 
 ## Summary
 
@@ -126,3 +126,26 @@ The fix has to distinguish three markers, not two: `?` (DA1), `>` (DA2), and
 and DA3 somewhere to go. If only the misrouting is fixed and DA2/DA3 are left
 unanswered, the `'c' if !private` arm still needs to reject `>` and `=`
 rather than rely on `private` alone, or the same fold happens again.
+
+## Outcome
+
+Fixed in [#12](https://github.com/sile/termnix/pull/12) (merged as `e5202b9`).
+
+`handle_csi` now keeps the marker byte as itself instead of collapsing it to
+a `private` bool: `?` is DA1, `>` is DA2, `=` is DA3, and the bare form is
+DA1. Only the DA1 paths reach `primary_da`. DA2 and DA3 are recognized and
+left unanswered rather than answered with the DA1 reply.
+
+The full answer was out of scope for a bug fix: a real DA2 reply would have to
+pick a terminal identity and version to claim, and a DA3 reply is a `DCS ! |`
+string rather than a `CSI` one, so neither fits the "shaped like a VT102"
+reply the emulator already documents. The marker byte is preserved precisely so
+that a real DA2/DA3 answer, if one is ever added, has somewhere to go rather
+than being re-derived from a bool.
+
+`src/terminal.rs` now states that DA2 and DA3 are recognized but produce no
+reply, so the documented query set matches what the emulator does. Tests cover
+the bare and parameterized DA2/DA3 forms, the DA1 forms that must still reply,
+and a DA2 request split across per-byte feeds.
+
+The scope is unchanged from what is described above.
