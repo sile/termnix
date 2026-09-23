@@ -14,7 +14,8 @@
 //! - CSI scroll region: DECSTBM
 //! - CSI modes: SM/RM including DEC private modes listed on [`TerminalModes`]
 //! - CSI SGR (`m`): reset, bold, italic, underline, reverse, 16/256/24-bit color
-//! - CSI queries: DSR, CPR, primary DA
+//! - CSI queries: DSR, CPR, primary DA (`CSI c` / `CSI ? c`); DA2 and DA3 are
+//!   recognized but not answered
 //! - OSC 0/2: window title (stored); other OSC ignored without becoming text
 //! - Alternate screen: DECSET/DECRST 1049 (also 47 / 1047)
 //!
@@ -67,7 +68,10 @@ use crate::terminal_types::SavedCursor;
 /// - **Alternate screen**: `?1049`, `?47`, `?1047`
 /// - **OSC 0/2**: window title (stored)
 /// - **Queries**: DSR, CPR, and primary DA, answered through
-///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes)
+///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes). DA2
+///   (`CSI > c`) and DA3 (`CSI = c`) are recognized but deliberately not
+///   answered, so a caller probing with those forms gets no reply instead of a
+///   DA1-shaped one
 ///
 /// Sixel, Kitty graphics, iTerm2 images, and DCS payloads are ignored without
 /// becoming visible text.
@@ -283,7 +287,8 @@ impl TerminalState {
     /// any.
     ///
     /// These are replies to queries the terminal was sent (DSR, CPR, primary
-    /// DA). Whenever the slice is non-empty the caller should write it and then
+    /// DA). DA2 and DA3 are recognized but produce no reply. Whenever the slice
+    /// is non-empty the caller should write it and then
     /// report how much it wrote with
     /// [`advance_reply_bytes()`](TerminalState::advance_reply_bytes). A caller
     /// that writes the whole slice advances by its length; a caller whose write
