@@ -1,6 +1,6 @@
 # RFC: Let a paste payload be arbitrary bytes
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -153,3 +153,18 @@ handling without another signature change, for example normalising the
 payload against the child's encoding or splitting very large pastes. Neither
 is proposed here; the payoff of this RFC is only that the data is no longer
 lost at the boundary.
+
+## Outcome
+
+Implemented in [#13](https://github.com/sile/termnix/pull/13) (merged as `e54232d`).
+
+`Input::Paste` now carries `&[u8]` instead of `&str`, so a paste the host
+reported as bytes is forwarded whole even when it is not valid UTF-8. The
+marker emission, `byte_len`, and the mode handling are unchanged, and the
+variant stays distinct from `Input::Raw` because the bracketed-paste markers
+still come from the child's current modes. A `paste_payload_may_be_non_utf8`
+test pins the round trip for a payload no `&str` could hold.
+
+The scope is unchanged from what is described above.
+
+The scope is unchanged from what is described above.
