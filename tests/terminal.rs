@@ -1187,6 +1187,52 @@ fn cursor_position_report_is_a_pending_reply() {
 }
 
 #[test]
+fn primary_da_answers_the_primary_forms_only() {
+    // DA1 is the bare form and the `0`-parameterized form; both reply with the
+    // VT102-shaped `ESC [ ? 6 c`. (The `?`-private spelling `ESC [ ? c` is not
+    // a DA1 request and is not answered, here or before this change.)
+    for query in [b"\x1b[c".as_slice(), b"\x1b[0c"] {
+        let mut t = term(5, 10);
+        t.feed(query);
+        assert_eq!(t.pending_reply_bytes(), b"\x1b[?6c", "query={query:?}");
+    }
+}
+
+#[test]
+fn da2_and_da3_are_not_answered_with_the_da1_reply() {
+    // `ESC [ > c` (DA2, sent by tmux at startup) and `ESC [ = c` (DA3) carry a
+    // marker that is neither absent nor `?`, so they must not fall through to
+    // `primary_da`. They are left unanswered rather than replied to with a
+    // DA1-shaped string. Parameterized DA2 (`> 0 c`) is covered too because the
+    // marker is what matters, not the parameter count.
+    for query in [
+        b"\x1b[>c".as_slice(),
+        b"\x1b[>0c",
+        b"\x1b[>1c",
+        b"\x1b[=c",
+        b"\x1b[=0c",
+    ] {
+        let mut t = term(5, 10);
+        t.feed(query);
+        assert!(
+            t.pending_reply_bytes().is_empty(),
+            "query={query:?} produced a reply"
+        );
+    }
+}
+
+#[test]
+fn da2_is_unanswered_even_when_split_across_feeds() {
+    // The decision is made once the final byte arrives, so a per-byte feed of a
+    // DA2 request must reach the same (empty) reply as a single feed.
+    let mut t = term(5, 10);
+    for byte in b"\x1b[>0c" {
+        t.feed(&[*byte]);
+    }
+    assert!(t.pending_reply_bytes().is_empty());
+}
+
+#[test]
 fn scroll_region_limits_index() {
     let mut t = term(4, 4);
     t.feed(b"aaaa\r\nbbbb\r\ncccc\r\ndddd");

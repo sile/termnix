@@ -221,7 +221,14 @@ impl TerminalState {
     }
 
     fn handle_csi(&mut self, params: &vte::Params, intermediates: &[u8], action: char) {
-        let private = intermediates.first().copied() == Some(b'?');
+        // CSI allows one intermediate byte in the 0x20-0x2F range. The three
+        // private markers are distinct queries, not one flag: `?` selects the
+        // DEC-private form of an otherwise reusable final byte, while `>` and
+        // `=` select DA2 and DA3. Folding `>` and `=` into "not private" (as a
+        // `bool` would) routes a DA2 (`CSI > c`, sent by tmux at startup) and a
+        // DA3 into the plain `'c'` arm and answers them with the DA1 reply.
+        let marker = intermediates.first().copied();
+        let private = marker == Some(b'?');
         match action {
             'A' => self.cursor_up(param_or(params, 0, 1)),
             'B' => self.cursor_down(param_or(params, 0, 1)),
@@ -297,7 +304,12 @@ impl TerminalState {
             'h' => self.set_mode(params, private, true),
             'l' => self.set_mode(params, private, false),
             'n' => self.device_status(params, private),
-            'c' if !private => self.primary_da(),
+            // DA1 answers only the primary forms (`CSI c` and `CSI ? c`). DA2
+            // (`>`) and DA3 (`=`) are recognized so they no longer reach
+            // `primary_da`, but are left unanswered rather than replied to with
+            // a DA1-shaped string; see the supported-query list on
+            // `TerminalState`.
+            'c' if !private && marker.is_none() => self.primary_da(),
             's' if !private => self.save_cursor(),
             'u' if !private => self.restore_cursor(),
             _ => {}
@@ -538,8 +550,14 @@ impl TerminalState {
         }
     }
 
+    /// Answers a primary device attributes request (DA1).
+    ///
+    /// The reply is shaped like a VT102 (spec:
+    /// https://vt100.net/docs/vt510-rm/DA1.html). DA2 (`CSI > c`) and DA3
+    /// (`CSI = c`) are not answered: callers that probe with those forms read no
+    /// reply rather than a reply that does not match the request (see the
+    /// `'c'` arm in `handle_csi`).
     fn primary_da(&mut self) {
-        // DA1 reply shaped like a VT102. Spec: https://vt100.net/docs/vt510-rm/DA1.html
         self.replies.push(b"\x1b[?6c");
     }
 
