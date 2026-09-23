@@ -166,5 +166,3 @@ still come from the child's current modes. A `paste_payload_may_be_non_utf8`
 test pins the round trip for a payload no `&str` could hold.
 
 The scope is unchanged from what is described above.
-
-The scope is unchanged from what is described above.
