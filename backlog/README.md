@@ -123,7 +123,7 @@ so the item never sits in `done/` without saying what settled it. Run
 `backlog/scripts/settle.sh`, which does all of it:
 
 ```sh
-backlog/scripts/settle.sh backlog/20260915-rfc-push-char-clip-signal.md --pr 27 <outcome.md
+backlog/scripts/settle.sh backlog/20260915-rfc-push-char-clip-signal.md --pr 27 --body-file outcome.md
 ```
 
 It switches to `main`, fast-forwards it, sets `Status` from the item's kind
@@ -133,16 +133,15 @@ working tree, right after the pull request is merged. Either branch will do:
 on `main` it just proceeds, and on the branch the pull request came from it
 switches to `main` first. Any other branch is a mistake and stops the script.
 
-Pass the prose of the outcome section on standard input instead of retyping it
+Pass the prose of the outcome section as a file instead of retyping it
 later: it is written at the moment of settling, when what actually landed is
 still fresh, and it describes the change that happened rather than the one the
 item predicted. There is no `## Outcome` while an item is open, so this write
 is also the only edit the section ever gets.
 
-The prose is required, and the script stops if standard input is empty or is a
-terminal. An outcome with nothing to say about the change it settled usually
-means it is being reconstructed from the item's own text rather than recalled
-from the change.
+The prose is required, and the script stops if the file is empty. An outcome
+with nothing to say about the change it settled usually means it is being
+reconstructed from the item's own text rather than recalled from the change.
 
 The section has a fixed shape — the pull request that settled the item, the
 prose, and a closing line — and the script writes the parts the item cannot

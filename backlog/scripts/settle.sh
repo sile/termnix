@@ -3,18 +3,20 @@
 # Settle a backlog item whose change has landed on main.
 #
 # Usage:
-#     backlog/scripts/settle.sh <item-file> --pr <N> < outcome-body.txt
+#     backlog/scripts/settle.sh <item-file> --pr <N> --body-file <path>
 #
 # The item file is the open one under backlog/ (for example
 # backlog/20260915-rfc-bounded-incomplete-sequence.md). The pull request
 # number is the change that settled it.
 #
-# The prose written to the script's standard input becomes the body of the
-# ## Outcome section, between the line naming the pull request and the line
-# stating that the scope is unchanged. Write it fresh at the moment the item
-# is settled: it records what was actually done, which is often not what the
-# text above it predicted. Reading it from standard input keeps that text out
-# of the command line, where it would end up in shell history.
+# The prose in --body-file becomes the body of the ## Outcome section, between
+# the line naming the pull request and the line stating that the scope is
+# unchanged. Write it fresh at the moment the item is settled: it records what
+# was actually done, which is often not what the text above it predicted.
+# Taking it from a file rather than the command line keeps the prose out of
+# shell history, and taking it from a file rather than standard input makes the
+# call read the same way every time and keeps the prose somewhere it can be
+# read back before it is committed.
 #
 # The prose is required. An outcome with nothing to say about the change it
 # settled is almost always a sign that it was written later, from the item's
@@ -29,22 +31,22 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: settle.sh <item-file> --pr <N>
+usage: settle.sh <item-file> --pr <N> --body-file <path>
 
-  <item-file>   an open item under backlog/ (backlog/YYYYMMDD-<kind>-<slug>.md)
-  --pr <N>      the pull request that settled it
-
-Reads the body of the ## Outcome section from standard input; it is required.
+  <item-file>        an open item under backlog/ (backlog/YYYYMMDD-<kind>-<slug>.md)
+  --pr <N>           the pull request that settled it
+  --body-file <path> file holding the body of the ## Outcome section; required
 EOF
 exit 2
 }
 
 main() {
-    local item="" pr="" body=""
+    local item="" pr="" body_file="" body=""
 
     while [ $# -gt 0 ]; do
         case "$1" in
             --pr) pr="${2:-}"; shift 2 ;;
+            --body-file) body_file="${2:-}"; shift 2 ;;
             -h|--help) usage ;;
             -*) usage ;;
             *) item="$1"; shift ;;
@@ -53,12 +55,11 @@ main() {
 
     [ -n "$item" ] || usage
     [ -n "$pr" ] || usage
+    [ -n "$body_file" ] || usage
     [ -f "$item" ] || die "no such item: $item"
+    [ -f "$body_file" ] || die "no such body file: $body_file"
 
-    if [ -t 0 ]; then
-        die "write the body of the ## Outcome section to standard input"
-    fi
-    body="$(cat)"
+    body="$(cat "$body_file")"
     [ -n "$body" ] || die "the ## Outcome section has no body"
 
     local slug kind status action
