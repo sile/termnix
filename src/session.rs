@@ -577,9 +577,20 @@ impl Session {
     /// Resizes the session, updating both the kernel PTY size and the
     /// emulator.
     ///
+    /// Setting the winsize with `TIOCSWINSZ` is what makes the kernel
+    /// deliver `SIGWINCH` to the child, so the child can repaint on its own
+    /// loop without the caller sending a signal. That delivery is the
+    /// kernel's behavior on the controlling terminal, not something termnix
+    /// arranges.
+    ///
     /// Reapplying the current size succeeds without a syscall. The ioctl runs
     /// first; the emulator size is only updated when the ioctl succeeds. A
     /// closed session returns [`ErrorKind::BrokenPipe`].
+    ///
+    /// Two cases deliver no `SIGWINCH`: a closed session returns
+    /// [`ErrorKind::BrokenPipe`] and changes nothing, and reapplying the
+    /// current size returns early without an ioctl, so the winsize never
+    /// changes and the kernel has nothing to report.
     pub fn resize(&mut self, size: Size) -> io::Result<()> {
         if self.phase != Phase::Live && self.phase != Phase::Eof {
             return Err(io::Error::new(ErrorKind::BrokenPipe, "session is closed"));
