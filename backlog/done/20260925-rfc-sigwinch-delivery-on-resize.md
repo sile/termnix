@@ -1,6 +1,6 @@
 # RFC: Say who delivers SIGWINCH on resize
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -158,3 +158,23 @@ and the new fact would sit alongside it. Nothing here proposes such a feature.
 ## Outcome
 
 Fill this in only when the proposal is settled.
+
+## Outcome
+
+Implemented in [#14](https://github.com/sile/termnix/pull/14) (merged as `0646f64`).
+
+Implemented in [#14](https://github.com/sile/termnix/pull/14) (merged as `0646f64`).
+
+`TerminalState::resize()` no longer says the child sees a `SIGWINCH` only when the
+caller arranges it. It now states that the method re-lays out the emulator only —
+no file descriptor, no kernel winsize, no signal — and points at `Session::resize()`
+for a caller that owns a PTY. `Session::resize()` states that setting the winsize
+is what makes the kernel deliver `SIGWINCH` to the child, attributes the delivery
+to the kernel rather than to termnix, and names the two cases that deliver none: a
+closed session (`ErrorKind::BrokenPipe`) and reapplying the current size (early
+return, no ioctl).
+
+No behavior changed; `Size`, the ioctl, and the emulator are untouched. The scope
+is unchanged from what is described above.
+
+The scope is unchanged from what is described above.
