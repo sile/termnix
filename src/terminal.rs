@@ -435,9 +435,13 @@ impl TerminalState {
     /// clear the scrollback via [`TerminalState::trim_scrollback()`] when a
     /// change of size makes mixed widths a problem.
     ///
-    /// Changing the visible size here is independent of the kernel's view of
-    /// the window: the PTY's `TIOCSWINSZ` is the caller's to set, and the
-    /// child sees a `SIGWINCH` only when the caller arranges it.
+    /// This method only re-lays out the emulator: it touches no file
+    /// descriptor, sets no kernel winsize, and sends no signal. It knows
+    /// nothing about a PTY or a child process. A caller that owns a PTY and
+    /// wants the child notified must set `TIOCSWINSZ` on it, which is what
+    /// [`Session::resize()`](crate::Session::resize()) does — and setting the
+    /// winsize is what makes the kernel deliver `SIGWINCH` to the child. This
+    /// method alone does none of that.
     pub fn resize(&mut self, size: Size) {
         if size == self.size {
             return;
