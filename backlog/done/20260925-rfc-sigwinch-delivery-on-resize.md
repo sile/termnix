@@ -157,12 +157,6 @@ and the new fact would sit alongside it. Nothing here proposes such a feature.
 
 ## Outcome
 
-Fill this in only when the proposal is settled.
-
-## Outcome
-
-Implemented in [#14](https://github.com/sile/termnix/pull/14) (merged as `0646f64`).
-
 Implemented in [#14](https://github.com/sile/termnix/pull/14) (merged as `0646f64`).
 
 `TerminalState::resize()` no longer says the child sees a `SIGWINCH` only when the
@@ -174,7 +168,6 @@ to the kernel rather than to termnix, and names the two cases that deliver none:
 closed session (`ErrorKind::BrokenPipe`) and reapplying the current size (early
 return, no ioctl).
 
-No behavior changed; `Size`, the ioctl, and the emulator are untouched. The scope
-is unchanged from what is described above.
+No behavior changed; `Size`, the ioctl, and the emulator are untouched.
 
 The scope is unchanged from what is described above.
