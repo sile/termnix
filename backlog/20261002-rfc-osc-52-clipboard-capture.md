@@ -6,20 +6,19 @@
 
 Teach [`TerminalState`](../src/terminal.rs) to recognize OSC 52 ("manipulate
 selection data") and retain the selection data it carries, exposed through
-`clipboard()` beside `title()`. Today an OSC 52 sequence is swallowed without a
-trace, and `TerminalState` exposes no clipboard at all. The change is on the
-*reading* side of the same protocol that `kk` (and, through it, `tuinix`) writes
-on the *writing* side.
+`take_clipboard()` beside `title()`. Today an OSC 52 sequence is swallowed
+without a trace, and `TerminalState` exposes no clipboard at all. The change is
+on the *reading* side of the same protocol that a host application writes on the
+*writing* side.
 
 ## Motivation
 
-A nested application runs inside the emulator: `kk` (via `tuinix`, and
-examples built on termnix) draws a child session in a PTY and renders it through
-`TerminalState`. When that child cuts text it writes OSC 52 to its PTY, and
-`TerminalState` is the thing parsing the bytes. What the child asked for is
-"put this on the selection named `c`" - a request for `kk` to reach the host
-terminal's clipboard, which `kk` is the only party that can do, because `kk` is
-the one that owns the host terminal.
+A host application embeds a child session: it drives a PTY and renders the
+child's output through `TerminalState`. When that child cuts text it writes
+OSC 52 to its PTY, and `TerminalState` is the thing parsing the bytes. What the
+child asked for is "put this on the selection named `c`" - a request for the
+host to reach the host terminal's clipboard, which the host is the only party
+that can do, because the host is the one that owns the host terminal.
 
 That request is currently discarded. `osc_dispatch`
 ([`src/terminal_emu.rs`](../src/terminal_emu.rs)) matches OSC `0` and `2` and
@@ -33,10 +32,11 @@ faithful to what the crate documents.
 The consequence is a dead end at a boundary termnix already straddles. The
 in-process half is done: a cut in the child reaches termnix as bytes, gets
 tokenized, and is discarded at the last step. The out-of-process half is the
-writer's job (kk's RFC, and `tuinix`'s two methods) and does not need termnix's
-help - but a *test* of that writer does. `termnix` is the crate that parses PTY
-output, so a consumer that writes OSC 52 and wants to assert the base64 on the
-wire decoded back to the text it meant to put on the clipboard has two options:
+writer's job (the host library that owns the terminal) and does not need
+termnix's help - but a *test* of that writer does. `termnix` is the crate that
+parses PTY output, so a consumer that writes OSC 52 and wants to assert the
+base64 on the wire decoded back to the text it meant to put on the clipboard
+has two options:
 parse the bytes itself in the consumer's test suite, or have `TerminalState`
 decode them. Only the second is reusable, and only the second keeps the base64
 knowledge in the crate that owns terminal sequences.
@@ -61,21 +61,21 @@ type by type.
 let mut t = TerminalState::new(size);
 // A child requests the system clipboard be replaced with "hello".
 t.feed(b"\x1b]52;c;aGVsbG8=\x1b\\");
-assert_eq!(t.clipboard().unwrap().text, "hello");
+assert_eq!(t.take_clipboard().unwrap().text, "hello");
 ```
 
-After a feed, a caller reads `clipboard()` and either acts on it (writes the
-text to the host terminal with `tuinix`, the way kk does) or does nothing. What
-it must not do is assume the text is still there later - the accessor is a
-take, so the value is consumed once, and a second call returns `None` until the
-child asks again. The take is what keeps "the child asked once" from turning
-into "the caller acts once per repaint".
+After a feed, a caller calls `take_clipboard()` and either acts on it (writes
+the text to the host terminal through whatever library owns that terminal) or
+does nothing. What it must not do is assume the text is still there later -
+the accessor is a take, so the value is consumed once, and a second call
+returns `None` until the child asks again. The take is what keeps "the child
+asked once" from turning into "the caller acts once per repaint".
 
 A caller that would rather look than take has no other accessor: there is no
 "current clipboard content" in termnix, because there is nothing true to report
-after a take and a child that never asks. `clipboard()` returns the request
-while it is pending, and `None` once it has been read or once the request was
-too large to keep.
+after a take and a child that never asks. `take_clipboard()` returns the
+request while it is pending, and `None` once it has been read or once the
+request was too large to keep.
 
 Nothing a child does today changes meaning. A program that sets the window
 title keeps setting it; a program that writes an OSC 52 sequence keeps getting
@@ -141,7 +141,7 @@ mirror an append as an append. An empty payload (`ESC ] 52 ; c ; ST`) is the
 "clear the selection" form: it decodes to the empty string, which termnix keeps
 as a request with empty `text` rather than as nothing, so the caller can tell
 "clear it" apart from "never asked". The two are different: `None` from
-`clipboard()` means nothing is pending, and `Some(request)` with empty text
+`take_clipboard()` means nothing is pending, and `Some(request)` with empty text
 means the child asked for an empty selection.
 
 ### The accessor
@@ -153,9 +153,9 @@ impl TerminalState {
     /// Returns the request and clears it, so one sequence is acted on once.
     /// Returns `None` when no request is pending, when the previous one was
     /// already taken, or when the request was dropped for exceeding
-    /// [`TerminalState::CLIPBOARD_EXPORT_MAX`]. A request whose decoded text is
-    /// empty is still returned.
-    pub fn clipboard(&mut self) -> Option<ClipboardRequest>;
+    /// [`TerminalState::CLIPBOARD_ELEMENTS_MAX`]. A request whose decoded text
+    /// is empty is still returned.
+    pub fn take_clipboard(&mut self) -> Option<ClipboardRequest>;
 }
 ```
 
@@ -163,15 +163,28 @@ impl TerminalState {
 `TerminalState` takes `&self` and returns borrowed state, because the values are
 plain properties of the terminal. Clipboard content is not a property of the
 terminal: termnix does not own a clipboard, the request is an event, and the
-event is over once it has been read. A borrow-based `fn clipboard(&self) ->
+event is over once it has been read. A borrow-based `fn take_clipboard(&self) ->
 Option<&ClipboardRequest>` would leave the caller with no way to say "I have
 acted on this", so the same request would be re-sent on every later feed and
 every repaint, which is precisely the hazard the take removes.
 
-The name is `clipboard()` rather than `take_clipboard_request()` for symmetry
-with `title()`, and because `&mut self` already announces that something is
-taken. If the return type ever trips a reader, the doc comment is the answer:
-taking is what makes the accessor well-defined.
+The name is `take_clipboard()` rather than a bare `clipboard()`: `title()` is a
+non-destructive getter over state the terminal owns, while this accessor
+consumes the event, and the `take_` prefix makes the mutation visible at the
+call site even though the `&mut self` receiver already implies it. If the return
+type ever trips a reader, the doc comment is the answer: taking is what makes
+the accessor well-defined.
+
+This is deliberately *not* modelled on the reply buffer
+([`pending_reply_bytes()`](../src/terminal.rs) plus
+[`advance_reply_bytes()`](../src/terminal.rs)), even
+though both are "the terminal produced something for the caller". A reply is a
+byte stream the caller may write only partially, so it wants a `&self` view and
+an explicit consumed-length that can stop mid-stream. A clipboard request is a
+single discrete event with no partial form: there is nothing to resume, only
+"seen" or "not seen", so a take is the whole model and the advance machinery
+would be a longer way to say the same thing. Keeping the two shapes apart is the
+point, not an oversight.
 
 One field is added to `TerminalState`:
 
@@ -196,14 +209,18 @@ same standard alphabet every OSC 52 writer uses; a payload that does not decode
 sets nothing. Failing a decode must not produce a request with mangled text,
 because the caller has no way to tell a mangled request from a real one.
 
-The element cap the structure implies is made explicit rather than hidden: the
-thousand-element cap is stated in the documentation as
+The size cap the structure implies is made explicit rather than hidden: the
+limit is stated in the documentation as
 `const CLIPBOARD_ELEMENTS_MAX: usize = 1000;` beside the method, and is not a
 separate knob. The base64 of a large cut would otherwise turn one feed into a
 hundred-megabyte allocation; the cap is a decision about the API's behavior, so
 it belongs in the API rather than in an internal length check. A request whose
-decoded payload exceeds the cap is treated exactly like a decode failure -
-stored as nothing, silently, with `revision()` unchanged.
+payload exceeds the cap is treated exactly like a decode failure - stored as
+nothing, silently, with `revision()` unchanged.
+
+The exact unit the cap counts (decoded bytes, or base64 characters on the
+wire) is left to the implementation; what matters here is that there is one
+bounded number and that exceeding it drops the request rather than allocating.
 
 There is a second bound implied by the protocol: because `vte` splits OSC
 parameters on `;`, a payload containing `;` cannot round-trip through
@@ -223,33 +240,33 @@ headless server, a terminal with the feature off) and a terminal under tmux may
 forward the sequence only when its `set-clipboard` option allows. And termnix
 is the *host* here rather than the application, so it has even less to observe:
 the child's request is an app-side assumption whose result termnix can never
-receive. `clipboard()` therefore reports what was asked for, never whether it
-worked. This is the same reasoning that makes the writer silent, arriving here
-from the other end: the protocol is write-only in both directions.
+receive. `take_clipboard()` therefore reports what was asked for, never whether
+it worked. This is the same reasoning that makes the writer silent, arriving
+here from the other end: the protocol is write-only in both directions.
 
 ### What this buys a consumer
 
-`kk`'s change writes OSC 52 to the host. A test of that change has, without
-this RFC, only the raw `tuinix` output stream to inspect, which asserts that
-some bytes were written. With this RFC, `termnix` is the consumer in the test:
-feed the child's output through `TerminalState`, take `clipboard()`, and assert
-the decoded text and the selection. That turns "an escape sequence appeared"
-into "the sequence encoded the text that was cut", which is the half worth
-testing.
+A host application's clipboard passthrough writes OSC 52 to the host terminal.
+A test of that change has, without this RFC, only the raw output stream to
+inspect, which asserts that some bytes were written. With this RFC, `termnix` is
+the consumer in the test: feed the child's output through `TerminalState`, take
+`take_clipboard()`, and assert the decoded text and the selection. That turns
+"an escape sequence appeared" into "the sequence encoded the text that was
+cut", which is the half worth testing.
 
 That is also the whole of the dependency story. A consumer's *implementation*
-does not need this RFC: how the host writes OSC 52 is `tuinix`'s business, and
-termnix is not in that path. What depends on this RFC is a *test* that asserts
-the text rather than the bytes. So this RFC is an enabler, not a gate: kk can
-land without it, and the test gets stronger when it lands. It has no dependency
-in the other direction either.
+does not need this RFC: how the host writes OSC 52 is that host library's
+business, and termnix is not in that path. What depends on this RFC is a *test*
+that asserts the text rather than the bytes. So this RFC is an enabler, not a
+gate: the host can land its passthrough without it, and the test gets stronger
+when it lands. It has no dependency in the other direction either.
 
 There is also a direct use that does not involve a test at all, and it is the
-reason the section above says "host" instead of "kk": a *nested* termnix, or
-any application that embeds a PTY behind `TerminalState`, can now offer the same
-clipboard passthrough for the program it hosts that `kk` offers for the child it
-hosts. The bytes are already arriving; this RFC is the step that keeps them
-long enough to forward.
+reason the section above says "host" rather than naming an application: a
+*nested* termnix, or any application that embeds a PTY behind `TerminalState`,
+can now offer the same clipboard passthrough for the program it hosts that such
+an application offers for the child it hosts. The bytes are already arriving;
+this RFC is the step that keeps them long enough to forward.
 
 ## Drawbacks
 
@@ -277,11 +294,11 @@ long enough to forward.
 ## Rationale and alternatives
 
 - **Keep ignoring OSC 52; let the consumer parse the bytes.** This is today,
-  and it is what a kk test would have to do. It works, but it moves base64 and
-  the selection and append syntax into the consumer's test suite, so the
-  knowledge is duplicated exactly where the RFC for the writer side argued it
-  should not be, and no other consumer benefits. Rejected for the same reason
-  that made `tuinix` the writer rather than kk.
+  and it is what a host's own test would have to do. It works, but it moves
+  base64 and the selection and append syntax into the consumer's test suite, so
+  the knowledge is duplicated exactly where the writer side argued it should
+  not be, and no other consumer benefits. Rejected for the same reason that
+  made the host library the writer rather than its caller.
 - **Retain the raw base64 payload and let the caller decode.** This keeps the
   decoder out of termnix but hands every caller a protocol detail, and it means
   the invalid-payload cases cannot be rejected where the knowledge lives. The
@@ -297,7 +314,7 @@ long enough to forward.
   answering, which is what the crate already does for DA2 and DA3 - a probe
   gets no reply rather than a wrong one. Out of scope, and probably never in
   scope.
-- **Make the accessor a non-destructive `clipboard(&self) -> Option<&ClipboardRequest>`.**
+- **Make the accessor a non-destructive getter, `clipboard(&self) -> Option<&ClipboardRequest>`.**
   Rejected: with no take, a caller cannot distinguish "not yet acted on" from
   "already acted on", so every later feed would re-deliver the request. The
   destructive read is not a stylistic choice, it is what makes the value have a
