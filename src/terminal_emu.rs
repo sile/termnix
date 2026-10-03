@@ -5,7 +5,10 @@ use vte::Perform;
 
 use crate::terminal::TerminalState;
 use crate::terminal_buffer::Screen;
-use crate::terminal_types::{Color, MouseReporting, Position, SavedCursor, Style, TerminalModes};
+use crate::terminal_types::{
+    ClipboardRequest, ClipboardSelection, Color, MouseReporting, Position, SavedCursor, Style,
+    TerminalModes,
+};
 
 pub(crate) struct Emulator<'a> {
     pub(crate) term: &'a mut TerminalState,
@@ -35,22 +38,28 @@ impl Perform for Emulator<'_> {
     fn unhook(&mut self) {}
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        // OSC 0 / 2 store the window title. Other OSC numbers are ignored so
-        // their payloads never appear as printable text.
+        // OSC 0 / 2 store the window title; OSC 52 records a clipboard
+        // request. Other OSC numbers are ignored so their payloads never
+        // appear as printable text.
         // xterm OSC catalogue: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-        // (OSC identifiers evolve; termnix only retains title text.)
+        // (OSC identifiers evolve; termnix only retains title text and OSC 52
+        // selection data.)
         if params.is_empty() {
             return;
         }
         let Ok(id) = std::str::from_utf8(params[0]) else {
             return;
         };
-        if matches!(id, "0" | "2") {
-            self.term.title = params
-                .get(1)
-                .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-                .unwrap_or_default();
-            self.term.title_changed = true;
+        match id {
+            "0" | "2" => {
+                self.term.title = params
+                    .get(1)
+                    .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+                    .unwrap_or_default();
+                self.term.title_changed = true;
+            }
+            "52" => self.osc_clipboard(params),
+            _ => {}
         }
     }
 
@@ -83,6 +92,54 @@ impl Perform for Emulator<'_> {
             b'c' => self.term.soft_reset(),
             _ => {}
         }
+    }
+}
+
+impl Emulator<'_> {
+    /// Records an OSC 52 clipboard request (`ESC ] 52 ; <Pc> ; <Pd> ST`).
+    ///
+    /// `params[1]` names the selection and `params[2]` is the payload, whose
+    /// default form is base64. The literal `?` is a *read* request rather than
+    /// a write and is not answered (termnix holds no clipboard to read from);
+    /// a payload that does not decode, including that one, stores nothing.
+    ///
+    /// A `+` prefix on the payload is xterm's append form, recorded rather
+    /// than acted on. An empty payload decodes to no bytes, which is kept as a
+    /// request: "clear the selection" is not the same as "never asked".
+    ///
+    /// `vte` splits OSC parameters on `;`, so a payload containing `;` cannot
+    /// reach here intact; that is a property of the protocol's framing rather
+    /// than a check made below.
+    fn osc_clipboard(&mut self, params: &[&[u8]]) {
+        let selection = match params.get(1) {
+            // A missing selection means the system clipboard per xterm.
+            None | Some(&[]) => ClipboardSelection::Clipboard,
+            Some(bytes) => match *bytes {
+                b"c" => ClipboardSelection::Clipboard,
+                b"p" => ClipboardSelection::Primary,
+                other => ClipboardSelection::Other(other.to_vec()),
+            },
+        };
+
+        let payload = params.get(2).copied().unwrap_or(b"");
+        // A read request (`?`) asks the terminal to send the selection back;
+        // termnix has nothing to answer with and stores nothing.
+        if payload == b"?" {
+            return;
+        }
+        let (append, encoded) = match payload.split_first() {
+            Some((b'+', rest)) => (true, rest),
+            _ => (false, payload),
+        };
+        let Some(text) = decode_base64(encoded) else {
+            return;
+        };
+
+        self.term.clipboard = Some(ClipboardRequest {
+            text,
+            selection,
+            append,
+        });
     }
 }
 
@@ -210,6 +267,10 @@ impl TerminalState {
         self.pen = Style::default();
         self.modes = TerminalModes::default();
         self.title.clear();
+        // RIS restores the terminal, and a pending request belongs to the
+        // session being reset; leaving it would let a caller act on an ask
+        // from before the reset.
+        self.clipboard = None;
         self.scroll_top = 0;
         self.scroll_bottom = size.rows.get().saturating_sub(1);
         // RIS — DEC terminal documentation:
@@ -643,6 +704,79 @@ fn flatten_params(params: &vte::Params) -> Vec<u16> {
         }
     }
     out
+}
+
+/// Decodes a standard-alphabet base64 payload, returning `None` when it is
+/// malformed.
+///
+/// OSC 52 payloads are quoted in whatever `vte` handed over, so input is
+/// bytes rather than `&str`. Padding is optional (`=` / `==` are accepted but
+/// not required), and whitespace is rejected rather than skipped: a payload
+/// with an embedded space is not something a well-formed writer produces, and
+/// silently accepting it would make an invalid sequence indistinguishable from
+/// a valid one.
+///
+/// A malformed payload returns `None` so the caller can store nothing. It must
+/// not return a partially decoded value: a caller has no way to tell a mangled
+/// payload from the bytes that were meant.
+///
+/// The result is bytes rather than a string: the payload is opaque to the
+/// terminal, so a decoded value that is not valid UTF-8 is returned as-is
+/// instead of being repaired or rejected.
+fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
+    // Groups of four base64 characters become three bytes. `buffer` holds the
+    // six-bit values of an incomplete group (0..4 of them), `out` the bytes
+    // produced so far.
+    let mut out: Vec<u8> = Vec::with_capacity(input.len() / 4 * 3);
+    let mut buffer: [u8; 4] = [0; 4];
+    let mut buffered = 0usize;
+
+    // Padding is only valid at the end: once `=` appears, every remaining byte
+    // must also be `=`, so a character after padding is malformed rather than
+    // ignored.
+    let mut padding = false;
+    for &byte in input {
+        if padding {
+            if byte != b'=' {
+                return None;
+            }
+            continue;
+        }
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => {
+                padding = true;
+                continue;
+            }
+            _ => return None,
+        };
+        buffer[buffered] = value;
+        buffered += 1;
+        if buffered == 4 {
+            out.push((buffer[0] << 2) | (buffer[1] >> 4));
+            out.push((buffer[1] << 4) | (buffer[2] >> 2));
+            out.push((buffer[2] << 6) | buffer[3]);
+            buffered = 0;
+        }
+    }
+
+    // A tail of 2 or 3 characters encodes 1 or 2 bytes; a single leftover
+    // character is not a valid amount of padding and is rejected.
+    match buffered {
+        0 => {}
+        2 => out.push(buffer[0] << 2 | buffer[1] >> 4),
+        3 => {
+            out.push(buffer[0] << 2 | buffer[1] >> 4);
+            out.push(buffer[1] << 4 | buffer[2] >> 2);
+        }
+        _ => return None,
+    }
+
+    Some(out)
 }
 
 fn char_display_width(ch: char) -> Option<usize> {

@@ -16,7 +16,9 @@
 //! - CSI SGR (`m`): reset, bold, italic, underline, reverse, 16/256/24-bit color
 //! - CSI queries: DSR, CPR, primary DA (`CSI c` / `CSI ? c`); DA2 and DA3 are
 //!   recognized but not answered
-//! - OSC 0/2: window title (stored); other OSC ignored without becoming text
+//! - OSC 0/2: window title (stored); OSC 52: clipboard request (stored for
+//!   [`TerminalState::take_clipboard()`]); other OSC ignored without becoming
+//!   text
 //! - Alternate screen: DECSET/DECRST 1049 (also 47 / 1047)
 //!
 //! # Explicitly out of scope
@@ -37,7 +39,8 @@
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
 pub use crate::terminal_types::{
-    Cell, Color, MouseReporting, Position, ScrollbackLine, Style, TerminalModes,
+    Cell, ClipboardRequest, ClipboardSelection, Color, MouseReporting, Position, ScrollbackLine,
+    Style, TerminalModes,
 };
 
 use std::collections::VecDeque;
@@ -66,7 +69,8 @@ use crate::terminal_types::SavedCursor;
 /// - **DEC private modes**: application cursor/keypad, origin, autowrap,
 ///   cursor visibility, bracketed paste, mouse reporting (including SGR)
 /// - **Alternate screen**: `?1049`, `?47`, `?1047`
-/// - **OSC 0/2**: window title (stored)
+/// - **OSC 0/2**: window title (stored); **OSC 52**: clipboard request,
+///   taken with [`take_clipboard()`](TerminalState::take_clipboard)
 /// - **Queries**: DSR, CPR, and primary DA, answered through
 ///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes). DA2
 ///   (`CSI > c`) and DA3 (`CSI = c`) are recognized but deliberately not
@@ -92,6 +96,11 @@ pub struct TerminalState {
     pub(crate) replies: ReplyBuf,
     pub(crate) scrollback: VecDeque<ScrollbackLine>,
     pub(crate) scrollback_cells: usize,
+    /// The most recent OSC 52 request, held until the caller takes it.
+    ///
+    /// Not part of `VisibleScalars` and does not bump `revision`: a clipboard
+    /// request draws nothing, so it is not a visible change.
+    pub(crate) clipboard: Option<ClipboardRequest>,
     pub(crate) revision: u64,
     /// Set by `osc_dispatch` when it stores a new title. The title is the one
     /// visible field that is not `Copy`, so it cannot join the before/after
@@ -207,6 +216,7 @@ impl TerminalState {
             replies: ReplyBuf::new(),
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
+            clipboard: None,
             revision: 0,
             title_changed: false,
         }
@@ -372,6 +382,38 @@ impl TerminalState {
     /// Returns the OSC window title last set by OSC 0 or OSC 2.
     pub fn title(&self) -> &str {
         &self.title
+    }
+
+    /// Takes the pending OSC 52 clipboard request, if any.
+    ///
+    /// A request is what a child asked for with `ESC ] 52 ; <Pc> ; <Pd> ST`.
+    /// termnix holds no clipboard, so it only records the ask; acting on it
+    /// (writing the text to the host terminal through whatever library owns
+    /// that terminal) is the caller's job.
+    ///
+    /// Returns the request and clears it, so one sequence is acted on once.
+    /// Returns `None` when no request is pending or when the previous one was
+    /// already taken. A request whose decoded text is empty is still returned,
+    /// because an empty payload is the "clear the selection" form and is not
+    /// the same as no request.
+    ///
+    /// # Why this takes `&mut self`
+    ///
+    /// Every other accessor here borrows `&self`, because the values it returns
+    /// are plain properties of the terminal. Clipboard content is not a
+    /// property: the request is an event, and the event is over once it has
+    /// been read. Without a take, a caller could not say "I have acted on
+    /// this", and the same request would be re-delivered on every later feed
+    /// and every repaint. This is deliberately not shaped like the reply buffer
+    /// ([`pending_reply_bytes()`](TerminalState::pending_reply_bytes) plus
+    /// [`advance_reply_bytes()`](TerminalState::advance_reply_bytes)): a reply
+    /// is a byte stream that may be written only partially, while this is a
+    /// single event with no partial form.
+    ///
+    /// A request is not a visible change, so taking one does not move
+    /// [`revision()`](TerminalState::revision); nor did storing it.
+    pub fn take_clipboard(&mut self) -> Option<ClipboardRequest> {
+        self.clipboard.take()
     }
 
     /// Returns the current drawing style (SGR pen).

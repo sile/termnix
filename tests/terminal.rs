@@ -1178,6 +1178,140 @@ fn osc_title_is_stored() {
 }
 
 #[test]
+fn osc_52_clipboard_is_recorded_and_taken_once() {
+    use termnix::ClipboardSelection;
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;aGVsbG8=\x07");
+    let request = t.take_clipboard().expect("request should be pending");
+    assert_eq!(request.text, b"hello");
+    assert_eq!(request.selection, ClipboardSelection::Clipboard);
+    assert!(!request.append);
+    // The accessor is a take: the same sequence is not re-delivered on a later
+    // feed, which is what keeps "the child asked once" from becoming "the
+    // caller acts once per repaint".
+    assert!(t.take_clipboard().is_none());
+    t.feed(b"");
+    assert!(t.take_clipboard().is_none());
+}
+
+#[test]
+fn osc_52_missing_selection_means_the_clipboard() {
+    use termnix::ClipboardSelection;
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;;aGVsbG8=\x07");
+    assert_eq!(
+        t.take_clipboard().unwrap().selection,
+        ClipboardSelection::Clipboard
+    );
+}
+
+#[test]
+fn osc_52_names_other_selections() {
+    use termnix::ClipboardSelection;
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;p;aGVsbG8=\x07");
+    assert_eq!(
+        t.take_clipboard().unwrap().selection,
+        ClipboardSelection::Primary
+    );
+    t.feed(b"\x1b]52;x;aGVsbG8=\x07");
+    assert_eq!(
+        t.take_clipboard().unwrap().selection,
+        ClipboardSelection::Other(b"x".to_vec())
+    );
+}
+
+#[test]
+fn osc_52_records_an_append() {
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;+aGVsbG8=\x07");
+    let request = t.take_clipboard().unwrap();
+    assert_eq!(request.text, b"hello");
+    assert!(request.append);
+}
+
+#[test]
+fn osc_52_empty_payload_is_a_clear_request() {
+    // An empty payload means "clear the selection", which is distinct from
+    // "never asked": `None` is no request, `Some` with empty text is this.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;\x07");
+    let request = t.take_clipboard().expect("clear is still a request");
+    assert!(request.text.is_empty());
+}
+
+#[test]
+fn osc_52_read_request_is_not_a_request() {
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;?\x07");
+    assert!(t.take_clipboard().is_none());
+}
+
+#[test]
+fn osc_52_invalid_base64_stores_nothing() {
+    let mut t = term(1, 8);
+    // `!` is not in the base64 alphabet.
+    t.feed(b"\x1b]52;c;!!!\x07");
+    assert!(t.take_clipboard().is_none());
+}
+
+#[test]
+fn osc_52_payload_need_not_be_utf8() {
+    // The decoded payload is opaque bytes, so a value that is not valid UTF-8
+    // is stored as-is rather than repaired or rejected.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;/w==\x07");
+    assert_eq!(t.take_clipboard().unwrap().text, vec![0xff]);
+}
+
+#[test]
+fn osc_52_other_selection_need_not_be_utf8() {
+    // A `Pc` the terminal does not model is kept as bytes too, so a caller that
+    // hands the name onward gets back what the child sent.
+    use termnix::ClipboardSelection;
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;\xff;aGVsbG8=\x07");
+    assert_eq!(
+        t.take_clipboard().unwrap().selection,
+        ClipboardSelection::Other(vec![0xff])
+    );
+}
+
+#[test]
+fn osc_52_does_not_advance_revision() {
+    // A clipboard request draws nothing, so a caller polling `revision()` to
+    // decide whether to repaint must not be told to repaint because a child
+    // cut text.
+    let mut t = term(1, 8);
+    let base = t.revision();
+    t.feed(b"\x1b]52;c;aGVsbG8=\x07");
+    assert_eq!(t.revision(), base);
+    let _ = t.take_clipboard();
+    assert_eq!(t.revision(), base);
+}
+
+#[test]
+fn osc_52_payload_cannot_contain_a_semicolon() {
+    // `vte` splits OSC parameters on `;`, so `aGVsbG8=;x` arrives as three
+    // parameters and the payload is only the first. That is framing rather
+    // than a choice here, and it is why OSC 52 cannot carry `;` through the
+    // parameter channel.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;aGVsbG8=;x\x07");
+    assert_eq!(t.take_clipboard().unwrap().text, b"hello");
+}
+
+#[test]
+fn osc_52_survives_a_hard_reset() {
+    // RIS restores the terminal; a pending ask from before the reset must not
+    // outlive it.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;aGVsbG8=\x07");
+    t.feed(b"\x1bc");
+    assert!(t.take_clipboard().is_none());
+}
+
+#[test]
 fn cursor_position_report_is_a_pending_reply() {
     let mut t = term(5, 10);
     t.feed(b"\x1b[3;4H\x1b[6n");
