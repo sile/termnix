@@ -354,7 +354,11 @@ this RFC is the step that keeps them long enough to forward.
 - A read request (`?`) could be answered from a selection the *caller* seeds,
   turning the one-way protocol into a two-way one for as long as the caller
   keeps the text. That is a much larger proposal (state the caller owns, a
-  reply channel, staleness) and is not implied by anything here.
+  reply channel, staleness) and is not implied by anything here. It is also an
+  event in the same sense as the write request - a child asking for something
+  the crate does not hold - so it is the second family the `Event` note below
+  anticipates, and would be modelled as its own variant rather than folded
+  into `ClipboardRequest`.
 - If termnix ever grows a host-terminal abstraction, a take here becomes the
   input side of it and OSC 52 passthrough stops needing a consumer at all.
 - Other selections (primary, or the numbered cut buffers) become usable without
