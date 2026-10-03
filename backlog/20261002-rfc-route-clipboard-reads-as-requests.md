@@ -1,4 +1,4 @@
-# RFC: Route clipboard read requests as events
+# RFC: Route clipboard reads to the caller
 
 - Status: draft
 
@@ -9,8 +9,8 @@ or by writing something into the reply buffer. A read request
 (`ESC ] 52 ; <selection> ; ? ST`) asks the terminal to send a selection's
 contents back to the child; the crate owns no clipboard, so it has nothing to
 send, and today it returns silently. This RFC splits the `"52"` arm so that a
-set still becomes a clipboard event (as it does now) and a read becomes an
-event of its own, carrying the requested selection. The caller that owns the
+set still becomes a clipboard request (as it does now) and a read becomes a
+request of its own, carrying the requested selection. The caller that owns the
 clipboard is then the one that answers, and the crate never claims an answer it
 does not have.
 
@@ -54,17 +54,17 @@ Before, a child's paste request vanished:
 // until its own timeout. The host is never told a request was made.
 ```
 
-After, the request arrives on the event channel, and the host - which owns the
+After, the request arrives on the channel, and the host - which owns the
 clipboard - answers it:
 
 ```rust
-while let Some(event) = term.take_event() {
-    match event {
-        Event::ClipboardWrite { text, selection, append } => {
+while let Some(request) = term.take_osc_request() {
+    match request {
+        OscRequest::SetClipboard { text, selection, append } => {
             // the child asked us to replace a selection
             apply_write(text, selection, append);
         }
-        Event::ClipboardRead { selection } => {
+        OscRequest::GetClipboard { selection } => {
             // the child asked us for a selection's contents
             answer_read(session, selection);
         }
@@ -81,8 +81,9 @@ to be - the host already has a channel to the child.
 The shift in thinking is that OSC 52 is now two messages in the same number.
 A *set* is the child telling the caller what to put in a selection; a *read* is
 the child asking the caller what a selection holds. They point in opposite
-directions, so they are two variants rather than one value with a flag. A host
-that only forwards sets ignores the read variant; a host that also serves pastes
+directions, so they are two variants rather than one value with a flag, and the
+names lead with the direction: `SetClipboard` and `GetClipboard`. A host that
+only forwards sets ignores the get variant; a host that also serves pastes
 handles both.
 
 A host that wants neither ignores both, as it already ignores anything it does
@@ -106,21 +107,21 @@ arm no longer has a single outcome. The selection is resolved first (as
 ```rust
 let payload = params.get(2).copied().unwrap_or(b"");
 if payload == b"?" {
-    self.term.events.push_back(Event::ClipboardRead { selection });
+    self.term.osc_requests.push_back(OscRequest::GetClipboard { selection });
     return;
 }
 ```
 
 The current `if payload == b"?" { return; }` becomes the push above. Everything
-after it (the `+` append split, the base64 decode, the event) is unchanged and
-still produces the write event.
+after it (the `+` append split, the base64 decode, the push) is unchanged and
+still produces the set request.
 
 ### The variant, and the write it pairs with
 
 ```rust
-pub enum Event {
+pub enum OscRequest {
     /// The child asked to replace a selection (OSC 52 set).
-    ClipboardWrite {
+    SetClipboard {
         text: Vec<u8>,
         selection: ClipboardSelection,
         append: bool,
@@ -130,21 +131,21 @@ pub enum Event {
     /// The crate owns no clipboard, so it cannot answer this and writes
     /// nothing to the reply buffer. The caller that owns the selection is the
     /// one that answers, by writing an OSC 52 set sequence to the PTY master.
-    ClipboardRead {
+    GetClipboard {
         selection: ClipboardSelection,
     },
 }
 ```
 
-The two are struct variants rather than tuple variants carrying a shared type,
-so each carries exactly the fields it has: a write has `text` and `append`, a
-read has neither. A shared `ClipboardRequest { text, selection, append }` with a
-`read: bool` would let a caller construct `read: true` with a `text` and an
-`append`, values that mean nothing for a read; the type would permit states the
-protocol cannot produce.
+The two are struct variants, so each carries exactly the fields it has: a set
+has `text` and `append`, a get has neither. A shared
+`ClipboardContents { text, selection, append }` with a `read: bool` would let a
+caller construct `read: true` with a `text` and an `append`, values that mean
+nothing for a read; the type would permit states the protocol cannot produce.
+The direction belongs in the variant, not in a flag.
 
-`append` is meaningful only for a write - it is the `+` prefix on a base64
-payload - so it lives on the write variant. A read payload is the single byte
+`append` is meaningful only for a set - it is the `+` prefix on a base64
+payload - so it lives on the set variant. A read payload is the single byte
 `?`, so there is nothing to split into fields beyond `selection`.
 
 ### Why not the reply buffer
@@ -175,16 +176,16 @@ passthrough arm.
 ### Effect on `revision()` and state
 
 None in either direction. A read request changes no cell and no mode, so
-`revision()` does not move; like a write, it draws nothing. And a read is an
-event, not state, so there is nothing to clear on `soft_reset` (the write side
+`revision()` does not move; like a set, it draws nothing. And a read is a
+request, not state, so there is nothing to clear on `soft_reset` (the set side
 has a stored request to clear, which is why that side is touched there; a read
-is consumed by `take_event()` and is gone).
+is consumed by `take_osc_request()` and is gone).
 
 ### Ordering
 
-A read is pushed onto the same event queue as everything else, so a read that
-follows a write in one `feed` arrives after it, and a caller that both applies
-writes and answers reads sees them in the order the child wrote them.
+A read is pushed onto the same queue as everything else, so a read that
+follows a set in one `feed` arrives after it, and a caller that both applies
+sets and answers reads sees them in the order the child wrote them.
 
 ## Drawbacks
 
@@ -193,7 +194,7 @@ exhaustive, so a caller that only forwards writes now names a read variant it
 ignores. This is the cost every variant of the channel has, and the trade is
 that the request is visible at all.
 - **The crate now emits a read with no obligation behind it.** Nothing in the
-crate makes the caller answer; a host that ignores `ClipboardRead` leaves the
+crate makes the caller answer; a host that ignores `GetClipboard` leaves the
 child waiting, which is where it was before, but the host now has to make that
 choice knowingly rather than by the crate's silence.
 - **A correct answer is entirely the caller's to build.** The crate hands over
@@ -202,7 +203,7 @@ and writing it to the PTY is caller code. That is by design - the crate owns no
 clipboard - but it is more than a getter would be, and a host that expected the
 crate to answer will not find one.
 - **One number now has two directions in the source.** `osc_clipboard` used to
-end in a return for `?`; it now branches into two events. The function is
+end in a return for `?`; it now branches into two requests. The function is
 slightly less linear, and the split point (`payload == b"?"`) is the contract
 that decides direction, so it is worth a comment saying so.
 
@@ -218,14 +219,14 @@ that decides direction, so it is worth a comment saying so.
   crate's answer. A buffer the caller must *backfill* before it is valid inverts
   the contract, and the caller already has its own write path to the PTY master
   through the session, so the buffer would add a second path to the same place.
-- **Emit the read as `OscOther` with id `b"52"`.** Rejected: it works, but
+- **Emit the read as `Other` with id `b"52"`.** Rejected: it works, but
   forces every caller to compare `id == b"52"` and inspect `params[1]` for `?`,
   and it presents `52` as an uninterpreted number when the crate did interpret
   it - it decided this is a read and resolved the selection. A typed variant
   keeps that classification in the type instead of in each caller's guard.
 - **Answer from a crate-owned clipboard.** Rejected in the sibling decision that
-  introduced the clipboard event: the crate owns no selection, and giving it one
-  would put a second source of truth beside the host's.
+  introduced the clipboard request: the crate owns no selection, and giving it
+  one would put a second source of truth beside the host's.
 - **Keep dropping, but document why.** Rejected: a child that asks and is not
   answered waits on a reply that will not come, and the host that could answer
   is never told. A documented drop is still a drop.
@@ -235,14 +236,14 @@ that decides direction, so it is worth a comment saying so.
 
 ## Unresolved questions
 
-- **Is `ClipboardRead` the right variant name?** It pairs with
-  `ClipboardWrite`, and both name the direction. Every variant name on the
-  channel is provisional until the whole naming rule is settled; see the
-  clipboard-write and title decisions for the same note.
-- **Should `ClipboardRead` carry anything more than `selection`?** A read has
-  only a selection today. If a future extension adds a field to a read (a
-  maximum size, say), the variant gains a field or becomes a tuple variant
-  carrying a struct; the shape is chosen then, not pre-emptively.
+- **Is `GetClipboard` the right variant name?** It pairs with
+  `SetClipboard`, and both lead with the direction. Every variant name on the
+  channel follows the same action-led rule; see the container RFC for where
+  that rule is recorded.
+- **Should `GetClipboard` carry anything more than `selection`?** A get has
+  only a selection today. If a future extension adds a field (a maximum size,
+  say), the variant gains a field inline; the shape is chosen then, not
+  pre-emptively.
 - **Should the crate do anything if the caller never answers?** It cannot: it
   does not know the child is waiting, and it holds no reply to send. Whether to
   document the caller's obligation more strongly (a doc note on the variant) or
@@ -251,7 +252,7 @@ that decides direction, so it is worth a comment saying so.
 ## Future possibilities
 
 - A caller that owns several selections (a host with its own clipboard stack)
-  can answer a read with any of them; the variant carries only *which* was
+  can answer a get with any of them; the variant carries only *which* was
   asked for, so the policy stays with the caller.
 - If the crate ever gains a reason to model the reply side of OSC 52 (a
   protocol-level timeout, say), this variant is the point where the answer would

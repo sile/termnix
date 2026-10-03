@@ -134,8 +134,8 @@ models nothing: it reads the offered sequence and decides for itself. A caller
 that wants none of them ignores what it is offered, exactly as it ignores the
 `None` from `take_clipboard()` today. Nothing a caller does today changes
 meaning: the title stays where it is until the title proposal moves it, OSC 52
-keeps its current accessor until the event proposal replaces it, and sequences
-that were dropped are dropped until the passthrough proposal lands.
+keeps its current accessor until the request-channel proposal replaces it, and
+sequences that were dropped are dropped until the passthrough proposal lands.
 
 ## Reference-level explanation
 
@@ -209,24 +209,26 @@ Two rows carry the weight of the policy:
 
 This policy is applied by separate RFCs. Each is a normal proposal that can be
 accepted or rejected on its own; none of them is implied to be accepted by this
-one. The dependency order is that the event mechanism is a container the others
+one. The dependency order is that the request channel is a container the others
 put things into, so it comes first; passthrough answers where an unmodelled or
 `?` sequence goes, so the question of read requests lands there.
 
-- **The event mechanism.** Introduce a single consumed-once event channel on
-  `TerminalState` (`take_event()`), and decide whether the existing clipboard
-take folds into it or sits beside it. The RFC that adds it owns the shape of
-the `Event` type; this umbrella fixes only that the rule above assigns each
-  sequence a home, and that a family of consumed-once events is what the rule's
-  "event" row produces.
+- **The request channel.** Introduce a single consumed-once channel on
+  `TerminalState` (`take_osc_request()`), and decide whether the existing
+  clipboard take folds into it or sits beside it. The RFC that adds it owns the
+  shape of the `OscRequest` type; this umbrella fixes only that the rule above
+  assigns each sequence a home, and that a family of consumed-once requests is
+  what the rule's "event" row produces. The type is named for the ask rather
+  than the effect because every value on it is something the child asked the
+  caller to do.
 - **Passthrough.** Expose unmodelled OSC sequences to the caller, with the
   framing already done. Open questions to settle there, not here: whether the
   offered value carries the identifier and split arguments as `vte` produced
   them or the raw sequence bytes; whether passthrough is a take (a caller drains
   it) or a queue (a caller keeps all of them); and, if a queue, its bound and
   what happens on overflow.
-- **The title.** Decide whether the window title moves from state to the event
-  row, as the rule says it may. The proposal owns the question of whether the
+- **The title.** Decide whether the window title moves from state to the
+  request row, as the rule says it may. The proposal owns the question of whether the
   move is worth it, including the loss of the current-value getter (a caller
   that wants the latest title would then keep it itself) weighed against the
   removal of the title's special-case bookkeeping (`title_changed` and its
@@ -239,8 +241,9 @@ the `Event` type; this umbrella fixes only that the rule above assigns each
   number, so the reply is a byte to write *back* to the child. That is the shape
   of the existing reply buffer
   ([`pending_reply_bytes()`](../src/terminal.rs) and
-  [`advance_reply_bytes()`](../src/terminal.rs)), not of a consumed-once event,
-  and it is also what passthrough delivers (a caller that owns the answer can
+  [`advance_reply_bytes()`](../src/terminal.rs)), not of a consumed-once
+  request, and it is also what passthrough delivers (a caller that owns the
+  answer can
   answer from the raw sequence). Which of the two owns `?` is settled in the
   passthrough proposal, not here.
 
@@ -250,9 +253,10 @@ the `Event` type; this umbrella fixes only that the rule above assigns each
   sequence must never let its bytes become cells, which is the property the
   current `_ => {}` arm protects. Passthrough is a separate channel, not a
   change to how printable text is recognized.
-- **The reply buffer is not an event.** It is a byte stream a caller may write
-  partially, with an explicit consumed-length; the existing RFC that chose that
-  shape over a single-variant action enum stands, and nothing here reopens it.
+- **The reply buffer is not a request.** It is a byte stream a caller may
+  write partially, with an explicit consumed-length; the existing RFC that
+  chose that shape over a single-variant action enum stands, and nothing here
+  reopens it.
 - **The `&self` accessors on `TerminalState` stay `&self`.** A value in the
   state row is a property read non-destructively. Only the event row is a take.
 
@@ -335,7 +339,7 @@ decisions in other documents. If the follow-ons are never written, it is a
   state value to have a separate notification when the *change* is something a
   caller must act on, but no current or planned sequence is an example, so
   whether that clause has content is open. If it does not, the policy can drop
-  it; if it does, the event mechanism proposal is where it lands.
+  it; if it does, the request-channel proposal is where it lands.
 - **Does the title move at all?** The rule places the title in the event row,
   but "the rule says it may move" is not "it should move". The title proposal
   owns this, including whether the `title_changed` bookkeeping is worth

@@ -1,16 +1,16 @@
-# RFC: Pass unmodelled OSC sequences through as events
+# RFC: Pass unmodelled OSC sequences through as requests
 
 - Status: draft
 
 ## Summary
 
 Give every OSC identifier termnix does not interpret a place to go, by
-emitting it on the event channel as an `Event::OscOther` carrying the
+emitting it on the request channel as an `OscRequest::Other` carrying the
 identifier and the raw arguments. Today such a sequence is silently dropped by
 the `_ => {}` arm in `osc_dispatch`, which is the one outcome that loses the
 sequence for every caller. This RFC is the proposal the OSC handling policy
 names as the fallback for an unmodelled number; it adds one variant to the
-event type and turns the drop arm into an emit arm. It deliberately does not
+request type and turns the drop arm into an emit arm. It deliberately does not
 add a "drop" option to the type: dropping is what happens when a sequence has
 no destination, and after this change no sequence is in that position by
 default.
@@ -52,17 +52,17 @@ could not:
 // dropped inside `osc_dispatch`.
 ```
 
-After, the sequence arrives on the same event channel as the clipboard
-request, and the host drains it like any other event:
+After, the sequence arrives on the same channel as the clipboard request, and
+the host drains it like any other request:
 
 ```rust
-while let Some(event) = term.take_event() {
-    match event {
-        Event::Clipboard(request) => {
+while let Some(request) = term.take_osc_request() {
+    match request {
+        OscRequest::SetClipboard { text, selection, append } => {
             // the crate decoded this one for us
-            set_clipboard(request);
+            set_clipboard(selection, &text, append);
         }
-        Event::OscOther { id, params } => {
+        OscRequest::Other { id, params } => {
             // the crate handed this one over uninterpreted
             if id == b"7" {
                 set_working_directory(params.first().map(Vec::as_slice));
@@ -73,43 +73,51 @@ while let Some(event) = term.take_event() {
 }
 ```
 
-The shift in thinking is that the event channel has two kinds of value on it.
+The shift in thinking is that the channel has two kinds of value on it.
 One is *interpreted*: the crate recognized the number, decoded its arguments,
-and produced a typed value (`Event::Clipboard`). The other is *uninterpreted*:
-the crate recognized only where the sequence ended and where its fields were,
-and produced the identifier and arguments as bytes (`Event::OscOther`). In both
-cases the caller is the one that acts; the difference is how much the crate did
-before handing it over.
+and produced a typed request (`OscRequest::SetClipboard`). The other is
+*uninterpreted*: the crate recognized only where the sequence ended and where
+its fields were, and produced the identifier and arguments as bytes
+(`OscRequest::Other`). In both cases the caller is the one that acts; the
+difference is how much the crate did before handing it over.
 
-A host that wants none of this ignores it. The event channel is drained the
-same way it already is, and an `OscOther` a caller does not match on is
-something it simply does not handle - which is what it does today, except that
-deciding *not* to handle it is now the caller's decision rather than the
-crate's.
+A host that wants none of this ignores it. The channel is drained the same way
+it already is, and an `Other` a caller does not match on is something it simply
+does not handle - which is what it does today, except that deciding *not* to
+handle it is now the caller's decision rather than the crate's.
 
 ## Reference-level explanation
 
 ### The variant
 
 ```rust
-pub enum Event {
+pub enum OscRequest {
     /// The child asked to change a selection (OSC 52).
-    Clipboard(ClipboardRequest),
+    SetClipboard {
+        text: Vec<u8>,
+        selection: ClipboardSelection,
+        append: bool,
+    },
     /// An OSC sequence the crate does not interpret, handed over as-is.
     ///
     /// `id` is the identifier field and `params` the argument fields, both
     /// exactly as the tokenizer split them. Nothing has been decoded.
-    OscOther { id: Vec<u8>, params: Vec<Vec<u8>> },
+    Other { id: Vec<u8>, params: Vec<Vec<u8>> },
 }
 ```
+
+`Other` is the one variant whose name carries no action: the crate did not
+interpret the sequence, so it cannot say whether the child asked for a change,
+asked for contents, or merely reported something. An action-led name would be
+a guess the crate is not in a position to make, so the catch-all stays a noun.
 
 `id` is `Vec<u8>`, not a number and not `String`. Not a number because a
 number is only conventional: a vendor extension may use an identifier that is
 not a decimal integer, and parsing to an integer would either fail or lie
 about what arrived. Not `String` because the field is arbitrary bytes the crate
 has not validated as UTF-8, and forcing it through `String` would either lose
-data or turn a decoding failure into a silently missing event. The caller that
-knows its own identifier compares bytes, as in the guide example.
+data or turn a decoding failure into a silently missing request. The caller
+that knows its own identifier compares bytes, as in the guide example.
 
 ### The split, and why the crate does it
 
@@ -121,7 +129,7 @@ split through to the caller.
 
 ```rust
 // inside osc_dispatch, replacing the current `_ => {}` arm
-_ => self.term.events.push_back(Event::OscOther {
+_ => self.term.osc_requests.push_back(OscRequest::Other {
     id: params[0].to_vec(),
     params: params[1..].iter().map(|p| p.to_vec()).collect(),
 }),
@@ -152,17 +160,17 @@ by the same reasoning: an interpreted sequence has a destination of its own.
 
 An OSC 52 read request (`ESC ] 52 ; c ; ? ST`) is already dropped by
 `osc_clipboard` before this RFC. This RFC does not change that path: the "52"
-arm stays interpreted, so a read request never becomes an `OscOther`. Routing
+arm stays interpreted, so a read request never becomes an `Other`. Routing
 read requests is a separate question the policy leaves open, and nothing here
 prejudges it.
 
 ### Ordering and the queue
 
-The event channel is a queue, so an `OscOther` keeps its position relative to
-other events from the same `feed`. A caller that cares about OSC ordering (a
+The channel is a queue, so an `Other` keeps its position relative to other
+requests from the same `feed`. A caller that cares about OSC ordering (a
 prompt mark arriving after output, say) sees the order the child wrote. The
-queue is unbounded, as the event channel already is; an `OscOther` adds no new
-bound question beyond the one the channel has.
+queue is unbounded, as the channel already is; an `Other` adds no new bound
+question beyond the one the channel has.
 
 ## Drawbacks
 
@@ -173,11 +181,10 @@ bound question beyond the one the channel has.
   alternative is a `_ => {}` that hides the next variant too - but it is a
   real cost on the common caller.
 - **The crate now copies bytes it may never be asked for.** Every unmodelled
-  OSC is copied out of the tokenizer's buffers into owned `Vec`s on the event
-  queue, whether or not the caller ever drains it. A caller that ignores
-  `OscOther` pays for it in allocation and memory, not just in a match arm.
-  How large that can get is a property of the child's output, and the queue is
-  unbounded.
+  OSC is copied out of the tokenizer's buffers into owned `Vec`s on the queue,
+  whether or not the caller ever drains it. A caller that ignores `Other` pays
+  for it in allocation and memory, not just in a match arm. How large that can
+  get is a property of the child's output, and the queue is unbounded.
 - **Passthrough is not free of interpretation.** Choosing `id` + `params`
   means the crate commits to `;` being the field separator for *every* number,
   including ones whose grammar might treat `;` differently. `vte` already makes
@@ -191,7 +198,7 @@ bound question beyond the one the channel has.
 
 ## Rationale and alternatives
 
-- **Emit the whole sequence as one raw byte string.** `OscOther(Vec<u8>)` with
+- **Emit the whole sequence as one raw byte string.** `Other(Vec<u8>)` with
   the bytes from `ESC ]` to the terminator. Rejected: it makes every caller
   re-split on `;`, duplicating the framing the crate already applied, and it
   forces callers to re-scan for the identifier and terminator. The split is the
@@ -209,7 +216,7 @@ bound question beyond the one the channel has.
 - **Keep dropping, but document why.** Rejected: the policy already rejects
   documenting a drop as the crate's answer to an identifier. A comment does not
   make the bytes reach the caller, and a documented drop is still a drop.
-- **Model OSC 7 / OSC 133 as their own events now.** Rejected for this RFC:
+- **Model OSC 7 / OSC 133 as their own variants now.** Rejected for this RFC:
   both are sequences whose *arguments* the crate would have to interpret (a URI,
   a mark code), which is a different decision from handing them over whole.
   They are examples of what passthrough is *for*, not part of it. If they are
@@ -219,17 +226,18 @@ bound question beyond the one the channel has.
 
 ## Unresolved questions
 
-- **Is `OscOther` the right variant name?** It pairs with `Clipboard` and says
-  "not one of the interpreted ones". `Uninterpreted` or `Raw` are alternatives.
-  A naming question, settled at implementation time.
+- **Is `Other` the right variant name?** It is the catch-all for a sequence
+  the crate did not interpret, and unlike the rest of the channel its name
+  carries no action because the crate cannot know the direction. `Uninterpreted`
+  or `Raw` are alternatives. A naming question, settled at implementation time.
 - **Should `params` be non-empty even when the sequence had none?** An OSC with
   an identifier and no arguments (`params` has one element) would carry an empty
   `Vec`. Whether that is worth a special case, or whether an empty `Vec` is the
   honest answer, is open.
 - **Does the queue need a bound now that it can carry arbitrary child bytes?**
-  The channel was already unbounded; `OscOther` makes the growth easier to
+  The channel was already unbounded; `Other` makes the growth easier to
   trigger (a child can emit unmodelled sequences freely) but does not change the
-  question. It is the same bound question the event channel owns; if that one is
+  question. It is the same bound question the channel owns; if that one is
   settled with a bound, this variant inherits it.
 - **Where do the argument bytes come from as a sequence grows?** Each field is
   copied into its own `Vec`. Whether a single allocation for the whole sequence
@@ -239,13 +247,13 @@ bound question beyond the one the channel has.
 ## Future possibilities
 
 - A host that wants a typed view of a common unmodelled sequence (a working
-  directory, a prompt mark) can build it above the crate out of `OscOther`, and
-  a later proposal can lift the common case into its own event variant - which
+  directory, a prompt mark) can build it above the crate out of `Other`, and
+  a later proposal can lift the common case into its own variant - which
   is what "model OSC 7 / OSC 133" would mean when it is wanted. This RFC makes
   that a caller-side matter rather than a blocking gap.
 - The read-request routing the policy leaves open can be decided with
   passthrough already in place: a read request that is not answered from state
-  is already representable to a caller, whether it arrives as an `OscOther` or
+  is already representable to a caller, whether it arrives as an `Other` or
   as a variant of its own.
 - The same "do not decode, just offer" question will come up for DCS the crate
   now ignores in `hook`/`put`/`unhook`. That is a separate frame with its own
