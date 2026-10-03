@@ -67,7 +67,7 @@ asks of the caller:
 while let Some(event) = term.take_event() {
     match event {
         Event::Clipboard(request) => set_clipboard(request),
-        Event::Title(title) => set_window_title(&title),
+        Event::Title { title } => set_window_title(&title),
     }
 }
 ```
@@ -96,7 +96,7 @@ pub enum Event {
     /// The child asked to change a selection (OSC 52).
     Clipboard(ClipboardRequest),
     /// The child set the window title (OSC 0 or OSC 2).
-    Title(String),
+    Title { title: String },
 }
 ```
 
@@ -221,6 +221,17 @@ terminals draw; neither does the crate today.
   event should carry which of the two arrived (so a caller could tell the
   icon name from the window title) is open, and the two are the same value in
   this crate.
+- **Every variant name in the `Event` type is provisional.** This RFC writes
+  `Title`, the clipboard RFCs write `ClipboardWrite` / `ClipboardRead`, and
+  the passthrough RFC writes `OscOther`; the prefix on each was chosen one RFC
+  at a time and the set has no single rule behind it. A name that leads with
+  the action (`SetClipboard` / `GetClipboard` / `SetTitle` / `Other`) would
+  read the same way whether or not a caller knows the OSC specs, and would put
+  the direction of each message in the name rather than leaving `Title` to be
+  read as either direction. The `Event` type name itself is open the same way
+  (`Event` vs `OscEvent`). This is a cross-cutting decision about the whole
+  channel, not a property of the title, so it is recorded here and settled
+  when the type is settled rather than as part of this RFC.
 
 ## Future possibilities
 
