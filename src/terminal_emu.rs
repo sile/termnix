@@ -104,9 +104,8 @@ impl Emulator<'_> {
     /// a payload that does not decode, including that one, stores nothing.
     ///
     /// A `+` prefix on the payload is xterm's append form, recorded rather
-    /// than acted on. An empty payload decodes to the empty string, which is
-    /// kept as a request: "clear the selection" is not the same as "never
-    /// asked".
+    /// than acted on. An empty payload decodes to no bytes, which is kept as a
+    /// request: "clear the selection" is not the same as "never asked".
     ///
     /// `vte` splits OSC parameters on `;`, so a payload containing `;` cannot
     /// reach here intact; that is a property of the protocol's framing rather
@@ -118,7 +117,7 @@ impl Emulator<'_> {
             Some(bytes) => match *bytes {
                 b"c" => ClipboardSelection::Clipboard,
                 b"p" => ClipboardSelection::Primary,
-                other => ClipboardSelection::Other(String::from_utf8_lossy(other).into_owned()),
+                other => ClipboardSelection::Other(other.to_vec()),
             },
         };
 
@@ -718,12 +717,16 @@ fn flatten_params(params: &vte::Params) -> Vec<u16> {
 /// a valid one.
 ///
 /// A malformed payload returns `None` so the caller can store nothing. It must
-/// not return a partially decoded value: a caller has no way to tell mangled
-/// text from the text that was meant.
-fn decode_base64(input: &[u8]) -> Option<String> {
+/// not return a partially decoded value: a caller has no way to tell a mangled
+/// payload from the bytes that were meant.
+///
+/// The result is bytes rather than a string: the payload is opaque to the
+/// terminal, so a decoded value that is not valid UTF-8 is returned as-is
+/// instead of being repaired or rejected.
+fn decode_base64(input: &[u8]) -> Option<Vec<u8>> {
     // Groups of four base64 characters become three bytes. `buffer` holds the
     // six-bit values of an incomplete group (0..4 of them), `out` the bytes
-    // produced so far, which must be valid UTF-8 in the end.
+    // produced so far.
     let mut out: Vec<u8> = Vec::with_capacity(input.len() / 4 * 3);
     let mut buffer: [u8; 4] = [0; 4];
     let mut buffered = 0usize;
@@ -773,7 +776,7 @@ fn decode_base64(input: &[u8]) -> Option<String> {
         _ => return None,
     }
 
-    String::from_utf8(out).ok()
+    Some(out)
 }
 
 fn char_display_width(ch: char) -> Option<usize> {

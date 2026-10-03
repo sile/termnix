@@ -1183,7 +1183,7 @@ fn osc_52_clipboard_is_recorded_and_taken_once() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
     let request = t.take_clipboard().expect("request should be pending");
-    assert_eq!(request.text, "hello");
+    assert_eq!(request.text, b"hello");
     assert_eq!(request.selection, ClipboardSelection::Clipboard);
     assert!(!request.append);
     // The accessor is a take: the same sequence is not re-delivered on a later
@@ -1217,7 +1217,7 @@ fn osc_52_names_other_selections() {
     t.feed(b"\x1b]52;x;aGVsbG8=\x07");
     assert_eq!(
         t.take_clipboard().unwrap().selection,
-        ClipboardSelection::Other("x".to_string())
+        ClipboardSelection::Other(b"x".to_vec())
     );
 }
 
@@ -1226,7 +1226,7 @@ fn osc_52_records_an_append() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;+aGVsbG8=\x07");
     let request = t.take_clipboard().unwrap();
-    assert_eq!(request.text, "hello");
+    assert_eq!(request.text, b"hello");
     assert!(request.append);
 }
 
@@ -1237,7 +1237,7 @@ fn osc_52_empty_payload_is_a_clear_request() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;\x07");
     let request = t.take_clipboard().expect("clear is still a request");
-    assert_eq!(request.text, "");
+    assert!(request.text.is_empty());
 }
 
 #[test]
@@ -1250,16 +1250,31 @@ fn osc_52_read_request_is_not_a_request() {
 #[test]
 fn osc_52_invalid_base64_stores_nothing() {
     let mut t = term(1, 8);
-    // `!` is not in the base64 alphabet, and a payload must decode as UTF-8.
-    for payload in [b"!!!".as_slice(), b"/w=="] {
-        t.feed(b"\x1b]52;c;");
-        t.feed(payload);
-        t.feed(b"\x07");
-        assert!(
-            t.take_clipboard().is_none(),
-            "payload={payload:?} should not be stored"
-        );
-    }
+    // `!` is not in the base64 alphabet.
+    t.feed(b"\x1b]52;c;!!!\x07");
+    assert!(t.take_clipboard().is_none());
+}
+
+#[test]
+fn osc_52_payload_need_not_be_utf8() {
+    // The decoded payload is opaque bytes, so a value that is not valid UTF-8
+    // is stored as-is rather than repaired or rejected.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;/w==\x07");
+    assert_eq!(t.take_clipboard().unwrap().text, vec![0xff]);
+}
+
+#[test]
+fn osc_52_other_selection_need_not_be_utf8() {
+    // A `Pc` the terminal does not model is kept as bytes too, so a caller that
+    // hands the name onward gets back what the child sent.
+    use termnix::ClipboardSelection;
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;\xff;aGVsbG8=\x07");
+    assert_eq!(
+        t.take_clipboard().unwrap().selection,
+        ClipboardSelection::Other(vec![0xff])
+    );
 }
 
 #[test]
@@ -1283,7 +1298,7 @@ fn osc_52_payload_cannot_contain_a_semicolon() {
     // parameter channel.
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=;x\x07");
-    assert_eq!(t.take_clipboard().unwrap().text, "hello");
+    assert_eq!(t.take_clipboard().unwrap().text, b"hello");
 }
 
 #[test]

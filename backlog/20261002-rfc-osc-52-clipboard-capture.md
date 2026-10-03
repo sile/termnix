@@ -114,14 +114,14 @@ pub enum ClipboardSelection {
     /// The primary selection (`p`).
     Primary,
     /// A selection name termnix does not model, kept as written.
-    Other(String),
+    Other(Vec<u8>),
 }
 
 /// An OSC 52 clipboard request, retained for the caller to take.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardRequest {
     /// Decoded selection text.
-    pub text: String,
+    pub text: Vec<u8>,
     /// Which selection the application addressed.
     pub selection: ClipboardSelection,
     /// Whether the application asked to append instead of replace.
@@ -129,7 +129,14 @@ pub struct ClipboardRequest {
 }
 ```
 
-A plain `String` is used rather than a small-string type: the point is that an
+The payload and an unmodeled selection name are both `Vec<u8>`, not `String`.
+OSC 52 carries an opaque payload and an opaque `Pc`: neither is required to be
+valid UTF-8, and neither should be repaired. A `String` would force a choice
+between rejecting a non-UTF-8 request and lossily replacing its bytes with
+`U+FFFD`, and both would hand the caller something other than what the child
+sent. Bytes keep the request faithful and leave the encoding decision where it
+belongs, with the caller that knows what the host clipboard wants. A plain
+`Vec<u8>` is used rather than a small-string type: the point is that an
 unmodeled selection name survives instead of degrading to `Other` with the name
 dropped, and selection names are short enough that the extra allocation is not
 worth a dependency or a hand-rolled type.
@@ -138,14 +145,14 @@ worth a dependency or a hand-rolled type.
 selections termnix models. Collapsing to those two now and adding `Other` later
 would make a caller's existing `match` on `ClipboardSelection` non-exhaustive,
 so the version that keeps the name is the one that stays compatible; the cost
-is a `String` in a type most callers will match on two arms and ignore.
+is a `Vec<u8>` in a type most callers will match on two arms and ignore.
 
 `append` is the append sign: a `+` prefix on the payload
 (`ESC ] 52 ; c ; +<b64> ST`) is xterm's request to append. It is not a termnix
 concept - it is the child's own distinction, and it is recorded verbatim rather
 than collapsed, so a caller mirroring the cut into the host clipboard can
 mirror an append as an append. An empty payload (`ESC ] 52 ; c ; ST`) is the
-"clear the selection" form: it decodes to the empty string, which termnix keeps
+"clear the selection" form: it decodes to no bytes, which termnix keeps
 as a request with empty `text` rather than as nothing, so the caller can tell
 "clear it" apart from "never asked". The two are different: `None` from
 `take_clipboard()` means nothing is pending, and `Some(request)` with empty text

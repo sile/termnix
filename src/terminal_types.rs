@@ -306,7 +306,12 @@ pub enum ClipboardSelection {
     /// The primary selection (`p`).
     Primary,
     /// A selection name termnix does not model, kept as written.
-    Other(String),
+    ///
+    /// The name is raw bytes rather than a string: `Pc` is whatever the child
+    /// sent between the framing semicolons and is not required to be valid
+    /// UTF-8, and a name the caller may have to hand back to a host clipboard
+    /// is worth keeping unrepaired.
+    Other(Vec<u8>),
 }
 
 /// An OSC 52 clipboard request, retained for the caller to take.
@@ -321,9 +326,13 @@ pub enum ClipboardSelection {
 pub struct ClipboardRequest {
     /// Decoded selection text.
     ///
-    /// An empty string is meaningful: `ESC ] 52 ; c ; ST` asks for the
+    /// Raw bytes rather than a string: OSC 52 carries an opaque payload, so
+    /// the decoded bytes need not be valid UTF-8 and must not be repaired
+    /// (what the child asked to copy is whatever it asked to copy).
+    ///
+    /// An empty value is meaningful: `ESC ] 52 ; c ; ST` asks for the
     /// selection to be cleared, which is not the same as no request at all.
-    pub text: String,
+    pub text: Vec<u8>,
     /// Which selection the application addressed.
     pub selection: ClipboardSelection,
     /// Whether the application asked to append instead of replace.
