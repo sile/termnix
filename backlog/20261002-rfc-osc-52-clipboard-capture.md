@@ -107,14 +107,14 @@ collapsed:
 
 ```rust
 /// A selection an OSC 52 sequence addressed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Selection {
     /// The system clipboard (`c`), also what a missing selection means.
     Clipboard,
     /// The primary selection (`p`).
     Primary,
     /// A selection name termnix does not model, kept as written.
-    Other(SmallString),
+    Other(String),
 }
 
 /// An OSC 52 clipboard request, retained for the caller to take.
@@ -129,9 +129,16 @@ pub struct ClipboardRequest {
 }
 ```
 
-`SmallString` above is a placeholder for whichever small-string type the
-implementation picks (a `String` is fine); the point is that an unmodeled
-selection name survives instead of degrading to `Other` with the name dropped.
+A plain `String` is used rather than a small-string type: the point is that an
+unmodeled selection name survives instead of degrading to `Other` with the name
+dropped, and selection names are short enough that the extra allocation is not
+worth a dependency or a hand-rolled type.
+
+`Other` is kept from the first version even though `c` and `p` are the only
+selections termnix models. Collapsing to those two now and adding `Other` later
+would make a caller's existing `match` on `Selection` non-exhaustive, so the
+version that keeps the name is the one that stays compatible; the cost is a
+`String` in a type most callers will match on two arms and ignore.
 
 `append` is the append sign: a `+` prefix on the payload
 (`ESC ] 52 ; c ; +<b64> ST`) is xterm's request to append. It is not a termnix
@@ -151,10 +158,10 @@ impl TerminalState {
     /// Takes the pending OSC 52 request, if any.
     ///
     /// Returns the request and clears it, so one sequence is acted on once.
-    /// Returns `None` when no request is pending, when the previous one was
-    /// already taken, or when the request was dropped for exceeding
-    /// [`TerminalState::CLIPBOARD_ELEMENTS_MAX`]. A request whose decoded text
-    /// is empty is still returned.
+    /// Returns `None` when no request is pending or when the previous one was
+    /// already taken. A request whose decoded text is empty is still returned,
+    /// because an empty payload is the "clear the selection" form and is not
+    /// the same as no request.
     pub fn take_clipboard(&mut self) -> Option<ClipboardRequest>;
 }
 ```
@@ -209,27 +216,25 @@ same standard alphabet every OSC 52 writer uses; a payload that does not decode
 sets nothing. Failing a decode must not produce a request with mangled text,
 because the caller has no way to tell a mangled request from a real one.
 
-The size cap the structure implies is made explicit rather than hidden: the
-limit is stated in the documentation as
-`const CLIPBOARD_ELEMENTS_MAX: usize = 1000;` beside the method, and is not a
-separate knob. The base64 of a large cut would otherwise turn one feed into a
-hundred-megabyte allocation; the cap is a decision about the API's behavior, so
-it belongs in the API rather than in an internal length check. A request whose
-payload exceeds the cap is treated exactly like a decode failure - stored as
-nothing, silently, with `revision()` unchanged.
+There is no size cap beyond what the protocol itself imposes. A cap was
+considered and dropped: the bytes travel over a local PTY between the child and
+the process that embeds it, so termnix cannot be made to allocate more than the
+child already allocated to write the sequence, and the cap that actually
+matters belongs to whichever side owns a clipboard to protect. A host that
+wants to reject an oversized cut can measure `text` after taking it, and a
+child can bound what it sends; neither needs termnix to decide for it. Adding a
+cap later is not a breaking change, while removing one would discard values
+callers may already be handling, so the bounded choice is to leave it out until
+something actually needs it.
 
-The exact unit the cap counts (decoded bytes, or base64 characters on the
-wire) is left to the implementation; what matters here is that there is one
-bounded number and that exceeding it drops the request rather than allocating.
-
-There is a second bound implied by the protocol: because `vte` splits OSC
+One bound is implied by the protocol and stays: because `vte` splits OSC
 parameters on `;`, a payload containing `;` cannot round-trip through
 `osc_dispatch` in the first place. That is a protocol fact, not a choice, and it
 does not need a separate check in the implementation: a sequence that cannot be
 split cannot be decoded, and a payload that is not decodable stores nothing.
-The cap and the delimiter together are why OSC 52 cannot be used to push
-arbitrary bytes through the parameter channel, which is worth saying in the
-doc comment so a future reader does not try.
+That delimiter is why OSC 52 cannot be used to push arbitrary bytes through the
+parameter channel, which is worth saying in the doc comment so a future reader
+does not try.
 
 ### Failure is not observed
 
@@ -286,10 +291,12 @@ this RFC is the step that keeps them long enough to forward.
   none existed, which is a new thing to get right (and to document as not
   being a real clipboard - a caller that takes a request and drops it is
   indistinguishable from a caller that never looked).
-- Two bounds (the element cap and the `;` delimiter) mean not all OSC 52
-  sequences are representable, and the failure is silent in all cases. Silent
-  is consistent with the rest of the protocol's error model, but it does mean a
-  caller cannot fully verify what it did not see.
+- The `;` delimiter means not all OSC 52 sequences are representable, and the
+  failure is silent. Silent is consistent with the rest of the protocol's error
+  model, but it does mean a caller cannot fully verify what it did not see.
+- With no cap, a caller that takes a request is trusted to decide what to do
+  with a very large one. That is more allocation than a bounded API would
+  allow, and it is paid only by callers that ask for the value.
 
 ## Rationale and alternatives
 
@@ -329,18 +336,11 @@ this RFC is the step that keeps them long enough to forward.
 
 ## Unresolved questions
 
-- Does the retained selection type earn its keep in the first version, or
-  should `Selection` collapse to the two meaningful names and drop `Other`? The
-  RFC keeps `Other` as written because dropping the name is the kind of loss
-  the paste-payload RFC argued against, but the field is only useful to a
-  caller that intends to honour a selection other than `c`.
-- The value cap is hard-coded (see above). A configurable cap, or a cap
-  expressed per caller, is left for later; if no consumer ever wants the number
-  to be different, a constant is right and this question closes itself.
-- The failure mode for an over-cap payload is "store nothing, silently". If a
-  caller turns out to need to *know*, the take could report the drop - but that
-  adds a mode to a return type that is currently one value or none, so it is
-  not added speculatively.
+- Whether a cap is ever needed is left open. It is deliberately absent (see
+  above); if a real caller turns out to need one, adding a constant later is
+  not a breaking change, and where the limit belongs is then a question with an
+  actual answer rather than a guess. `Selection::Other` is *not* open; it is
+  kept (see above).
 
 ## Future possibilities
 
@@ -352,3 +352,12 @@ this RFC is the step that keeps them long enough to forward.
   input side of it and OSC 52 passthrough stops needing a consumer at all.
 - Other selections (primary, or the numbered cut buffers) become usable without
   another protocol change if `Selection` keeps their names.
+- If a second family of consumed-once events appears (another sequence whose
+  payload a caller takes rather than reads), the take-style accessors could
+  collapse into a single one: an `Event` enum with a variant per family, and a
+  single `take_event() -> Option<Event>` that a caller drains from one place
+  instead of polling one method per family. It is not done here because one
+  family does not justify the indirection, and the enum still grows a variant
+  per family, which is the same work at the call site as a method per family.
+  The reply buffer is not part of this: it is a byte stream, not an event (see
+  The accessor).
