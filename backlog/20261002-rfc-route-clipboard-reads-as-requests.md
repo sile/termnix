@@ -116,6 +116,25 @@ The current `if payload == b"?" { return; }` becomes the push above. Everything
 after it (the `+` append split, the base64 decode, the push) is unchanged and
 still produces the set request.
 
+### Where each number goes
+
+OSC 52 is the first number whose arm produces more than one kind of message, so
+this is where the dispatch outcomes are worth stating together. The whole rule:
+
+| What arrives | The crate does | The caller sees |
+| --- | --- | --- |
+| OSC 52, payload `?` | recognizes a read, resolves the selection | `GetClipboard { selection }` |
+| OSC 52, any other payload | decodes the base64, applies the `+` | `SetClipboard { text, selection, append }` |
+| A number the crate interprets (title, clipboard) | decodes it | the variant for that number |
+| Any other number | splits the fields, decodes nothing | `Other { id, params }` |
+
+The middle two rows are the same rule seen twice: **a number the crate
+interprets has a destination of its own, and never reaches the passthrough
+arm.** Only the last row is uninterpreted. OSC 52 does not move between rows
+when its payload is `?` - it stays an interpreted number, and only the message
+the arm produces changes. That is why a read is a typed variant here and not an
+`Other` with id `b"52"`: the crate did interpret it, and the type says so.
+
 ### The variant, and the write it pairs with
 
 ```rust
