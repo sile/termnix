@@ -112,9 +112,9 @@ pub struct Hyperlink {
     pub uri: String,
     /// The link's `id` parameter, if the child gave one.
     ///
-    /// Cells with the same `id` belong to the same logical link even across
-    /// separate `OSC 8` runs; a terminal that underlines links uses it to
-    /// avoid drawing a break between adjacent runs of one link.
+    /// The child uses `id` to say that two separate runs are one logical
+    /// link, so a terminal that underlines links can avoid drawing a break
+    /// between them.
     pub id: Option<String>,
 }
 ```
@@ -129,6 +129,15 @@ controls and which two runs may share.
 `(uri, id)`), and the id is an index into it. Two `OSC 8` sequences with the
 same `(uri, id)` resolve to the same id, so equal runs compare equal as cells;
 two with the same URI but different `id` do not.
+
+The id is what lets a caller tell *adjacent* runs apart. When a child closes
+one link and opens another with no character between them, the cells of the
+first run carry the first id and the cells of the second carry the second, so
+the boundary is in the grid even though nothing was drawn there. The one case
+that is *not* distinguished is two runs that share `(uri, id)`: they resolve to
+one id by construction, because that is what the child's `id` asked for - a
+caller that needs to see a boundary between two such runs has to get the child
+to use distinct `id`s. This RFC does not second-guess the child's grouping.
 
 ### The getter
 
@@ -228,6 +237,13 @@ not a choice here. Neither changes the shape of this RFC.
   can hold a `HyperlinkId` whose entry is gone, and `hyperlink()` returns `None`
   for it. This is correct but subtle; it needs the doc note above, and a caller
   that stashed a `HyperlinkId` across a reset must handle `None`.
+- **The boundary of two runs that share `(uri, id)` is not recoverable from the
+  id.** Cells of two adjacent runs of one logical link carry the same id, so a
+  caller cannot tell from the grid alone how many `OSC 8` sequences the child
+  sent or where each run began; it sees one linked region. This is the child's
+  grouping being honoured rather than a loss, but a caller that wants to mark
+  the runs individually cannot, and the only fix is on the child's side
+  (distinct `id`s).
 - **OSC 8 has no read form.** Unlike OSC 4 and the colour sequences, there is
   no `?` query for a hyperlink, so this RFC does not exercise the policy's
   "answer a query from state" path. That path belongs to the colour RFC.
@@ -255,6 +271,14 @@ not a choice here. Neither changes the shape of this RFC.
   common case, `OSC 8 ; ; URI`) would not compare equal unless the crate also
   compares URIs. Interning on `(uri, id)` gives a small id and the equality the
   caller wants.
+- **Use a `char` as the cell's link reference instead of a `HyperlinkId`.**
+  Rejected: a `char` is a character, and a link is not one, so the value would
+  be a `u32` wearing a character's name - and a worse one, since `Option<char>`
+  has no niche and would make `Style` larger than `Option<NonZeroU32>` does,
+  while the surrogate range wastes codepoints that could otherwise be ids. It
+  also would not change the adjacent-run question either way: separate links
+  get separate values per cell whether the value is a `char` or a `u32`, and
+  two runs sharing `(uri, id)` get the same value by the child's request.
 - **Ignore unknown `params` by dropping the sequence.** Rejected: the sequence
   is understood (it is a hyperlink); only an unmodelled parameter is ignored,
   which is the same relationship the crate has to SGR values it does not
