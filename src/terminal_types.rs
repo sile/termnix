@@ -290,6 +290,51 @@ impl Default for SavedCursor {
     }
 }
 
+/// The selection an OSC 52 sequence addressed.
+///
+/// OSC 52 names the selection it targets (`ESC ] 52 ; <Pc> ; <Pd> ST`). `c` and
+/// `p` are the two termnix gives a meaning to; any other name is kept in
+/// [`ClipboardSelection::Other`] rather than dropped, so a caller that honours
+/// one can still see it. Names follow the xterm convention and may grow with
+/// host terminal practice; an unmodeled name lands in `Other` instead of being
+/// discarded, which is what keeps a later selection name from needing a new
+/// variant.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ClipboardSelection {
+    /// The system clipboard (`c`), also what a missing selection means.
+    Clipboard,
+    /// The primary selection (`p`).
+    Primary,
+    /// A selection name termnix does not model, kept as written.
+    Other(String),
+}
+
+/// An OSC 52 clipboard request, retained for the caller to take.
+///
+/// The sequence asks the terminal to change a selection; termnix does not own
+/// a clipboard, so it records the ask and lets the caller act on it. The value
+/// is read once, through [`TerminalState::take_clipboard()`], because the ask
+/// is an event rather than a property (see that method for why it is a take).
+///
+/// [`TerminalState::take_clipboard()`]: crate::TerminalState::take_clipboard
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardRequest {
+    /// Decoded selection text.
+    ///
+    /// An empty string is meaningful: `ESC ] 52 ; c ; ST` asks for the
+    /// selection to be cleared, which is not the same as no request at all.
+    pub text: String,
+    /// Which selection the application addressed.
+    pub selection: ClipboardSelection,
+    /// Whether the application asked to append instead of replace.
+    ///
+    /// This is the `+` prefix on the payload (`ESC ] 52 ; c ; +<b64> ST`),
+    /// xterm's append form. It is the child's own distinction, recorded
+    /// verbatim so a caller mirroring the text into a host clipboard can
+    /// mirror an append as an append.
+    pub append: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::Color;
