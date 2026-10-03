@@ -325,11 +325,12 @@ decisions in other documents. If the follow-ons are never written, it is a
 
 ## Unresolved questions
 
-- **Is "drop" ever allowed as a third fallback?** The policy says passthrough
-  is the fallback for an unmodelled number, which leaves no room for deliberate
-  dropping. A number whose payload is known to be dangerous to deliver (if any
-  such turns out to exist) might warrant dropping instead, and whether the
-  policy needs an explicit "do not deliver" row is open.
+- **Is "drop" ever a third fallback?** Settled for now: no. Passthrough is
+  the fallback for an unmodelled number, and nothing in the known OSC space
+  is unsafe to deliver, so the policy keeps no "do not deliver" row. The
+  `_ => {}` arm is not a deliberate drop but the absence of passthrough, and
+  the passthrough proposal replaces it. If a sequence that must be withheld
+  ever turns up, this is where the row would be added.
 - **Does a state-row value ever need its own event?** The policy allows a
   state value to have a separate notification when the *change* is something a
   caller must act on, but no current or planned sequence is an example, so
