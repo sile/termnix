@@ -108,7 +108,7 @@ collapsed:
 ```rust
 /// A selection an OSC 52 sequence addressed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Selection {
+pub enum ClipboardSelection {
     /// The system clipboard (`c`), also what a missing selection means.
     Clipboard,
     /// The primary selection (`p`).
@@ -123,7 +123,7 @@ pub struct ClipboardRequest {
     /// Decoded selection text.
     pub text: String,
     /// Which selection the application addressed.
-    pub selection: Selection,
+    pub selection: ClipboardSelection,
     /// Whether the application asked to append instead of replace.
     pub append: bool,
 }
@@ -136,9 +136,9 @@ worth a dependency or a hand-rolled type.
 
 `Other` is kept from the first version even though `c` and `p` are the only
 selections termnix models. Collapsing to those two now and adding `Other` later
-would make a caller's existing `match` on `Selection` non-exhaustive, so the
-version that keeps the name is the one that stays compatible; the cost is a
-`String` in a type most callers will match on two arms and ignore.
+would make a caller's existing `match` on `ClipboardSelection` non-exhaustive,
+so the version that keeps the name is the one that stays compatible; the cost
+is a `String` in a type most callers will match on two arms and ignore.
 
 `append` is the append sign: a `+` prefix on the payload
 (`ESC ] 52 ; c ; +<b64> ST`) is xterm's request to append. It is not a termnix
@@ -339,8 +339,8 @@ this RFC is the step that keeps them long enough to forward.
 - Whether a cap is ever needed is left open. It is deliberately absent (see
   above); if a real caller turns out to need one, adding a constant later is
   not a breaking change, and where the limit belongs is then a question with an
-  actual answer rather than a guess. `Selection::Other` is *not* open; it is
-  kept (see above).
+  actual answer rather than a guess. `ClipboardSelection::Other` is *not* open;
+  it is kept (see above).
 
 ## Future possibilities
 
@@ -351,7 +351,7 @@ this RFC is the step that keeps them long enough to forward.
 - If termnix ever grows a host-terminal abstraction, a take here becomes the
   input side of it and OSC 52 passthrough stops needing a consumer at all.
 - Other selections (primary, or the numbered cut buffers) become usable without
-  another protocol change if `Selection` keeps their names.
+  another protocol change if `ClipboardSelection` keeps their names.
 - If a second family of consumed-once events appears (another sequence whose
   payload a caller takes rather than reads), the take-style accessors could
   collapse into a single one: an `Event` enum with a variant per family, and a
