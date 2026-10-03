@@ -9,8 +9,11 @@ One paragraph. What is being proposed, and why should anyone care?
 ## Motivation
 
 What problem does this solve? Describe the situation before this change and
-why the current behavior is insufficient. Include concrete examples from real
-use (for example, from a project that consumes termnix) where possible.
+why the current behavior is insufficient. Include a concrete example of the
+caller this affects — a host application embedding a child session, the code
+that drives the PTY — described by what it does (see Purpose in `README.md`).
+Do not name a consumer of this crate, and do not describe the caller in words
+that only make sense to someone who already knows it.
 
 ## Guide-level explanation
 

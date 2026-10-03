@@ -23,6 +23,20 @@ The rule is one-way: `src/` and `README.md` must never point at a file under
 sense without it. The reverse is fine and expected — a proposal may cite
 `src/` and `README.md` freely to explain the code and docs it wants to change.
 
+An item is self-contained in the same way. It may cite this repository's code
+and docs — `src/`, `README.md`, `Cargo.toml`, the tests, the rustdoc of the API
+being changed — because those paths are always present. It may **not** require
+knowledge of a crate that merely *consumes* this one: a consumer is not part of
+this repository, its name means nothing on its own, and an item that only makes
+sense to someone who already knows that consumer is not self-contained.
+Describe the caller by what it does — "a host application that embeds a child
+session", "the code that drives the PTY" — using words that name the role and
+nothing else. The same applies to a project the item was written while looking
+at: what was learned from it belongs in the item as a described behavior, not
+as a name. A crate this repository *depends on* is not affected by this: it is
+already part of this repository's world, appears in `Cargo.toml`, and may be
+named directly when the constraint it imposes matters.
+
 ## Layout
 
 ```
