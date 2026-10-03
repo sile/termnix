@@ -1,6 +1,6 @@
 # RFC: Record the OSC 52 clipboard sequence instead of dropping it
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -372,3 +372,34 @@ this RFC is the step that keeps them long enough to forward.
   per family, which is the same work at the call site as a method per family.
   The reply buffer is not part of this: it is a byte stream, not an event (see
   The accessor).
+
+## Outcome
+
+Implemented in [#15](https://github.com/sile/termnix/pull/15) (merged as `aee9c4f`).
+
+`TerminalState` now recognizes OSC 52 and retains the request instead of
+discarding it. `osc_dispatch` gained a `"52"` arm calling a new
+`osc_clipboard()`, which parses `ESC ] 52 ; <Pc> ; <Pd> ST`, decodes the
+base64 payload with a hand-written `decode_base64()`, and stores a
+`ClipboardRequest` in a new `pub(crate) clipboard` field. A caller reads it
+once through `take_clipboard()`, added beside `title()`.
+
+The public types are new in `src/terminal_types.rs`: `ClipboardSelection`
+(`Clipboard` for `c`, `Primary` for `p`, `Other(Vec<u8>)` for anything else)
+and `ClipboardRequest { text, selection, append }`. The payload and an
+unmodeled selection name are `Vec<u8>` rather than `String`: both are opaque to
+the terminal, so a request that is not valid UTF-8 is kept as sent instead of
+being repaired or rejected. `append` records the `+` form verbatim.
+
+No cap is imposed on the payload, matching the settled decision that a local
+PTY has no amplification to guard against and that limiting size is the
+taking caller's call. A read request (`?`) is not answered and stores nothing,
+because the crate holds no clipboard to read from.
+
+`clipboard` is not part of `VisibleScalars` and does not move `revision`, so a
+child that cuts text does not tell a repainting caller to repaint; `soft_reset`
+(RIS) clears it. `TerminalState`'s OSC list and `take_clipboard()` document
+that the accessor takes `&mut self` deliberately, and why it is not shaped like
+the reply buffer.
+
+The scope is unchanged from what is described above.
