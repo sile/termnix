@@ -6,7 +6,7 @@ use vte::Perform;
 use crate::terminal::TerminalState;
 use crate::terminal_buffer::Screen;
 use crate::terminal_types::{
-    ClipboardRequest, ClipboardSelection, Color, MouseReporting, Position, SavedCursor, Style,
+    ClipboardSelection, Color, MouseReporting, OscRequest, Position, SavedCursor, Style,
     TerminalModes,
 };
 
@@ -96,16 +96,11 @@ impl Perform for Emulator<'_> {
 }
 
 impl Emulator<'_> {
-    /// Records an OSC 52 clipboard request (`ESC ] 52 ; <Pc> ; <Pd> ST`).
+    /// Records an OSC 52 clipboard write (`ESC ] 52 ; <Pc> ; <Pd> ST`).
     ///
-    /// `params[1]` names the selection and `params[2]` is the payload, whose
-    /// default form is base64. The literal `?` is a *read* request rather than
-    /// a write and is not answered (termnix holds no clipboard to read from);
-    /// a payload that does not decode, including that one, stores nothing.
-    ///
-    /// A `+` prefix on the payload is xterm's append form, recorded rather
-    /// than acted on. An empty payload decodes to no bytes, which is kept as a
-    /// request: "clear the selection" is not the same as "never asked".
+    /// The write is pushed onto the caller's OSC request queue as
+    /// [`OscRequest::SetClipboard`]; termnix holds no clipboard, so the ask is
+    /// all it can keep.
     ///
     /// `vte` splits OSC parameters on `;`, so a payload containing `;` cannot
     /// reach here intact; that is a property of the protocol's framing rather
@@ -135,7 +130,7 @@ impl Emulator<'_> {
             return;
         };
 
-        self.term.clipboard = Some(ClipboardRequest {
+        self.term.osc_requests.push_back(OscRequest::SetClipboard {
             text,
             selection,
             append,
@@ -270,7 +265,7 @@ impl TerminalState {
         // RIS restores the terminal, and a pending request belongs to the
         // session being reset; leaving it would let a caller act on an ask
         // from before the reset.
-        self.clipboard = None;
+        self.osc_requests.clear();
         self.scroll_top = 0;
         self.scroll_bottom = size.rows.get().saturating_sub(1);
         // RIS — DEC terminal documentation:

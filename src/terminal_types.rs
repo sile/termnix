@@ -314,34 +314,44 @@ pub enum ClipboardSelection {
     Other(Vec<u8>),
 }
 
-/// An OSC 52 clipboard request, retained for the caller to take.
+/// Something a child asked for in an OSC sequence, retained for the caller.
 ///
-/// The sequence asks the terminal to change a selection; termnix does not own
-/// a clipboard, so it records the ask and lets the caller act on it. The value
-/// is read once, through [`TerminalState::take_clipboard()`], because the ask
-/// is an event rather than a property (see that method for why it is a take).
+/// termnix interprets a handful of OSC numbers and does not own the resources
+/// they name (a clipboard, later a window title). For those it records the ask
+/// and leaves acting on it to the caller. Every such ask arrives through the
+/// one accessor [`TerminalState::take_osc_request()`], which returns one
+/// variant at a time; the enum is the whole channel, so the family a caller
+/// cares about is an arm it matches rather than a method it remembers to call.
 ///
-/// [`TerminalState::take_clipboard()`]: crate::TerminalState::take_clipboard
+/// [`TerminalState::take_osc_request()`]: crate::TerminalState::take_osc_request
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClipboardRequest {
-    /// Decoded selection text.
+pub enum OscRequest {
+    /// An OSC 52 clipboard write (`ESC ] 52 ; <Pc> ; <Pd> ST`).
     ///
-    /// Raw bytes rather than a string: OSC 52 carries an opaque payload, so
-    /// the decoded bytes need not be valid UTF-8 and must not be repaired
-    /// (what the child asked to copy is whatever it asked to copy).
-    ///
-    /// An empty value is meaningful: `ESC ] 52 ; c ; ST` asks for the
-    /// selection to be cleared, which is not the same as no request at all.
-    pub text: Vec<u8>,
-    /// Which selection the application addressed.
-    pub selection: ClipboardSelection,
-    /// Whether the application asked to append instead of replace.
-    ///
-    /// This is the `+` prefix on the payload (`ESC ] 52 ; c ; +<b64> ST`),
-    /// xterm's append form. It is the child's own distinction, recorded
-    /// verbatim so a caller mirroring the text into a host clipboard can
-    /// mirror an append as an append.
-    pub append: bool,
+    /// The sequence asks the terminal to change a selection; termnix does not
+    /// own a clipboard, so the ask is what a caller receives.
+    SetClipboard {
+        /// Decoded selection text.
+        ///
+        /// Raw bytes rather than a string: OSC 52 carries an opaque payload,
+        /// so the decoded bytes need not be valid UTF-8 and must not be
+        /// repaired (what the child asked to copy is whatever it asked to
+        /// copy).
+        ///
+        /// An empty value is meaningful: `ESC ] 52 ; c ; ST` asks for the
+        /// selection to be cleared, which is not the same as no request at
+        /// all.
+        text: Vec<u8>,
+        /// Which selection the application addressed.
+        selection: ClipboardSelection,
+        /// Whether the application asked to append instead of replace.
+        ///
+        /// This is the `+` prefix on the payload
+        /// (`ESC ] 52 ; c ; +<b64> ST`), xterm's append form. It is the
+        /// child's own distinction, recorded verbatim so a caller mirroring
+        /// the text into a host clipboard can mirror an append as an append.
+        append: bool,
+    },
 }
 
 #[cfg(test)]

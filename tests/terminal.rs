@@ -857,6 +857,31 @@ fn term(rows: u16, cols: u16) -> termnix::TerminalState {
     termnix::TerminalState::new(size(rows, cols))
 }
 
+/// Takes the next OSC request and unwraps it as a `SetClipboard`, failing the
+/// test if the request belongs to another variant (there is only one today,
+/// but the match is the point of the channel).
+fn set_clipboard(t: &mut termnix::TerminalState) -> Option<ClipboardWrite> {
+    match t.take_osc_request()? {
+        termnix::OscRequest::SetClipboard {
+            text,
+            selection,
+            append,
+        } => Some(ClipboardWrite {
+            text,
+            selection,
+            append,
+        }),
+    }
+}
+
+/// The fields of an [`OscRequest::SetClipboard`](termnix::OscRequest::SetClipboard)
+/// unpacked, so a test can assert on them directly.
+struct ClipboardWrite {
+    text: Vec<u8>,
+    selection: termnix::ClipboardSelection,
+    append: bool,
+}
+
 fn text_at(term: &termnix::TerminalState, row: u16) -> String {
     let cols = term.size().cols.get();
     let mut out = String::new();
@@ -1182,16 +1207,38 @@ fn osc_52_clipboard_is_recorded_and_taken_once() {
     use termnix::ClipboardSelection;
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
-    let request = t.take_clipboard().expect("request should be pending");
+    let request = set_clipboard(&mut t).expect("request should be pending");
     assert_eq!(request.text, b"hello");
     assert_eq!(request.selection, ClipboardSelection::Clipboard);
     assert!(!request.append);
     // The accessor is a take: the same sequence is not re-delivered on a later
     // feed, which is what keeps "the child asked once" from becoming "the
     // caller acts once per repaint".
-    assert!(t.take_clipboard().is_none());
+    assert!(t.take_osc_request().is_none());
     t.feed(b"");
-    assert!(t.take_clipboard().is_none());
+    assert!(t.take_osc_request().is_none());
+}
+
+#[test]
+fn osc_52_requests_queue_and_drain_oldest_first() {
+    // A queue, not a slot: two asks in one feed are both kept, in order. A
+    // single-slot design would have kept only the second.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]52;p;d29ybGQ=\x07");
+    assert_eq!(set_clipboard(&mut t).unwrap().text, b"hello");
+    assert_eq!(set_clipboard(&mut t).unwrap().text, b"world");
+    assert!(t.take_osc_request().is_none());
+}
+
+#[test]
+fn osc_52_queue_keeps_one_entry_per_identical_request() {
+    // Requests are events, not a latest-value-wins property: two identical
+    // asks are two events and both survive, rather than collapsing to one.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]52;c;aGVsbG8=\x07");
+    assert!(set_clipboard(&mut t).is_some());
+    assert!(set_clipboard(&mut t).is_some());
+    assert!(t.take_osc_request().is_none());
 }
 
 #[test]
@@ -1200,7 +1247,7 @@ fn osc_52_missing_selection_means_the_clipboard() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;;aGVsbG8=\x07");
     assert_eq!(
-        t.take_clipboard().unwrap().selection,
+        set_clipboard(&mut t).unwrap().selection,
         ClipboardSelection::Clipboard
     );
 }
@@ -1211,12 +1258,12 @@ fn osc_52_names_other_selections() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;p;aGVsbG8=\x07");
     assert_eq!(
-        t.take_clipboard().unwrap().selection,
+        set_clipboard(&mut t).unwrap().selection,
         ClipboardSelection::Primary
     );
     t.feed(b"\x1b]52;x;aGVsbG8=\x07");
     assert_eq!(
-        t.take_clipboard().unwrap().selection,
+        set_clipboard(&mut t).unwrap().selection,
         ClipboardSelection::Other(b"x".to_vec())
     );
 }
@@ -1225,7 +1272,7 @@ fn osc_52_names_other_selections() {
 fn osc_52_records_an_append() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;+aGVsbG8=\x07");
-    let request = t.take_clipboard().unwrap();
+    let request = set_clipboard(&mut t).unwrap();
     assert_eq!(request.text, b"hello");
     assert!(request.append);
 }
@@ -1236,7 +1283,7 @@ fn osc_52_empty_payload_is_a_clear_request() {
     // "never asked": `None` is no request, `Some` with empty text is this.
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;\x07");
-    let request = t.take_clipboard().expect("clear is still a request");
+    let request = set_clipboard(&mut t).expect("clear is still a request");
     assert!(request.text.is_empty());
 }
 
@@ -1244,7 +1291,7 @@ fn osc_52_empty_payload_is_a_clear_request() {
 fn osc_52_read_request_is_not_a_request() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;?\x07");
-    assert!(t.take_clipboard().is_none());
+    assert!(t.take_osc_request().is_none());
 }
 
 #[test]
@@ -1252,7 +1299,7 @@ fn osc_52_invalid_base64_stores_nothing() {
     let mut t = term(1, 8);
     // `!` is not in the base64 alphabet.
     t.feed(b"\x1b]52;c;!!!\x07");
-    assert!(t.take_clipboard().is_none());
+    assert!(t.take_osc_request().is_none());
 }
 
 #[test]
@@ -1261,7 +1308,7 @@ fn osc_52_payload_need_not_be_utf8() {
     // is stored as-is rather than repaired or rejected.
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;/w==\x07");
-    assert_eq!(t.take_clipboard().unwrap().text, vec![0xff]);
+    assert_eq!(set_clipboard(&mut t).unwrap().text, vec![0xff]);
 }
 
 #[test]
@@ -1272,7 +1319,7 @@ fn osc_52_other_selection_need_not_be_utf8() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;\xff;aGVsbG8=\x07");
     assert_eq!(
-        t.take_clipboard().unwrap().selection,
+        set_clipboard(&mut t).unwrap().selection,
         ClipboardSelection::Other(vec![0xff])
     );
 }
@@ -1286,7 +1333,7 @@ fn osc_52_does_not_advance_revision() {
     let base = t.revision();
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
     assert_eq!(t.revision(), base);
-    let _ = t.take_clipboard();
+    let _ = t.take_osc_request();
     assert_eq!(t.revision(), base);
 }
 
@@ -1298,7 +1345,7 @@ fn osc_52_payload_cannot_contain_a_semicolon() {
     // parameter channel.
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=;x\x07");
-    assert_eq!(t.take_clipboard().unwrap().text, b"hello");
+    assert_eq!(set_clipboard(&mut t).unwrap().text, b"hello");
 }
 
 #[test]
@@ -1308,7 +1355,7 @@ fn osc_52_survives_a_hard_reset() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
     t.feed(b"\x1bc");
-    assert!(t.take_clipboard().is_none());
+    assert!(t.take_osc_request().is_none());
 }
 
 #[test]
