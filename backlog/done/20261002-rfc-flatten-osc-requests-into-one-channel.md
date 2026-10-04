@@ -1,6 +1,6 @@
 # RFC: Take consumed-once OSC requests through one `take_osc_request()`
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -362,3 +362,39 @@ without knowing the OSC specs, and it is what the rest of the series uses.
   property of the channel rather than of any one request - a reason to settle
   the bound question in this RFC's later revision rather than in a per-family
   one.
+
+## Outcome
+
+Implemented in [#16](https://github.com/sile/termnix/pull/16) (merged as `7fa537e`).
+
+The channel landed as proposed. `TerminalState::take_osc_request()` replaced
+`take_clipboard()` and returns `Option<OscRequest>`; the queue is a
+`VecDeque` and the first variant is `SetClipboard { text, selection, append }`,
+carrying the fields the removed `ClipboardRequest` struct held. A caller drains
+with `while let Some(request) = t.take_osc_request()`, which is the documented
+idiom.
+
+Two of the open questions were settled in the implementation rather than left
+for a later revision. The queue is unbounded, matching the reasoning above:
+this crate sits on a local PTY, so a child that floods requests is already
+flooding its own terminal, and a bound needs an overflow policy that no caller
+has asked for yet; adding one later is not breaking. `OscRequest` went into
+`terminal_types.rs` beside `ClipboardSelection`, following the crate's habit of
+keeping public data types there rather than beside the accessor.
+
+The variant-name question is untouched, because the implementation adds only
+`SetClipboard`; `GetClipboard`, `SetTitle`, and `Other` are still predictions of
+this series rather than settled names.
+
+One piece of state from the old design is gone with it: the `clipboard` field's
+`Option` slot is replaced by the queue, and `soft_reset` now clears the queue
+rather than nulling the slot. The RFC did not spell that out, but it follows
+from the queue replacing the slot - a reset that left earlier requests behind
+would let a caller act on asks from a session that has already been reset.
+
+The public surface changed as the RFC predicted: `ClipboardRequest` is removed,
+`OscRequest` and `take_osc_request()` are added, and `take_clipboard()` is gone.
+Because `take_clipboard()` had never been released, this removal reached no
+caller.
+
+The scope is unchanged from what is described above.
