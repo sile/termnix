@@ -95,12 +95,16 @@ simply does not handle - which is what it does today, except that deciding
 
 ```rust
 pub enum ChildRequest {
-    /// The child asked to change a selection (OSC 52).
+    /// The child asked to change a selection (OSC 52 set).
     SetClipboard {
         text: Vec<u8>,
         selection: ClipboardSelection,
         append: bool,
     },
+    /// The child asked for a selection's contents (OSC 52 read).
+    GetClipboard { selection: ClipboardSelection },
+    /// The child rang the bell (`BEL`).
+    RingBell,
     /// An OSC sequence the crate does not interpret, handed over as-is.
     ///
     /// `id` is the identifier field and `params` the argument fields, both
@@ -172,11 +176,12 @@ by the same reasoning: an interpreted sequence has a destination of its own.
 
 ### Read requests
 
-An OSC 52 read request (`ESC ] 52 ; c ; ? ST`) is already dropped by
-`osc_clipboard` before this RFC. This RFC does not change that path: the "52"
-arm stays interpreted, so a read request never becomes an `OtherOsc`. Routing
-read requests is a separate question the policy leaves open, and nothing here
-prejudges it.
+An OSC 52 read request (`ESC ] 52 ; c ; ? ST`) is interpreted, not unmodelled:
+`osc_clipboard` recognizes `?` and resolves the selection, delivering a
+`ChildRequest::GetClipboard`. The "52" arm stays interpreted here, so a read
+never becomes an `OtherOsc` - it is a number the crate understands, and it has
+its own variant. Passthrough exists for numbers the crate does not interpret,
+and `52` is not one of them however its payload reads.
 
 ### Ordering
 
@@ -267,10 +272,10 @@ new bound question beyond the one that buffer has.
   a later proposal can lift the common case into its own variant - which
   is what "model OSC 7 / OSC 133" would mean when it is wanted. This RFC makes
   that a caller-side matter rather than a blocking gap.
-- The read-request routing the policy leaves open can be decided with
-  passthrough already in place: a read request that is not answered from state
-  is already representable to a caller, whether it arrives as an `OtherOsc`
-  or as a variant of its own.
+- A read request on an interpreted number is not passthrough's to route: it is
+  a variant of its own (OSC 52 reads are `ChildRequest::GetClipboard`). This
+  RFC neither routes them nor needs to; `OtherOsc` stays the home for numbers
+  the crate does not interpret at all.
 - The same "do not decode, just offer" question will come up for DCS the crate
   now ignores in `hook`/`put`/`unhook`. That is a separate frame with its own
   framing rules and is not covered here, but the shape of this decision is the

@@ -117,9 +117,11 @@ The answer picks the home:
 The rule is worth stating because it resolves the asymmetry the current docs
 give no account of. A title is *interpreted* (termnix keeps the string) but not
 *used* (nothing the terminal draws depends on it), so the rule puts the title
-in the **event** row. This is not a statement that the title must move - that is
-a separate proposal, below - only that the rule has an answer for it, and the
-answer is not "state" by any property other than history.
+in the **event** row. This is not a statement that the title must move: the
+title is settled as state with an `Event::TitleUpdated` notification (see "The
+title", below), and the rule's answer is only that "state" is not forced by any
+property other than history - the event channel is how a caller learns a
+state-row value changed.
 
 It also gives the passthrough row its first member. A sequence termnix does not
 interpret and does not use is one the crate has no opinion about; the useful
@@ -134,9 +136,9 @@ models nothing: it reads the offered sequence and decides for itself. A caller
 that wants none of them ignores what it is offered, exactly as it ignores the
 requests it already receives on the event stream today. Nothing a caller does
 today changes meaning: the title stays where it is (state, plus its
-`Event::TitleUpdated` notification), OSC 52 keeps its current request variant
-until the request-channel proposal extends it, and sequences that were dropped
-are dropped until the passthrough proposal lands.
+`Event::TitleUpdated` notification), OSC 52 keeps its request variants
+(`SetClipboard` and `GetClipboard`) on the same event stream, and sequences that
+were dropped are dropped until the passthrough proposal lands.
 
 ## Reference-level explanation
 
@@ -181,7 +183,7 @@ modelled at all. "Today" is a separate column so the two are not confused.
 | identifier | today | if modelled: interprets? | if modelled: uses internally? | home |
 | ---------- | ----- | ------------------------ | ----------------------------- | ---- |
 | OSC 0, 2 (title) | state | yes | no | state: remains a getter, with `Event::TitleUpdated` as its notification |
-| OSC 52 (clipboard) | event | yes | no | event (already a take) |
+| OSC 52 (clipboard) | event | yes | no | event (already on the event stream) |
 | OSC 7 (working directory) | dropped | no | no | passthrough |
 | OSC 8 (hyperlink) | dropped | yes | yes | state, once modelled |
 | OSC 4, 10, 11, 12 (colors) | dropped | yes | yes | state, once modelled |
@@ -213,8 +215,9 @@ Two rows carry the weight of the policy:
 This policy is applied by separate RFCs. Each is a normal proposal that can be
 accepted or rejected on its own; none of them is implied to be accepted by this
 one. The dependency order is that the request channel is a container the others
-put things into, so it comes first; passthrough answers where an unmodelled or
-`?` sequence goes, so the question of read requests lands there.
+put things into, so it comes first; passthrough answers where an unmodelled
+sequence goes, and a `?` a number interprets goes to its own request variant
+(settled separately for the first such number, OSC 52).
 
 - **The request channel.** Deliver consumed-once requests on a single stream
   the caller drains (`next_event()`), rather than through a separate accessor
@@ -228,9 +231,9 @@ put things into, so it comes first; passthrough answers where an unmodelled or
 - **Passthrough.** Expose unmodelled OSC sequences to the caller, with the
   framing already done. Open questions to settle there, not here: whether the
   offered value carries the identifier and split arguments as `vte` produced
-  them or the raw sequence bytes; whether passthrough is a take (a caller drains
-  it) or a queue (a caller keeps all of them); and, if a queue, its bound and
-  what happens on overflow.
+  them or the raw sequence bytes; and how a caller drains them - on the same
+  event stream as every other request, as the channel settled, with the
+  question of a bound staying with the passthrough proposal.
 - **The title.** Settled against the move: the window title stays state, read
   through `title()`, and its change is reported as `Event::TitleUpdated` rather
   than as a request variant. `title_changed` is gone, so the title no longer
@@ -240,15 +243,14 @@ put things into, so it comes first; passthrough answers where an unmodelled or
   state, and OSC 8 as a hyperlink attribute, is left to its own proposals. This umbrella deliberately does not design them: the work is a
   grid/pen change, not an OSC-policy change, and it is larger than the rest of
   the row. The policy's only claim about them is the table's: they are state.
-- **Read requests (`?`).** A query asks the terminal to answer on the same
-  number, so the reply is a byte to write *back* to the child. That is the shape
-  of the existing reply buffer
+- **Read requests (`?`).** Settled against the reply buffer: a query whose
+  answer lives above the crate is delivered as a request
+  (`ChildRequest::GetClipboard` for OSC 52), and the caller that owns the answer
+  writes the reply back to the child itself. The reply buffer
   ([`pending_reply_bytes()`](../src/terminal.rs) and
-  [`advance_reply_bytes()`](../src/terminal.rs)), not of a consumed-once
-  request, and it is also what passthrough delivers (a caller that owns the
-  answer can
-  answer from the raw sequence). Which of the two owns `?` is settled in the
-  passthrough proposal, not here.
+  [`advance_reply_bytes()`](../src/terminal.rs)) keeps only answers the crate can
+  build from its own state, which a clipboard read is not. See the
+  clipboard-read proposal for the reasoning.
 
 ### What does not change
 
@@ -261,7 +263,9 @@ put things into, so it comes first; passthrough answers where an unmodelled or
   chose that shape over a single-variant action enum stands, and nothing here
   reopens it.
 - **The `&self` accessors on `TerminalState` stay `&self`.** A value in the
-  state row is a property read non-destructively. Only the event row is a take.
+  state row is a property read non-destructively. Only the event row is
+  consumed, and it is consumed by pulling from the one event stream, not by a
+  per-value accessor.
 
 ## Drawbacks
 
@@ -315,14 +319,15 @@ decisions in other documents. If the follow-ons are never written, it is a
   passthrough is the honest shape for "the crate has no opinion".
 - **Answer every `?` from state.** For a number termnix models as state (a
   palette entry, a default color), answering a query is well-defined. For a
-  number it does not model (OSC 52 with nothing to report, an unmodelled
+  number whose answer the crate does not hold (an OSC 52 read, an unmodelled
   extension), there is nothing true to answer, and the crate's existing
   principle is that a probe gets no reply rather than a wrong one
   (see the DA2/DA3 handling in
   [`src/terminal_emu.rs`](../src/terminal_emu.rs)). So `?` is not "answer it"
   as a policy; it is "route it" - to a state reply when the crate holds the
-  value, to passthrough when it does not. That routing is the passthrough
-  proposal's job.
+  value (a palette entry), and to the caller as a request when the answer lives
+  above the crate (an OSC 52 read). Routing an interpreted `?` is that number's
+  own proposal; passthrough is only for numbers the crate does not interpret.
 - **Do nothing.** The cost is that the list in the rustdoc keeps standing in
   for a rule, every new OSC re-litigates the same question, and a host
   embedding a child cannot support an unmodelled extension without its own
