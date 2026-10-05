@@ -1,6 +1,6 @@
 # RFC: Rename the OSC request type to ChildRequest
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -186,3 +186,19 @@ the next proposal's own text.
   caller observes but the child did not cause), the `Child` prefix is what
   keeps the two from being confused, and is a reason to keep the prefix rather
   than fall back to `Request`.
+
+## Outcome
+
+Implemented in [#17](https://github.com/sile/termnix/pull/17) (merged as `9f676cb`).
+
+The rename landed as proposed. `OscRequest` is `ChildRequest` and `take_osc_request()` is `take_child_request()`, with no variant names touched: `SetClipboard { text, selection, append }` keeps its spelling and its fields, and the public surface changes in name only.
+
+The private queue field followed the type (`osc_requests` to `child_requests`), which the RFC listed as open. The tokenizer helper stayed `osc_clipboard`: it is named for the number it parses rather than the channel it feeds, so it is not part of the channel's contract and renaming it would tie a private name to a public one for no reader's benefit.
+
+One open question was settled by the landing itself rather than left as a branch. The reset RFC had asked which name to write against, assuming it might land either before or after this one; once this rename was merged, that question had one answer, so the reset RFC now states the settled names instead of carrying the stale alternative.
+
+The reasoning in the Motivation held up unchanged: the name is about direction, not framing, and HTTP's `request` covers a command as readily as an ask, so no variant needed a hedge. `ChildEvent` and `ChildMessage` stayed rejected.
+
+Nothing else moved. The reset delivery and the passthrough variant that motivated the rename are still their own proposals; this change adds neither, and the queue's reset behavior (`soft_reset` clearing it) is untouched.
+
+The scope is unchanged from what is described above.
