@@ -165,12 +165,9 @@ does).
 
 ## Unresolved questions
 
-- **Which field name is public enough to need the rename?** This RFC assumes
-  the channel is called `child_requests` and the accessor `take_child_request()`,
-  which is the subject of the rename proposal in this series. If that proposal
-  is settled first, this one follows it; if not, this one is written against
-  the current `osc_requests` / `take_osc_request()` names and updated when the
-  rename lands.
+- **Which field name is public enough to need the rename?** Settled: the
+  rename in this series has landed, so the channel is `child_requests` and the
+  accessor `take_child_request()`. This RFC is written against those names;
 - **Does `Reset` want to be emitted for the alternate screen too?** RIS resets
   both screens in the crate. There is nothing for this variant to say about
   which one, since the request is "the child reset the terminal", not "a screen

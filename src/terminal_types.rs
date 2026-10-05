@@ -319,13 +319,13 @@ pub enum ClipboardSelection {
 /// termnix interprets a handful of OSC numbers and does not own the resources
 /// they name (a clipboard, later a window title). For those it records the ask
 /// and leaves acting on it to the caller. Every such ask arrives through the
-/// one accessor [`TerminalState::take_osc_request()`], which returns one
+/// one accessor [`TerminalState::take_child_request()`], which returns one
 /// variant at a time; the enum is the whole channel, so the family a caller
 /// cares about is an arm it matches rather than a method it remembers to call.
 ///
-/// [`TerminalState::take_osc_request()`]: crate::TerminalState::take_osc_request
+/// [`TerminalState::take_child_request()`]: crate::TerminalState::take_child_request
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OscRequest {
+pub enum ChildRequest {
     /// An OSC 52 clipboard write (`ESC ] 52 ; <Pc> ; <Pd> ST`).
     ///
     /// The sequence asks the terminal to change a selection; termnix does not

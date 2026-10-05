@@ -6,7 +6,7 @@ use vte::Perform;
 use crate::terminal::TerminalState;
 use crate::terminal_buffer::Screen;
 use crate::terminal_types::{
-    ClipboardSelection, Color, MouseReporting, OscRequest, Position, SavedCursor, Style,
+    ChildRequest, ClipboardSelection, Color, MouseReporting, Position, SavedCursor, Style,
     TerminalModes,
 };
 
@@ -98,9 +98,9 @@ impl Perform for Emulator<'_> {
 impl Emulator<'_> {
     /// Records an OSC 52 clipboard write (`ESC ] 52 ; <Pc> ; <Pd> ST`).
     ///
-    /// The write is pushed onto the caller's OSC request queue as
-    /// [`OscRequest::SetClipboard`]; termnix holds no clipboard, so the ask is
-    /// all it can keep.
+    /// The write is pushed onto the caller's request queue as
+    /// [`ChildRequest::SetClipboard`]; termnix holds no clipboard, so the ask
+    /// is all it can keep.
     ///
     /// `vte` splits OSC parameters on `;`, so a payload containing `;` cannot
     /// reach here intact; that is a property of the protocol's framing rather
@@ -130,7 +130,7 @@ impl Emulator<'_> {
             return;
         };
 
-        self.term.osc_requests.push_back(OscRequest::SetClipboard {
+        self.term.child_requests.push_back(ChildRequest::SetClipboard {
             text,
             selection,
             append,
@@ -265,7 +265,7 @@ impl TerminalState {
         // RIS restores the terminal, and a pending request belongs to the
         // session being reset; leaving it would let a caller act on an ask
         // from before the reset.
-        self.osc_requests.clear();
+        self.child_requests.clear();
         self.scroll_top = 0;
         self.scroll_bottom = size.rows.get().saturating_sub(1);
         // RIS — DEC terminal documentation:
