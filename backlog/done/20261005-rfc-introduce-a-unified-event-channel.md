@@ -1,6 +1,6 @@
 # RFC: Introduce a unified event channel
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -323,3 +323,25 @@ facts in the order they invalidate, not to enforce a safety property.
   out" to "the crate holds it as state", `ChildRequest` may one day hold only
   the asks the crate genuinely cannot resolve - a clipboard read, whose target
   is decided by the host and not by the crate.
+
+## Outcome
+
+Implemented in [#18](https://github.com/sile/termnix/pull/18) (merged as `471787f`).
+
+The two notification mechanisms are replaced by a single channel: the
+`revision()` counter and the `take_child_request()` queue are both gone, and a
+caller drains `Event` values through one `next_event()` on `TerminalState` and
+`Session`.
+
+The variants landed as `ScreenUpdated`, `ScrollbackLineAdded`, `TitleUpdated`,
+`TerminalReset`, and `RequestReceived(ChildRequest)`. One name changed during
+implementation: `ScrollbackLineAdded` became `ScrollbackLineAppended`. The
+history is append-only - a line is only ever pushed onto the back and existing
+lines are never rewritten - so `Appended` states the position the variant
+always assumed, which the `Updated` family name would have obscured.
+
+`SetTitle` is not introduced: the title is state the terminal holds and is
+reported through `TitleUpdated`, matching the rule that a thing the terminal
+can resolve itself is state plus an update event.
+
+The scope is unchanged from what is described above.
