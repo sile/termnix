@@ -130,11 +130,13 @@ impl Emulator<'_> {
             return;
         };
 
-        self.term.child_requests.push_back(ChildRequest::SetClipboard {
-            text,
-            selection,
-            append,
-        });
+        self.term
+            .child_requests
+            .push_back(ChildRequest::SetClipboard {
+                text,
+                selection,
+                append,
+            });
     }
 }
 
