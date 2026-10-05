@@ -16,9 +16,8 @@
 //! - CSI SGR (`m`): reset, bold, italic, underline, reverse, 16/256/24-bit color
 //! - CSI queries: DSR, CPR, primary DA (`CSI c` / `CSI ? c`); DA2 and DA3 are
 //!   recognized but not answered
-//! - OSC 0/2: window title (stored); OSC 52: clipboard request (stored for
-//!   [`TerminalState::take_child_request()`]); other OSC ignored without becoming
-//!   text
+//! - OSC 0/2: window title (stored); OSC 52: clipboard request (reported through
+//!   [`TerminalState::next_event()`]); other OSC ignored without becoming text
 //! - Alternate screen: DECSET/DECRST 1049 (also 47 / 1047)
 //!
 //! # Explicitly out of scope
@@ -39,8 +38,8 @@
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
 pub use crate::terminal_types::{
-    Cell, ChildRequest, ClipboardSelection, Color, MouseReporting, Position, ScrollbackLine, Style,
-    TerminalModes,
+    Cell, ChildRequest, ClipboardSelection, Color, Event, MouseReporting, Position, ScrollbackLine,
+    Style, TerminalModes,
 };
 
 use std::collections::VecDeque;
@@ -70,7 +69,7 @@ use crate::terminal_types::SavedCursor;
 ///   cursor visibility, bracketed paste, mouse reporting (including SGR)
 /// - **Alternate screen**: `?1049`, `?47`, `?1047`
 /// - **OSC 0/2**: window title (stored); **OSC 52**: clipboard request,
-///   taken with [`take_child_request()`](TerminalState::take_child_request)
+///   reported through [`next_event()`](TerminalState::next_event)
 /// - **Queries**: DSR, CPR, and primary DA, answered through
 ///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes). DA2
 ///   (`CSI > c`) and DA3 (`CSI = c`) are recognized but deliberately not
@@ -96,23 +95,100 @@ pub struct TerminalState {
     pub(crate) replies: ReplyBuf,
     pub(crate) scrollback: VecDeque<ScrollbackLine>,
     pub(crate) scrollback_cells: usize,
-    /// Requests the child has sent and the caller has not taken yet,
-    /// oldest-first.
+    /// Events that have happened since the caller last drained them.
     ///
-    /// A queue rather than a single slot: a request is an event, and more than
-    /// one can arrive in a single `feed` (two OSC 52 sequences, or later a
-    /// clipboard write and a title). A slot would keep only the last and drop
-    /// the rest, and there is no later point at which such a request could be
-    /// re-delivered.
+    /// The merged state-change flags and the queue of unmerged requests, held
+    /// together so one [`next_event()`](TerminalState::next_event) is the whole
+    /// channel. Not part of `VisibleScalars`: an undrained event is not itself
+    /// a visible change, and draining one is not either.
+    pub(crate) events: Events,
+    /// Set by `osc_dispatch` when it stores a new title, and cleared at the
+    /// start of each `feed`.
     ///
-    /// Not part of `VisibleScalars` and does not bump `revision`: a request
-    /// draws nothing, so it is not a visible change.
-    pub(crate) child_requests: VecDeque<ChildRequest>,
-    pub(crate) revision: u64,
-    /// Set by `osc_dispatch` when it stores a new title. The title is the one
-    /// visible field that is not `Copy`, so it cannot join the before/after
-    /// scalar compare without allocating a `String` per feed.
+    /// This is the per-feed change detector, distinct from the
+    /// `title_updated` event flag: the title is the one visible field that is
+    /// not `Copy`, so it cannot join the before/after scalar compare without
+    /// allocating a `String` per feed, and reading-and-clearing it must not
+    /// wipe a `TitleUpdated` event that is still waiting to be drained.
     pub(crate) title_changed: bool,
+}
+
+/// The events the caller has not drained yet.
+///
+/// This is the mechanism behind
+/// [`TerminalState::next_event()`](TerminalState::next_event); it is private,
+/// and the only way a caller reaches an [`Event`] is the public accessor. The
+/// state-change events are merged: each is a flag, so many changes of one kind
+/// collapse to a single event. Requests are not merged: they are held in a
+/// queue, oldest-first, so every ask survives and the order the child sent them
+/// is preserved.
+#[derive(Debug, Default)]
+pub(crate) struct Events {
+    terminal_reset: bool,
+    screen_updated: bool,
+    scrollback_line_added: bool,
+    title_updated: bool,
+    requests: VecDeque<ChildRequest>,
+}
+
+impl Events {
+    /// Marks the screen as having changed since the caller last drained.
+    pub(crate) fn mark_screen_updated(&mut self) {
+        self.screen_updated = true;
+    }
+
+    /// Marks a line as having been appended to the retained history.
+    pub(crate) fn mark_scrollback_line_added(&mut self) {
+        self.scrollback_line_added = true;
+    }
+
+    /// Marks the window title as having changed.
+    pub(crate) fn mark_title_updated(&mut self) {
+        self.title_updated = true;
+    }
+
+    /// Marks the whole terminal as having been reset.
+    pub(crate) fn mark_terminal_reset(&mut self) {
+        self.terminal_reset = true;
+    }
+
+    /// Queues a request from the child.
+    pub(crate) fn push_request(&mut self, request: ChildRequest) {
+        self.requests.push_back(request);
+    }
+
+    /// Drops every queued request.
+    ///
+    /// A reset restores the terminal to its defaults and leaves no pending ask
+    /// behind, so requests from before it must not outlive it.
+    pub(crate) fn clear_requests(&mut self) {
+        self.requests.clear();
+    }
+}
+
+impl Iterator for Events {
+    type Item = Event;
+
+    /// Yields the next pending event, in the crate's fixed order: a reset
+    /// first (it invalidates everything read before it), then the merged
+    /// state updates, then the unmerged requests last (where coming last
+    /// cannot lose them). Each flag is cleared as its event is yielded, so it
+    /// is reported once; a request is popped as it is yielded.
+    fn next(&mut self) -> Option<Event> {
+        if std::mem::take(&mut self.terminal_reset) {
+            return Some(Event::TerminalReset);
+        }
+        if std::mem::take(&mut self.screen_updated) {
+            return Some(Event::ScreenUpdated);
+        }
+        if std::mem::take(&mut self.scrollback_line_added) {
+            return Some(Event::ScrollbackLineAdded);
+        }
+        if std::mem::take(&mut self.title_updated) {
+            return Some(Event::TitleUpdated);
+        }
+        self.requests.pop_front().map(Event::RequestReceived)
+    }
 }
 
 /// The `Copy` fields of [`TerminalState`] that count as part of the visible
@@ -223,34 +299,60 @@ impl TerminalState {
             replies: ReplyBuf::new(),
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
-            child_requests: VecDeque::new(),
-            revision: 0,
+            events: Events::default(),
             title_changed: false,
         }
     }
 
-    /// Returns a counter that increments whenever the visible state changes.
+    /// Returns the next pending event and consumes it, or `None` if none is
+    /// pending.
     ///
-    /// The visible state is the active screen's cells and styles, the cursor,
-    /// the current drawing style (SGR pen), display-related modes (including
-    /// cursor visibility, autowrap, mouse reporting, and alternate-screen
-    /// selection), the screen size, and the window title. It deliberately
-    /// excludes parser-internal progress (a partial sequence), scrollback-only
-    /// changes, and undrained replies.
+    /// This is the one place a caller learns what the child did that it may
+    /// need to react to: a repaint, new history, a title change, a whole
+    /// terminal reset, or a request the caller has to carry out. Drain it by
+    /// looping until it returns `None`:
     ///
-    /// The counter only guarantees *whether* the visible state changed since a
-    /// previous read, not how many cells or bytes did; a single `feed` may
-    /// bump it once even when many cells changed, and it stays unchanged when
-    /// input produced no visible effect (BEL, an ignored sequence, or a
-    /// partial escape). It wraps on overflow, which is unreachable in practice.
+    /// ```
+    /// # use termnix::{TerminalState, Event};
+    /// # fn example(term: &mut TerminalState) {
+    /// while let Some(event) = term.next_event() {
+    ///     match event {
+    ///         Event::ScreenUpdated => { /* repaint */ }
+    ///         Event::RequestReceived(_request) => { /* act on it */ }
+    ///         _ => {}
+    ///     }
+    /// }
+    /// # }
+    /// ```
     ///
-    /// The guarantee is one-directional. An unchanged counter means the visible
-    /// state is certainly unchanged, but an advanced counter only means that
-    /// some write reached the screen, not that anything on it differs: writing
-    /// a cell the value it already held still counts as a write. Treat an
-    /// advance as "repaint to be safe" rather than as "something is different".
-    pub fn revision(&self) -> u64 {
-        self.revision
+    /// The events arrive in a fixed order when more than one is pending: a
+    /// [`TerminalReset`](Event::TerminalReset) first, then the merged state
+    /// updates, then the requests last. The state updates are merged, so
+    /// several changes of the same kind since the last drain arrive as one
+    /// event and each is reported once; read the current state itself through
+    /// [`rows()`](TerminalState::rows),
+    /// [`scrollback_lines()`](TerminalState::scrollback_lines), and
+    /// [`title()`](TerminalState::title). A request is not merged: every ask is
+    /// yielded, in the order the child sent them.
+    ///
+    /// # Why this takes `&mut self`
+    ///
+    /// Every other accessor here borrows `&self`, because the values it returns
+    /// are plain properties of the terminal. An event is not a property: it is
+    /// a fact that is over once it has been read. Without a take, a caller
+    /// could not say "I have handled this", and the same event would be
+    /// re-delivered on every later feed and every repaint. This is deliberately
+    /// not shaped like the reply buffer
+    /// ([`pending_reply_bytes()`](TerminalState::pending_reply_bytes) plus
+    /// [`advance_reply_bytes()`](TerminalState::advance_reply_bytes)): a reply
+    /// is a byte stream the caller may write only partially, while an event is
+    /// discrete and has no partial form.
+    ///
+    /// Nothing is lost while a caller does not look: requests wait in a queue,
+    /// and a state-change flag stays set until it is yielded, so a change
+    /// missed on one turn is still reported on the next.
+    pub fn next_event(&mut self) -> Option<Event> {
+        self.events.next()
     }
 
     /// Returns the cheap, `Copy` fields that make up part of the visible state.
@@ -278,7 +380,7 @@ impl TerminalState {
     /// [`TerminalState::pending_reply_bytes()`] and report what you wrote with
     /// [`TerminalState::advance_reply_bytes()`].
     ///
-    /// One `feed` bumps [`revision()`](TerminalState::revision) at most once,
+    /// One `feed` raises [`ScreenUpdated`](Event::ScreenUpdated) at most once,
     /// no matter how many cells changed within it.
     pub fn feed(&mut self, bytes: &[u8]) {
         let before = self.visible_scalars();
@@ -296,7 +398,7 @@ impl TerminalState {
         let primary_dirty = self.primary.take_dirty();
         let changed = primary_dirty || self.title_changed || (self.visible_scalars() != before);
         if changed {
-            self.revision = self.revision.wrapping_add(1);
+            self.events.mark_screen_updated();
         }
     }
 
@@ -391,38 +493,6 @@ impl TerminalState {
         &self.title
     }
 
-    /// Takes the oldest pending request from the child, if any.
-    ///
-    /// A request is what a child asked the caller to carry out but termnix
-    /// cannot act on itself, such as an OSC 52 clipboard write
-    /// (`ESC ] 52 ; <Pc> ; <Pd> ST`). termnix holds no clipboard, so it only
-    /// records the ask; acting on it (writing the text to the host terminal
-    /// through whatever library owns that terminal) is the caller's job.
-    ///
-    /// Requests are drained oldest-first, so a caller that loops until `None`
-    /// sees every ask in the order the child sent them, including several that
-    /// arrived in one `feed`. Returns the next request and consumes it, so one
-    /// sequence is acted on once, and `None` when nothing is pending.
-    ///
-    /// # Why this takes `&mut self`
-    ///
-    /// Every other accessor here borrows `&self`, because the values it returns
-    /// are plain properties of the terminal. A request is not a property: it is
-    /// an event, and the event is over once it has been read. Without a take, a
-    /// caller could not say "I have acted on this", and the same request would
-    /// be re-delivered on every later feed and every repaint. This is
-    /// deliberately not shaped like the reply buffer
-    /// ([`pending_reply_bytes()`](TerminalState::pending_reply_bytes) plus
-    /// [`advance_reply_bytes()`](TerminalState::advance_reply_bytes)): a reply
-    /// is a byte stream the caller may write only partially, while a request is
-    /// a discrete event with no partial form.
-    ///
-    /// A request is not a visible change, so taking one does not move
-    /// [`revision()`](TerminalState::revision); nor did storing it.
-    pub fn take_child_request(&mut self) -> Option<ChildRequest> {
-        self.child_requests.pop_front()
-    }
-
     /// Returns the current drawing style (SGR pen).
     pub fn style(&self) -> Style {
         self.pen
@@ -504,11 +574,11 @@ impl TerminalState {
         self.cursor.col = self.cursor.col.min(size.cols.get() - 1);
         self.wrap_pending = false;
         self.repair_cursor_cell();
-        // A resize always changes the visible size, so the revision moves
+        // A resize always changes the visible size, so the screen is marked
         // unconditionally. Clear the primary screen's dirty flag anyway so a
         // later `feed` does not re-detect this resize's cell writes.
         self.primary.take_dirty();
-        self.revision = self.revision.wrapping_add(1);
+        self.events.mark_screen_updated();
     }
 
     pub(crate) fn active(&self) -> &Screen {
@@ -544,6 +614,7 @@ impl TerminalState {
                 let line = ScrollbackLine::new(row);
                 self.scrollback_cells = self.scrollback_cells.saturating_add(line.len());
                 self.scrollback.push_back(line);
+                self.events.mark_scrollback_line_added();
             }
         }
     }

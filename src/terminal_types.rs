@@ -316,14 +316,16 @@ pub enum ClipboardSelection {
 
 /// Something a child asked for in an OSC sequence, retained for the caller.
 ///
-/// termnix interprets a handful of OSC numbers and does not own the resources
-/// they name (a clipboard, later a window title). For those it records the ask
-/// and leaves acting on it to the caller. Every such ask arrives through the
-/// one accessor [`TerminalState::take_child_request()`], which returns one
-/// variant at a time; the enum is the whole channel, so the family a caller
-/// cares about is an arm it matches rather than a method it remembers to call.
+/// termnix interprets a handful of command sequences and does not act on the
+/// resources they name itself (a clipboard, a bell, later a window title). For
+/// those it records the ask and leaves carrying it out to the caller. Every
+/// such ask arrives as `Event::RequestReceived`, one variant at a time; the
+/// enum is the whole family of asks, so the one a caller cares about is an arm
+/// it matches rather than a method it remembers to call.
 ///
-/// [`TerminalState::take_child_request()`]: crate::TerminalState::take_child_request
+/// A request is not merely an observation: it is something the caller is
+/// expected to do, and it is not merged with the others, so three asks in one
+/// `feed` are three asks to carry out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChildRequest {
     /// An OSC 52 clipboard write (`ESC ] 52 ; <Pc> ; <Pd> ST`).
@@ -352,6 +354,80 @@ pub enum ChildRequest {
         /// the text into a host clipboard can mirror an append as an append.
         append: bool,
     },
+    /// The child rang the bell (`BEL`, `0x07`).
+    ///
+    /// termnix has no way to ring anything, so it only records that the child
+    /// asked for one; making a sound (or flashing, or notifying) is the
+    /// caller's job. Bells are not merged: `BEL BEL` is two asks, and a caller
+    /// that wants a burst collapsed counts them itself.
+    RingBell,
+}
+
+/// Something that happened in the terminal that a caller may want to react to.
+///
+/// A session driver reacts to what the child does through one channel: it
+/// drains [`TerminalState::next_event()`], matching each event. The events are
+/// of two kinds. Some report that state moved - the screen, the retained
+/// history, the window title - and are merged, so several changes of the same
+/// kind in one [`feed()`](crate::TerminalState::feed) arrive as one event; a
+/// caller reads the current state through the same accessor it always used
+/// ([`rows()`](crate::TerminalState::rows),
+/// [`scrollback_lines()`](crate::TerminalState::scrollback_lines),
+/// [`title()`](crate::TerminalState::title)). The others are requests:
+/// [`Event::RequestReceived`] carries one [`ChildRequest`] the child asked for
+/// and termnix cannot carry out itself, and the whole sequence is delivered in
+/// order.
+///
+/// [`TerminalState::next_event()`]: crate::TerminalState::next_event
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    /// The whole terminal was reset (RIS, `ESC c`).
+    ///
+    /// Everything derived from the child before this point is stale: the
+    /// screen is blank, the cursor is at the origin, the modes and pen are
+    /// back to their defaults, the title is cleared, and the retained history
+    /// is gone. A caller holding state mirrored from the child (a rendered
+    /// frame, a clipboard it filled from an OSC 52 request) should discard it.
+    /// termnix has already performed the reset by the time this is reported;
+    /// the event exists so the caller knows its own derivations are stale.
+    TerminalReset,
+    /// The visible screen changed.
+    ///
+    /// Scrollback-only changes and undrained replies do not raise this, and it
+    /// says only *whether* the screen moved, not what changed: a single `feed`
+    /// that writes many cells still reports one `ScreenUpdated`. Treat it as
+    /// "repaint to be safe": a write of a cell over the value it already held
+    /// counts, while input with no visible effect (an ignored sequence, a
+    /// partial escape) does not.
+    ScreenUpdated,
+    /// A line was appended to the retained history.
+    ///
+    /// The history only ever grows here: a full-screen scroll on the primary
+    /// screen pushes the displaced rows onto the back. Nothing is rewritten, so
+    /// this never means an existing line changed; trimming the history is the
+    /// caller's own action
+    /// ([`trim_scrollback()`](crate::TerminalState::trim_scrollback)) and is
+    /// not reported. Read the new lines through
+    /// [`scrollback_lines()`](crate::TerminalState::scrollback_lines).
+    ///
+    /// The name is deliberately not `ScrollbackUpdated`, unlike
+    /// [`ScreenUpdated`](Event::ScreenUpdated) and
+    /// [`TitleUpdated`](Event::TitleUpdated): those report state that is
+    /// *replaced*, whereas the history is only ever appended to. Naming the
+    /// one-directional fact directly keeps a caller from reading an update
+    /// where none can happen.
+    ScrollbackLineAdded,
+    /// The window title changed (OSC 0 / OSC 2, or a reset clearing it).
+    ///
+    /// The title is state termnix holds; read it through
+    /// [`title()`](crate::TerminalState::title).
+    TitleUpdated,
+    /// The child asked for something termnix cannot do itself.
+    ///
+    /// Carries one [`ChildRequest`]. Requests are not merged, so a caller that
+    /// drains until `None` sees every ask in the order the child sent them,
+    /// including several that arrived in one `feed`.
+    RequestReceived(ChildRequest),
 }
 
 #[cfg(test)]

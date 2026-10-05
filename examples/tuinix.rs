@@ -152,9 +152,13 @@ struct App {
     next_process_poll: Instant,
     pump_cursor: usize,
     quit: bool,
-    /// Visible-state revision last written to the host for the selected
-    /// session, or `None` when the current selection has not been drawn yet.
-    drawn_revision: Option<u64>,
+    /// Whether the selected session's screen needs redrawing.
+    ///
+    /// Set when a `ScreenUpdated` or `TerminalReset` event arrives for the
+    /// selection (and on a selection switch or resize, which change what is on
+    /// screen without an event); cleared once the frame has been written to the
+    /// host. Starts `true` so the first frame is always drawn.
+    screen_dirty: bool,
     /// Frame most recently rendered to the host.
     ///
     /// [`Frame::render`](tuinix::Frame::render) emits only the cells that
@@ -180,7 +184,7 @@ impl App {
             next_process_poll: Instant::now() + PROCESS_POLL_INTERVAL,
             pump_cursor: 0,
             quit: false,
-            drawn_revision: None,
+            screen_dirty: true,
             prev_frame: None,
         })
     }
@@ -253,7 +257,7 @@ impl App {
             .position(|&slot| slot == self.selected)
             .unwrap_or(0);
         self.selected = live[(index + 1) % live.len()];
-        self.drawn_revision = None;
+        self.screen_dirty = true;
         self.prev_frame = None;
     }
 
@@ -263,7 +267,7 @@ impl App {
     /// `render` would otherwise diff against a frame of a different geometry.
     fn apply_resize(&mut self, size: termnix::Size) -> Result<(), AppError> {
         self.prev_frame = None;
-        self.drawn_revision = None;
+        self.screen_dirty = true;
         for slot in &mut self.sessions {
             let live = slot.as_ref().is_some_and(|s| s.fd().is_some());
             if live {
@@ -770,23 +774,46 @@ fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
     Ok(())
 }
 
+/// Drains the selected session's events, marking the screen dirty when one
+/// says a repaint is due.
+///
+/// `ScreenUpdated` and `TerminalReset` both mean "repaint": a reset leaves the
+/// screen blank and everything the example drew is stale. The remaining events
+/// (new history, a title change, and a child request such as a clipboard write
+/// or a bell) have no effect on the visible grid this example projects, so they
+/// are dropped; a real host would act on [`Event::RequestReceived`] here.
+/// Draining always runs so no event is left unconsumed on a session the example
+/// owns.
+fn note_selection_events(app: &mut App) {
+    let Some(session) = app.sessions[app.selected].as_mut() else {
+        return;
+    };
+    while let Some(event) = session.next_event() {
+        if matches!(
+            event,
+            termnix::Event::ScreenUpdated | termnix::Event::TerminalReset
+        ) {
+            app.screen_dirty = true;
+        }
+    }
+}
+
 /// Draws the selected session to the host terminal.
 ///
-/// Rendering is skipped when the session's visible-state revision matches the
-/// last drawn one, so idle polls no longer re-emit the frame or the host
-/// cursor show/hide sequences. The revision is read from the terminal state so
-/// the recorded value always matches what was actually rendered.
+/// Rendering is skipped unless the selected session's screen is dirty, so idle
+/// polls no longer re-emit the frame or the host cursor show/hide sequences.
+/// The dirty flag is set by [`note_selection_events`] when a `ScreenUpdated` or
+/// `TerminalReset` event arrives, and cleared here once the frame has been
+/// written.
 fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppError> {
     let Some(session) = app.sessions[app.selected].as_ref() else {
-        app.drawn_revision = None;
         app.prev_frame = None;
         return Ok(());
     };
-    let state = session.terminal_state();
-    let revision = state.revision();
-    if app.drawn_revision == Some(revision) {
+    if !app.screen_dirty {
         return Ok(());
     }
+    let state = session.terminal_state();
     let projection = Projection::from_state(state).map_err(AppError::msg)?;
     let frame_size = tuinix::Size {
         rows: usize::from(projection.size.rows.get()),
@@ -804,7 +831,7 @@ fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppEr
         .and_then(|()| driver.flush())
         .map_err(AppError::io)?;
     app.prev_frame = Some(frame);
-    app.drawn_revision = Some(revision);
+    app.screen_dirty = false;
     Ok(())
 }
 
@@ -834,6 +861,7 @@ fn run_loop(
         let size = size_from_host(size).map_err(AppError::msg)?;
         app.apply_resize(size)?;
 
+        note_selection_events(app);
         draw_selected(driver, app)?;
 
         if app.pending.is_none() {
@@ -1030,7 +1058,7 @@ mod tests {
             next_process_poll: Instant::now(),
             pump_cursor: 0,
             quit: false,
-            drawn_revision: None,
+            screen_dirty: true,
             prev_frame: None,
         }
     }

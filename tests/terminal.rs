@@ -857,11 +857,54 @@ fn term(rows: u16, cols: u16) -> termnix::TerminalState {
     termnix::TerminalState::new(size(rows, cols))
 }
 
-/// Takes the next OSC request and unwraps it as a `SetClipboard`, failing the
+/// Drains every pending event, oldest-priority-first.
+///
+/// The event channel is the crate's whole notification surface now, so a test
+/// reads it the way a host does: loop `next_event()` until it returns `None`.
+/// Draining is destructive, which is what lets a test assert "nothing more is
+/// pending" by draining again and finding the list empty.
+fn drain(t: &mut termnix::TerminalState) -> Vec<termnix::Event> {
+    let mut events = Vec::new();
+    while let Some(event) = t.next_event() {
+        events.push(event);
+    }
+    events
+}
+
+/// Drains the pending events and returns whether a `ScreenUpdated` was among
+/// them.
+///
+/// This is the event-channel replacement for reading the old `revision()`
+/// counter: "the visible screen moved since the last drain". Unlike the
+/// counter it does not survive across a drain, because reporting the change
+/// consumes it; a test that wants to check a later feed re-drains.
+fn screen_updated(t: &mut termnix::TerminalState) -> bool {
+    drain(t)
+        .iter()
+        .any(|event| matches!(event, termnix::Event::ScreenUpdated))
+}
+
+/// Returns the next pending request, leaving the rest queued, and drops the
+/// state-change events it walks past.
+///
+/// The state-change events (reset, screen, history, title) are dropped: a test
+/// asking for "the request" does not care whether the same feed also repainted.
+/// Because requests are yielded last, in order, stopping at the first request
+/// cannot strand a state-change event (they all precede the queue).
+fn next_request(t: &mut termnix::TerminalState) -> Option<termnix::ChildRequest> {
+    while let Some(event) = t.next_event() {
+        if let termnix::Event::RequestReceived(request) = event {
+            return Some(request);
+        }
+    }
+    None
+}
+
+/// Drains the next request and unwraps it as a `SetClipboard`, failing the
 /// test if the request belongs to another variant (there is only one today,
 /// but the match is the point of the channel).
 fn set_clipboard(t: &mut termnix::TerminalState) -> Option<ClipboardWrite> {
-    match t.take_child_request()? {
+    match next_request(t)? {
         termnix::ChildRequest::SetClipboard {
             text,
             selection,
@@ -871,6 +914,7 @@ fn set_clipboard(t: &mut termnix::TerminalState) -> Option<ClipboardWrite> {
             selection,
             append,
         }),
+        termnix::ChildRequest::RingBell => panic!("expected a SetClipboard request, got RingBell"),
     }
 }
 
@@ -1214,9 +1258,9 @@ fn osc_52_clipboard_is_recorded_and_taken_once() {
     // The accessor is a take: the same sequence is not re-delivered on a later
     // feed, which is what keeps "the child asked once" from becoming "the
     // caller acts once per repaint".
-    assert!(t.take_child_request().is_none());
+    assert!(next_request(&mut t).is_none());
     t.feed(b"");
-    assert!(t.take_child_request().is_none());
+    assert!(next_request(&mut t).is_none());
 }
 
 #[test]
@@ -1227,7 +1271,7 @@ fn osc_52_requests_queue_and_drain_oldest_first() {
     t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]52;p;d29ybGQ=\x07");
     assert_eq!(set_clipboard(&mut t).unwrap().text, b"hello");
     assert_eq!(set_clipboard(&mut t).unwrap().text, b"world");
-    assert!(t.take_child_request().is_none());
+    assert!(next_request(&mut t).is_none());
 }
 
 #[test]
@@ -1238,7 +1282,7 @@ fn osc_52_queue_keeps_one_entry_per_identical_request() {
     t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]52;c;aGVsbG8=\x07");
     assert!(set_clipboard(&mut t).is_some());
     assert!(set_clipboard(&mut t).is_some());
-    assert!(t.take_child_request().is_none());
+    assert!(next_request(&mut t).is_none());
 }
 
 #[test]
@@ -1291,7 +1335,7 @@ fn osc_52_empty_payload_is_a_clear_request() {
 fn osc_52_read_request_is_not_a_request() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;?\x07");
-    assert!(t.take_child_request().is_none());
+    assert!(next_request(&mut t).is_none());
 }
 
 #[test]
@@ -1299,7 +1343,7 @@ fn osc_52_invalid_base64_stores_nothing() {
     let mut t = term(1, 8);
     // `!` is not in the base64 alphabet.
     t.feed(b"\x1b]52;c;!!!\x07");
-    assert!(t.take_child_request().is_none());
+    assert!(next_request(&mut t).is_none());
 }
 
 #[test]
@@ -1325,16 +1369,25 @@ fn osc_52_other_selection_need_not_be_utf8() {
 }
 
 #[test]
-fn osc_52_does_not_advance_revision() {
-    // A clipboard request draws nothing, so a caller polling `revision()` to
-    // decide whether to repaint must not be told to repaint because a child
-    // cut text.
+fn osc_52_does_not_raise_screen_updated() {
+    // A clipboard request draws nothing, so a caller repainting on
+    // `ScreenUpdated` must not be told to repaint because a child cut text. The
+    // request itself is still reported, as a `RequestReceived`.
     let mut t = term(1, 8);
-    let base = t.revision();
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
-    assert_eq!(t.revision(), base);
-    let _ = t.take_child_request();
-    assert_eq!(t.revision(), base);
+    let events = drain(&mut t);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::ScreenUpdated)),
+        "a clipboard write is not a visible change: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::RequestReceived(_))),
+        "the request itself is still reported: {events:?}"
+    );
 }
 
 #[test]
@@ -1355,7 +1408,7 @@ fn osc_52_survives_a_hard_reset() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
     t.feed(b"\x1bc");
-    assert!(t.take_child_request().is_none());
+    assert!(next_request(&mut t).is_none());
 }
 
 #[test]
@@ -1432,119 +1485,133 @@ fn insert_mode_shifts_cells() {
 }
 
 #[test]
-fn revision_advances_on_visible_changes() {
+fn screen_updated_covers_each_visible_change() {
     let mut t = term(2, 8);
-    let start = t.revision();
+    assert!(!screen_updated(&mut t), "a fresh terminal is not dirty");
+
     t.feed(b"a");
-    let after_text = t.revision();
-    assert_ne!(after_text, start, "text write is a visible change");
+    assert!(screen_updated(&mut t), "text write is a visible change");
 
     t.feed(b"\x1b[2;3H");
-    let after_move = t.revision();
-    assert_ne!(after_move, after_text, "cursor move is a visible change");
+    assert!(screen_updated(&mut t), "cursor move is a visible change");
 
     t.feed(b"\x1b[1m");
-    let after_sgr = t.revision();
-    assert_ne!(after_sgr, after_move, "SGR is a visible change");
+    assert!(screen_updated(&mut t), "SGR is a visible change");
 
     t.feed(b"\x1b[?25l");
-    let after_cursor = t.revision();
-    assert_ne!(
-        after_cursor, after_sgr,
+    assert!(
+        screen_updated(&mut t),
         "cursor visibility is a visible change"
     );
 
     t.feed(b"\x1b]2;title\x07");
-    let after_title = t.revision();
-    assert_ne!(
-        after_title, after_cursor,
-        "title change is a visible change"
-    );
+    assert!(screen_updated(&mut t), "title change is a visible change");
 
     t.resize(size(3, 9));
-    assert_ne!(t.revision(), after_title, "resize is a visible change");
+    assert!(screen_updated(&mut t), "resize is a visible change");
 }
 
 #[test]
-fn revision_advances_on_alternate_screen_toggle() {
+fn screen_updated_on_alternate_screen_toggle() {
     let mut t = term(2, 8);
     t.feed(b"keep");
-    let before = t.revision();
+    let _ = drain(&mut t);
     t.feed(b"\x1b[?1049h");
-    let after_enter = t.revision();
-    assert_ne!(
-        after_enter, before,
+    assert!(
+        screen_updated(&mut t),
         "entering alternate is a visible change"
     );
     t.feed(b"\x1b[?1049l");
-    assert_ne!(
-        t.revision(),
-        after_enter,
+    assert!(
+        screen_updated(&mut t),
         "leaving alternate is a visible change"
     );
 }
 
 #[test]
-fn revision_stays_put_without_visible_change() {
+fn screen_updated_stays_clear_without_visible_change() {
     let mut t = term(2, 8);
     t.feed(b"ab");
-    t.feed(b"\x1b[2;1H"); // a cursor move: visible, so re-baseline after it
-    let base = t.revision();
+    t.feed(b"\x1b[2;1H"); // a cursor move: visible, so drain it away as a baseline
+    let _ = drain(&mut t);
 
-    t.feed(b"\x07"); // BEL is ignored
-    assert_eq!(t.revision(), base, "BEL must not advance revision");
+    // BEL is not a visible change: it raises no `ScreenUpdated`. It is not
+    // silent either - a bell is a request, reported separately.
+    t.feed(b"\x07");
+    let bell = drain(&mut t);
+    assert!(
+        !bell
+            .iter()
+            .any(|event| matches!(event, termnix::Event::ScreenUpdated)),
+        "BEL must not raise ScreenUpdated: {bell:?}"
+    );
+    assert!(
+        bell.iter().any(|event| matches!(
+            event,
+            termnix::Event::RequestReceived(termnix::ChildRequest::RingBell)
+        )),
+        "BEL is a RingBell request: {bell:?}"
+    );
 
     t.feed(b"\x1b[3"); // partial CSI, waits for continuation
-    assert_eq!(
-        t.revision(),
-        base,
-        "partial sequence must not advance revision"
+    assert!(
+        !screen_updated(&mut t),
+        "partial sequence must not raise ScreenUpdated"
     );
 
     t.feed(b"\x1b]999;ignored\x07"); // unsupported OSC is ignored
-    assert_eq!(t.revision(), base, "ignored OSC must not advance revision");
+    assert!(
+        !screen_updated(&mut t),
+        "ignored OSC must not raise ScreenUpdated"
+    );
 }
 
 #[test]
-fn revision_advances_when_a_hard_reset_only_changes_the_title() {
+fn hard_reset_reports_reset_and_screen_updated() {
     // RIS clears the screen and the title. If the screen was already blank and
     // nothing else was set, the only visible effect is the title going away,
-    // which must still be reported.
+    // which must still be reported; the reset itself is reported too.
     let mut t = term(2, 8);
     t.feed(b"\x1b]2;title\x07");
-    let with_title = t.revision();
+    let _ = drain(&mut t);
 
     t.feed(b"\x1bc"); // RIS
 
-    assert_ne!(
-        t.revision(),
-        with_title,
-        "clearing a set title is a visible change"
+    let events = drain(&mut t);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::ScreenUpdated)),
+        "clearing a set title is a visible change: {events:?}"
     );
-    assert_eq!(t.revision(), with_title.wrapping_add(1));
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::TerminalReset)),
+        "RIS is reported as a reset: {events:?}"
+    );
 }
 
 #[test]
-fn revision_advances_on_rewriting_the_same_cell() {
+fn screen_updated_on_rewriting_the_same_cell() {
     // The dirty flag records that a cell was written, not whether the stored
-    // value differs, so a feed that rewrites identical cells still advances
-    // the revision. This is a deliberate false positive: redrawing is cheap
+    // value differs, so a feed that rewrites identical cells still raises
+    // `ScreenUpdated`. This is a deliberate false positive: redrawing is cheap
     // compared with missing a change.
     let mut t = term(2, 8);
     t.feed(b"x");
-    let after_first = t.revision();
+    let _ = drain(&mut t);
 
     t.feed(b"\x1b[1;1Hx"); // same cell, same value
 
-    assert_ne!(
-        t.revision(),
-        after_first,
-        "a cell write advances revision even when the value is unchanged"
+    assert!(
+        screen_updated(&mut t),
+        "a cell write raises ScreenUpdated even when the value is unchanged"
     );
 }
 
 #[test]
-fn revision_tracks_only_the_visible_screen() {
+fn screen_tracks_only_the_visible_screen() {
     // The hidden buffer's writes are not polled: while the alternate screen is
     // active, `on_alternate` is what the snapshot carries, and editing the
     // primary behind it cannot be seen. Entering and leaving the alternate
@@ -1552,68 +1619,61 @@ fn revision_tracks_only_the_visible_screen() {
     let mut t = term(2, 8);
     t.feed(b"primary");
     t.feed(b"\x1b[?1049h");
-    let on_alternate = t.revision();
+    let _ = drain(&mut t);
 
     t.feed(b"hidden");
-    assert_ne!(
-        t.revision(),
-        on_alternate,
+    assert!(
+        screen_updated(&mut t),
         "writing the active alternate screen is a visible change"
     );
 
-    let after_write = t.revision();
     t.feed(b"\x1b[?1049l");
-    assert_ne!(
-        t.revision(),
-        after_write,
+    assert!(
+        screen_updated(&mut t),
         "returning to the primary screen is a visible change"
     );
 }
 
 #[test]
-fn revision_stays_put_when_a_mode_is_set_to_its_current_value() {
+fn screen_updated_stays_clear_when_a_mode_is_set_to_its_current_value() {
     let mut t = term(2, 8);
     t.feed(b"\x1b[?25l"); // hide cursor
-    let hidden = t.revision();
+    let _ = drain(&mut t);
 
     t.feed(b"\x1b[?25l"); // same value again
 
-    assert_eq!(
-        t.revision(),
-        hidden,
+    assert!(
+        !screen_updated(&mut t),
         "re-setting a mode to its current value is not a visible change"
     );
 }
 
 #[test]
-fn revision_advances_on_visible_change_and_holds_otherwise() {
+fn screen_updated_on_visible_change_and_quiet_otherwise() {
     let mut t = term(2, 8);
     t.feed(b"hi");
-    let captured = t.revision();
+    let _ = drain(&mut t);
 
     t.feed(b"\x1b[1;1Hmore");
-    assert_ne!(
-        t.revision(),
-        captured,
-        "a visible change must advance revision"
+    assert!(
+        screen_updated(&mut t),
+        "a visible change must raise ScreenUpdated"
     );
 
-    let after_change = t.revision();
     t.feed(b"");
-    assert_eq!(
-        t.revision(),
-        after_change,
-        "an empty feed must leave revision unchanged"
+    assert!(
+        !screen_updated(&mut t),
+        "an empty feed must leave the screen unchanged"
     );
 }
 
 #[test]
-fn identical_feeds_reach_the_same_revision() {
+fn identical_feeds_reach_the_same_events() {
     let mut a = term(2, 8);
     let mut b = term(2, 8);
     a.feed(b"hello\r\nworld");
     b.feed(b"hello\r\nworld");
-    assert_eq!(a.revision(), b.revision());
+    assert_eq!(drain(&mut a), drain(&mut b));
 }
 
 #[test]

@@ -25,7 +25,7 @@ impl Perform for Emulator<'_> {
             0x09 => self.term.horizontal_tab(),
             0x0a..=0x0c => self.term.line_feed(),
             0x0d => self.term.carriage_return(),
-            0x07 => {}
+            0x07 => self.term.ring_bell(),
             _ => {}
         }
     }
@@ -57,6 +57,7 @@ impl Perform for Emulator<'_> {
                     .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
                     .unwrap_or_default();
                 self.term.title_changed = true;
+                self.term.events.mark_title_updated();
             }
             "52" => self.osc_clipboard(params),
             _ => {}
@@ -130,13 +131,11 @@ impl Emulator<'_> {
             return;
         };
 
-        self.term
-            .child_requests
-            .push_back(ChildRequest::SetClipboard {
-                text,
-                selection,
-                append,
-            });
+        self.term.events.push_request(ChildRequest::SetClipboard {
+            text,
+            selection,
+            append,
+        });
     }
 }
 
@@ -248,6 +247,10 @@ impl TerminalState {
         self.clamp_cursor();
     }
 
+    fn ring_bell(&mut self) {
+        self.events.push_request(ChildRequest::RingBell);
+    }
+
     fn soft_reset(&mut self) {
         let size = self.size;
         self.primary = Screen::blank(size);
@@ -267,7 +270,7 @@ impl TerminalState {
         // RIS restores the terminal, and a pending request belongs to the
         // session being reset; leaving it would let a caller act on an ask
         // from before the reset.
-        self.child_requests.clear();
+        self.events.clear_requests();
         self.scroll_top = 0;
         self.scroll_bottom = size.rows.get().saturating_sub(1);
         // RIS — DEC terminal documentation:
@@ -276,6 +279,11 @@ impl TerminalState {
         // reference may change.
         self.scrollback.clear();
         self.scrollback_cells = 0;
+        // The whole terminal was reset. This outranks the state-change flags
+        // it would otherwise also raise (the screen is blank, the history is
+        // gone, the title is cleared), so a caller sees one TerminalReset and
+        // knows everything derived from the child before it is stale.
+        self.events.mark_terminal_reset();
     }
 
     fn handle_csi(&mut self, params: &vte::Params, intermediates: &[u8], action: char) {
