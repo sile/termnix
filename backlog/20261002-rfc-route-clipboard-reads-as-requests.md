@@ -267,9 +267,9 @@ that decides direction, so it is worth a comment saying so.
   say), the variant gains a field inline; the shape is chosen then, not
   pre-emptively.
 - **Should the crate do anything if the caller never answers?** It cannot: it
-  does not know the child is waiting, and it holds no reply to send. Whether to
-  document the caller's obligation more strongly (a doc note on the variant) or
-  leave it implicit is open.
+  does not know the child is waiting, and it holds no reply to send. Settled by
+  the implementation: the obligation is documented on the variant rather than
+  left implicit. See the Outcome.
 
 ## Future possibilities
 
