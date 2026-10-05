@@ -5,8 +5,8 @@
 ## Summary
 
 Move the OSC 0 / OSC 2 window title off `TerminalState` state and onto the
-request channel, as `OscRequest::SetTitle`, removed by the same
-`take_osc_request()` that drains the clipboard request. This retires `TerminalState::title()`, the
+request channel, as `ChildRequest::SetTitle`, removed by the same
+`take_child_request()` that drains the clipboard request. This retires `TerminalState::title()`, the
 `title` field, and the `title_changed` flag, which exists only so a `String`
 can take part in the visible-change check that every other field does by being
 `Copy`. The title is a value the child tells the caller; it is not part of what
@@ -65,12 +65,12 @@ After, the title arrives once, on the same channel as everything else the child
 asks of the caller:
 
 ```rust
-while let Some(request) = term.take_osc_request() {
+while let Some(request) = term.take_child_request() {
     match request {
-        OscRequest::SetClipboard { text, selection, append } => {
+        ChildRequest::SetClipboard { text, selection, append } => {
             set_clipboard(selection, &text, append)
         }
-        OscRequest::SetTitle { title } => set_window_title(&title),
+        ChildRequest::SetTitle { title } => set_window_title(&title),
     }
 }
 ```
@@ -80,13 +80,13 @@ ones above are the clipboard and the title.)
 
 A host that does not show a title stops mentioning it at all: there is no
 getter to call and no previous value to remember. A host that wants the current
-title remembers the last `OscRequest::SetTitle` it saw, which is the only place a
+title remembers the last `ChildRequest::SetTitle` it saw, which is the only place a
 "current value" can come from once the crate stops holding one.
 
 ## Reference-level explanation
 
 This proposal assumes the request channel the OSC handling policy calls for: a
-consumed-once `OscRequest` type drained by `take_osc_request()`, whose first
+consumed-once `ChildRequest` type drained by `take_child_request()`, whose first
 variant is the clipboard request. What this RFC adds is one variant to that
 type and the removal of the state the title no longer needs. How the title is removed from
 state does not depend on which other variants exist, and a `match` over it
@@ -95,7 +95,7 @@ needs a wildcard-free arm only for the variants the type actually has.
 ### The variant
 
 ```rust
-pub enum OscRequest {
+pub enum ChildRequest {
     /// The child asked to change a selection (OSC 52).
     SetClipboard {
         text: Vec<u8>,
@@ -121,7 +121,7 @@ now handed to the caller instead of stored.
 - The `title: String` field is removed from `TerminalState`.
 - The `title_changed: bool` field is removed.
 - `osc_dispatch` stops assigning `self.term.title` / `self.term.title_changed`
-  and instead pushes `OscRequest::SetTitle { title }`.
+  and instead pushes `ChildRequest::SetTitle { title }`.
 - `feed` stops clearing `title_changed` before parsing and stops reading it in
   the `changed` expression. The expression becomes the primary screen's dirty
   flag OR the `visible_scalars()` compare; the title is no longer a term in it.
@@ -146,9 +146,9 @@ the counter keeps one meaning (grid repaint needed) instead of two.
 ### Effect on `soft_reset` / RIS
 
 RIS currently clears the title via `self.title.clear()`. With the title gone
-from state, RIS produces no `OscRequest::SetTitle`: a reset does not *set* a
+from state, RIS produces no `ChildRequest::SetTitle`: a reset does not *set* a
 title, so there is nothing to report. A caller holding the last
-`OscRequest::SetTitle` keeps it
+`ChildRequest::SetTitle` keeps it
 until the child sends a new one, which is correct - RIS resets the terminal,
 and a host's window title is the host's to reset. Note the interaction with
 the clipboard, which `soft_reset` also clears: the clipboard is cleared because
@@ -174,7 +174,7 @@ terminals draw; neither does the crate today.
   "the title is now X". A caller with several places that need the current
   title must thread the latest value to them, where a getter let each ask the
   crate.
-- **`OscRequest::SetTitle` carries an owned `String` that most callers
+- **`ChildRequest::SetTitle` carries an owned `String` that most callers
   discard.** A caller that does not display a title pays for the allocation
   and the match arm anyway. The enum is exhaustive, so the arm is mandatory.
 - **One visible-change rule becomes two.** After this RFC, "does it draw?" -
@@ -184,7 +184,7 @@ terminals draw; neither does the crate today.
 
 ## Rationale and alternatives
 
-- **Keep `title()` and add `OscRequest::SetTitle` beside it.** No break, and a
+- **Keep `title()` and add `ChildRequest::SetTitle` beside it.** No break, and a
   caller that wants a snapshot keeps it. Rejected because it keeps the
   `title_changed` flag (the state must still participate in `revision()`, and
   the `String` still cannot join the scalar compare) and because the two
@@ -205,14 +205,14 @@ terminals draw; neither does the crate today.
   that exists so there is one place to drain, and a caller draining two
   accessors has to decide an order between them that carries no meaning. The
   title is not special enough to earn the second accessor.
-- **Index the request variant by OSC number (`OscRequest::Other { id, params }`
+- **Index the request variant by OSC number (`ChildRequest::Other { id, params }`
   and let the caller decode the title too).** Rejected: it would make the title
   untyped and push a `from_utf8_lossy` onto every caller, when the crate
   already has the decoded value in hand.
 
 ## Unresolved questions
 
-- **Does `OscRequest::SetTitle` carry `String` or `Vec<u8>`?** `String` matches
+- **Does `ChildRequest::SetTitle` carry `String` or `Vec<u8>`?** `String` matches
   the current lossy decoding and the display intent. `Vec<u8>` would preserve
   the raw bytes for a caller that wants them, at the cost of moving the lossy
   conversion to every caller. Leaning `String`, settled at implementation
@@ -234,7 +234,7 @@ terminals draw; neither does the crate today.
 
 - With the title on the request channel, a host that shows a title in its own
   chrome has a single thing to handle, and a host that shows the title in the
-  host terminal's own title bar can forward `OscRequest::SetTitle` to it in
+  host terminal's own title bar can forward `ChildRequest::SetTitle` to it in
   one line.
 - If the crate ever models the "icon name vs window title" split (OSC 0 vs
   OSC 2), that split is a second variant on the same channel rather than a

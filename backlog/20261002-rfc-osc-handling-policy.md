@@ -214,9 +214,9 @@ put things into, so it comes first; passthrough answers where an unmodelled or
 `?` sequence goes, so the question of read requests lands there.
 
 - **The request channel.** Introduce a single consumed-once channel on
-  `TerminalState` (`take_osc_request()`), and decide whether the existing
+  `TerminalState` (`take_child_request()`), and decide whether the existing
   clipboard take folds into it or sits beside it. The RFC that adds it owns the
-  shape of the `OscRequest` type; this umbrella fixes only that the rule above
+  shape of the `ChildRequest` type; this umbrella fixes only that the rule above
   assigns each sequence a home, and that a family of consumed-once requests is
   what the rule's "event" row produces. The type is named for the ask rather
   than the effect because every value on it is something the child asked the

@@ -112,7 +112,7 @@ the crate owns - cells, cursor, pen, modes, scroll region, scrollback, the title
 field, the pending-test flags - exactly as today, and it replaces
 
 ```rust
-self.osc_requests.clear();
+self.child_requests.clear();
 ```
 
 with

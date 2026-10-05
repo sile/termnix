@@ -58,13 +58,13 @@ After, the request arrives on the channel, and the host - which owns the
 clipboard - answers it:
 
 ```rust
-while let Some(request) = term.take_osc_request() {
+while let Some(request) = term.take_child_request() {
     match request {
-        OscRequest::SetClipboard { text, selection, append } => {
+        ChildRequest::SetClipboard { text, selection, append } => {
             // the child asked us to replace a selection
             apply_write(text, selection, append);
         }
-        OscRequest::GetClipboard { selection } => {
+        ChildRequest::GetClipboard { selection } => {
             // the child asked us for a selection's contents
             answer_read(session, selection);
         }
@@ -107,7 +107,7 @@ arm no longer has a single outcome. The selection is resolved first (as
 ```rust
 let payload = params.get(2).copied().unwrap_or(b"");
 if payload == b"?" {
-    self.term.osc_requests.push_back(OscRequest::GetClipboard { selection });
+    self.term.child_requests.push_back(ChildRequest::GetClipboard { selection });
     return;
 }
 ```
@@ -138,7 +138,7 @@ the arm produces changes. That is why a read is a typed variant here and not an
 ### The variant, and the write it pairs with
 
 ```rust
-pub enum OscRequest {
+pub enum ChildRequest {
     /// The child asked to replace a selection (OSC 52 set).
     SetClipboard {
         text: Vec<u8>,
@@ -198,7 +198,7 @@ None in either direction. A read request changes no cell and no mode, so
 `revision()` does not move; like a set, it draws nothing. And a read is a
 request, not state, so there is nothing to clear on `soft_reset` (the set side
 has a stored request to clear, which is why that side is touched there; a read
-is consumed by `take_osc_request()` and is gone).
+is consumed by `take_child_request()` and is gone).
 
 ### Ordering
 
