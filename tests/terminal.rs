@@ -899,8 +899,7 @@ fn next_request(t: &mut termnix::TerminalState) -> Option<termnix::ChildRequest>
 }
 
 /// Drains the next request and matches it as a `SetClipboard`, failing the
-/// test if the request belongs to another variant (there is only one today,
-/// but the match is the point of the channel).
+/// test if the request belongs to another variant.
 fn set_clipboard(t: &mut termnix::TerminalState) -> Option<ClipboardWrite> {
     match next_request(t)? {
         termnix::ChildRequest::SetClipboard {
@@ -912,7 +911,16 @@ fn set_clipboard(t: &mut termnix::TerminalState) -> Option<ClipboardWrite> {
             selection,
             append,
         }),
-        termnix::ChildRequest::RingBell => panic!("expected a SetClipboard request, got RingBell"),
+        other => panic!("expected a SetClipboard request, got {other:?}"),
+    }
+}
+
+/// Drains the next request and matches it as a `GetClipboard`, failing the
+/// test if the request belongs to another variant.
+fn get_clipboard(t: &mut termnix::TerminalState) -> Option<termnix::ClipboardSelection> {
+    match next_request(t)? {
+        termnix::ChildRequest::GetClipboard { selection } => Some(selection),
+        other => panic!("expected a GetClipboard request, got {other:?}"),
     }
 }
 
@@ -1330,9 +1338,81 @@ fn osc_52_empty_payload_is_a_clear_request() {
 }
 
 #[test]
-fn osc_52_read_request_is_not_a_request() {
+fn osc_52_read_request_is_reported_with_its_selection() {
+    // A read asks the caller for a selection's contents; termnix owns no
+    // clipboard, so it delivers the question and leaves the answer to the
+    // caller rather than dropping it.
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;?\x07");
+    assert_eq!(
+        get_clipboard(&mut t),
+        Some(termnix::ClipboardSelection::Clipboard)
+    );
+}
+
+#[test]
+fn osc_52_read_resolves_every_selection() {
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;p;?\x07");
+    assert_eq!(
+        get_clipboard(&mut t),
+        Some(termnix::ClipboardSelection::Primary)
+    );
+    t.feed(b"\x1b]52;x;?\x07");
+    assert_eq!(
+        get_clipboard(&mut t),
+        Some(termnix::ClipboardSelection::Other(b"x".to_vec()))
+    );
+    // A missing selection means the system clipboard, as it does for a write.
+    t.feed(b"\x1b]52;;?\x07");
+    assert_eq!(
+        get_clipboard(&mut t),
+        Some(termnix::ClipboardSelection::Clipboard)
+    );
+}
+
+#[test]
+fn osc_52_read_does_not_raise_screen_updated() {
+    // A read draws nothing either; it is a question, not a change.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;?\x07");
+    let events = drain(&mut t);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::ScreenUpdated)),
+        "a clipboard read is not a visible change: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            termnix::Event::RequestReceived(termnix::ChildRequest::GetClipboard { .. })
+        )),
+        "the read is reported as a get request: {events:?}"
+    );
+}
+
+#[test]
+fn osc_52_set_and_read_keep_the_childs_order() {
+    // A set followed by a read in one feed is delivered set-then-read; the
+    // channel preserves the order the child wrote.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]52;p;?\x07");
+    assert_eq!(set_clipboard(&mut t).expect("set first").text, b"hello");
+    assert_eq!(
+        get_clipboard(&mut t),
+        Some(termnix::ClipboardSelection::Primary)
+    );
+    assert!(next_request(&mut t).is_none());
+}
+
+#[test]
+fn osc_52_read_survives_a_hard_reset() {
+    // Like a set, a pending read belongs to the session being reset and must
+    // not outlive RIS.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;?\x07");
+    t.feed(b"\x1bc");
     assert!(next_request(&mut t).is_none());
 }
 

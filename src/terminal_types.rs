@@ -317,9 +317,10 @@ pub enum ClipboardSelection {
 /// Something a child asked for in an OSC sequence, retained for the caller.
 ///
 /// termnix interprets a handful of command sequences and does not act on the
-/// resources they name itself (a clipboard, a bell). For
-/// those it records the ask and leaves carrying it out to the caller. Every
-/// such ask arrives as `Event::RequestReceived`, one variant at a time; the
+/// resources they name itself (a clipboard, a bell). For those it records the
+/// ask and leaves carrying it out to the caller - a write to make, a bell to
+/// ring, or, for a clipboard read, a question only the caller can answer.
+/// Every such ask arrives as `Event::RequestReceived`, one variant at a time; the
 /// enum is the whole family of asks, so the one a caller cares about is an arm
 /// it matches rather than a method it remembers to call.
 ///
@@ -353,6 +354,18 @@ pub enum ChildRequest {
         /// child's own distinction, recorded verbatim so a caller mirroring
         /// the text into a host clipboard can mirror an append as an append.
         append: bool,
+    },
+    /// An OSC 52 clipboard read (`ESC ] 52 ; <Pc> ; ? ST`).
+    ///
+    /// The sequence asks the terminal to send a selection's contents back to
+    /// the child. termnix owns no clipboard, so it cannot answer and writes
+    /// nothing to the reply buffer: the caller that owns the selection is the
+    /// one that answers, by writing an OSC 52 set sequence back to the PTY
+    /// master. A caller that ignores this variant leaves the child waiting,
+    /// which is what a caller that only forwards writes will do.
+    GetClipboard {
+        /// Which selection the application asked for.
+        selection: ClipboardSelection,
     },
     /// The child rang the bell (`BEL`, `0x07`).
     ///
