@@ -163,6 +163,11 @@ merged and one that may not is the crux of the design:
   three bells in one `feed` are three things to do, in order. The requests are
   held in a queue and every one is yielded.
 
+When one `feed` produces more than one kind, they are yielded in a fixed order:
+the invalidating fact (`TerminalReset`) first, the merged state updates next,
+and the unmerged requests last, where coming last cannot lose them. The exact
+list is given at the end of this RFC.
+
 If a host resizes the terminal itself, it already knows; a resize is not an
 `Event` for the same reason the crate does not notify a caller of a method the
 caller just called. If a host trims the scrollback itself with
@@ -225,28 +230,52 @@ was already the wrong word for a queue, per the naming note above.
   argument about whether it is state or an event, hosts keep two loops, and the
   bell stays unobservable. The crate does not become wrong; it becomes harder
   to extend and harder to explain.
+- **The title stays state, and is not a request.** The title is something the
+  crate resolves for itself: `feed` sees the escape sequence, updates the title
+  it holds, and `title()` hands the current value to a host that wants it. The
+  change is announced as `Event::TitleUpdated`, and no `ChildRequest::SetTitle`
+  is proposed; the title proposal in this series is withdrawn. This is the
+  crate's rule for the split: a thing the crate can resolve is state plus an
+  update event, and a thing it cannot resolve is a request. A title is
+  resolvable - there is exactly one title and the crate holds it - so it is
+  state. A clipboard is not: which clipboard a set or get targets is decided
+  by the host, tmux-style shared clipboards included, so both clipboard
+  directions stay requests. The bell falls on the request side for a different
+  reason: the crate cannot ring anything, so there is nothing for it to hold
+  as state.
+- **The bell is merged like any other request: it is not.** A bell is not an
+  `Event` variant of its own; it is `ChildRequest::RingBell`, and requests are
+  held unmerged in a queue. Three bells in one `feed` are three `RingBell`s
+  yielded in order, not one "bell happened" flag. A host that wants a burst
+  collapsed can count them; the crate does not decide that for it, and there
+  is no bell-specific merge rule.
 
 ## Unresolved questions
 
-- **What is the priority order of `Events::next()`?** The `Action`/`Actions`
-  pair orders local persistence before outbound messages for a specific
-  safety reason. This crate has no such ordering constraint that is settled
-  yet; the order is part of the design and is left open here.
-- **Does `TitleUpdated` belong at all, or is the title delivered as a
-  request?** The title is proposed elsewhere in this series as
-  `ChildRequest::SetTitle`, i.e. a request the host carries out. If the title
-  is instead state the crate holds - which it is today, behind `title()` -
-  then `TitleUpdated` is the event and no request is needed. This RFC assumes
-  the event and leaves the request proposal to be withdrawn or reconciled.
-- **Is `TerminalReset` a complete name?** It names the scope (the whole
-  terminal) rather than a `Hard`/`Soft` distinction, which the reset proposal
-  rejects while only one reset exists. Whether a caller ever needs to know
-  *what* a reset invalidated, rather than just that one happened, is open.
-- **Does the bell's merge rule want to be more than `bool`?** A bell is a
-  request, so it is not merged here: three bells are three `RingBell`s. If a
-  host wants bells coalesced, that is the host's counter, but it is worth
-  confirming that no merge is wanted for the one case where a burst is
-  plausible.
+None. The questions that earlier drafts carried here - the title as event
+versus request, the completeness of the `TerminalReset` name, and the bell's
+merge rule - are settled, and the reasoning is recorded above (see the title
+and clipboard contrast and the bell note under the reference-level
+collecting rules). The priority order of `Events::next()` is settled too, and
+is fixed as follows:
+
+```text
+1. TerminalReset
+2. ScreenUpdated
+3. ScrollbackUpdated
+4. TitleUpdated
+5. RequestReceived(...)
+```
+
+The order runs from the fact that invalidates the most derived state to the
+fact that is never lost: a reset invalidates everything read before it, so it
+comes first; the merged state updates follow, newest reads after oldest; and
+the requests come last because, being unmerged and held in a queue, they
+survive any number of later reads and cannot be lost by coming after the
+flags. The `Action`/`Actions` pair orders its fields for a specific safety
+reason (persistence before outbound messages); this crate has no such
+constraint, so the order here is chosen to make a host's `match` read the
+facts in the order they invalidate, not to enforce a safety property.
 
 ## Future possibilities
 
