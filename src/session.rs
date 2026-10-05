@@ -769,7 +769,7 @@ impl Session {
     ///         termnix::Event::TerminalReset => {
     ///             // the child reset the terminal; repaint from scratch
     ///         }
-    ///         termnix::Event::ScrollbackLineAdded => session.trim_scrollback(1000, 100_000),
+    ///         termnix::Event::ScrollbackLineAppended => session.trim_scrollback(1000, 100_000),
     ///         termnix::Event::TitleUpdated => {
     ///             // read `session.terminal_state().title()`
     ///         }

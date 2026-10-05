@@ -182,7 +182,7 @@ impl Iterator for Events {
             return Some(Event::ScreenUpdated);
         }
         if std::mem::take(&mut self.scrollback_line_added) {
-            return Some(Event::ScrollbackLineAdded);
+            return Some(Event::ScrollbackLineAppended);
         }
         if std::mem::take(&mut self.title_updated) {
             return Some(Event::TitleUpdated);
@@ -319,7 +319,7 @@ impl TerminalState {
     ///         termnix::Event::ScreenUpdated => { /* repaint */ }
     ///         termnix::Event::TerminalReset => { /* drop derived state, repaint */ }
     ///         // History has no built-in bound; cap it (here 1000 lines).
-    ///         termnix::Event::ScrollbackLineAdded => term.trim_scrollback(1000, 100_000),
+    ///         termnix::Event::ScrollbackLineAppended => term.trim_scrollback(1000, 100_000),
     ///         termnix::Event::TitleUpdated => { /* read term.title() */ }
     ///         termnix::Event::RequestReceived(request) => { /* act on `request` */ }
     ///     }

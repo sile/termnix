@@ -64,7 +64,7 @@ const WRITE_SOFT_LIMIT: usize = 4096;
 ///
 /// termnix keeps no built-in bound: history grows until the caller trims it,
 /// so this example is where the bound lives. Enforced when a
-/// [`Event::ScrollbackLineAdded`](termnix::Event::ScrollbackLineAdded) is
+/// [`Event::ScrollbackLineAppended`](termnix::Event::ScrollbackLineAppended) is
 /// drained.
 const SCROLLBACK_MAX_LINES: usize = 1000;
 
@@ -814,7 +814,7 @@ fn note_selection_events(app: &mut App) {
                 // History gained a line. termnix imposes no bound, so the cap
                 // this example chose is applied here; a long-running child
                 // would otherwise grow the history without limit.
-                termnix::Event::ScrollbackLineAdded => {
+                termnix::Event::ScrollbackLineAppended => {
                     session.trim_scrollback(SCROLLBACK_MAX_LINES, SCROLLBACK_MAX_CELLS);
                 }
                 // The title is state termnix holds; this example shows no

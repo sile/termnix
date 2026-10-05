@@ -409,7 +409,7 @@ pub enum Event {
     /// ([`trim_scrollback()`](crate::TerminalState::trim_scrollback)) and is
     /// not reported. Read the new lines through
     /// [`scrollback_lines()`](crate::TerminalState::scrollback_lines).
-    ScrollbackLineAdded,
+    ScrollbackLineAppended,
     /// The window title changed (OSC 0 / OSC 2, or a reset clearing it).
     ///
     /// The title is state termnix holds; read it through
