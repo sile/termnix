@@ -60,6 +60,17 @@ const INPUT_DRAIN_BUDGET: usize = 64;
 /// Caller-side write-queue limit; holds the key when above this.
 const WRITE_SOFT_LIMIT: usize = 4096;
 
+/// Maximum scrollback lines retained per session.
+///
+/// termnix keeps no built-in bound: history grows until the caller trims it,
+/// so this example is where the bound lives. Enforced when a
+/// [`Event::ScrollbackLineAppended`](termnix::Event::ScrollbackLineAppended) is
+/// drained.
+const SCROLLBACK_MAX_LINES: usize = 1000;
+
+/// Maximum scrollback cells retained per session (see above).
+const SCROLLBACK_MAX_CELLS: usize = 100_000;
+
 /// Which fd a poll entry watches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PollTarget {
@@ -152,9 +163,13 @@ struct App {
     next_process_poll: Instant,
     pump_cursor: usize,
     quit: bool,
-    /// Visible-state revision last written to the host for the selected
-    /// session, or `None` when the current selection has not been drawn yet.
-    drawn_revision: Option<u64>,
+    /// Whether the selected session's screen needs redrawing.
+    ///
+    /// Set when a `ScreenUpdated` or `TerminalReset` event arrives for the
+    /// selection (and on a selection switch or resize, which change what is on
+    /// screen without an event); cleared once the frame has been written to the
+    /// host. Starts `true` so the first frame is always drawn.
+    screen_dirty: bool,
     /// Frame most recently rendered to the host.
     ///
     /// [`Frame::render`](tuinix::Frame::render) emits only the cells that
@@ -180,7 +195,7 @@ impl App {
             next_process_poll: Instant::now() + PROCESS_POLL_INTERVAL,
             pump_cursor: 0,
             quit: false,
-            drawn_revision: None,
+            screen_dirty: true,
             prev_frame: None,
         })
     }
@@ -253,7 +268,7 @@ impl App {
             .position(|&slot| slot == self.selected)
             .unwrap_or(0);
         self.selected = live[(index + 1) % live.len()];
-        self.drawn_revision = None;
+        self.screen_dirty = true;
         self.prev_frame = None;
     }
 
@@ -263,7 +278,7 @@ impl App {
     /// `render` would otherwise diff against a frame of a different geometry.
     fn apply_resize(&mut self, size: termnix::Size) -> Result<(), AppError> {
         self.prev_frame = None;
-        self.drawn_revision = None;
+        self.screen_dirty = true;
         for slot in &mut self.sessions {
             let live = slot.as_ref().is_some_and(|s| s.fd().is_some());
             if live {
@@ -770,23 +785,67 @@ fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
     Ok(())
 }
 
+/// Drains every session's events, marking the screen dirty when one says a
+/// repaint is due.
+///
+/// Every owned session is drained, not just the selected one: an event is
+/// consumed by reading it, so leaving a background session's events unread
+/// would queue its requests (a clipboard write, a bell) without bound. Only the
+/// selected session's events can affect the drawn frame, but all of them must be
+/// read.
+///
+/// Every variant is matched, so a new event kind is a compile error here rather
+/// than a silently dropped notification.
+fn note_selection_events(app: &mut App) {
+    for slot in 0..SESSION_COUNT {
+        let Some(session) = app.sessions[slot].as_mut() else {
+            continue;
+        };
+        let selected = slot == app.selected;
+        while let Some(event) = session.next_event() {
+            match event {
+                // The visible grid this session projects changed; a reset also
+                // blanks it, so everything already drawn is stale too.
+                termnix::Event::ScreenUpdated | termnix::Event::TerminalReset => {
+                    if selected {
+                        app.screen_dirty = true;
+                    }
+                }
+                // History gained a line. termnix imposes no bound, so the cap
+                // this example chose is applied here; a long-running child
+                // would otherwise grow the history without limit.
+                termnix::Event::ScrollbackLineAppended => {
+                    session.trim_scrollback(SCROLLBACK_MAX_LINES, SCROLLBACK_MAX_CELLS);
+                }
+                // The title is state termnix holds; this example shows no
+                // title, so there is nothing to do.
+                termnix::Event::TitleUpdated => {}
+                // A child request (a clipboard write, a bell) has to be read
+                // like any other event, or the request queue would grow without
+                // bound; a real host would carry it out here, for a background
+                // session as well.
+                termnix::Event::RequestReceived(_request) => {}
+            }
+        }
+    }
+}
+
 /// Draws the selected session to the host terminal.
 ///
-/// Rendering is skipped when the session's visible-state revision matches the
-/// last drawn one, so idle polls no longer re-emit the frame or the host
-/// cursor show/hide sequences. The revision is read from the terminal state so
-/// the recorded value always matches what was actually rendered.
+/// Rendering is skipped unless the selected session's screen is dirty, so idle
+/// polls no longer re-emit the frame or the host cursor show/hide sequences.
+/// The dirty flag is set by [`note_selection_events`] when a `ScreenUpdated` or
+/// `TerminalReset` event arrives, and cleared here once the frame has been
+/// written.
 fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppError> {
     let Some(session) = app.sessions[app.selected].as_ref() else {
-        app.drawn_revision = None;
         app.prev_frame = None;
         return Ok(());
     };
-    let state = session.terminal_state();
-    let revision = state.revision();
-    if app.drawn_revision == Some(revision) {
+    if !app.screen_dirty {
         return Ok(());
     }
+    let state = session.terminal_state();
     let projection = Projection::from_state(state).map_err(AppError::msg)?;
     let frame_size = tuinix::Size {
         rows: usize::from(projection.size.rows.get()),
@@ -804,7 +863,7 @@ fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppEr
         .and_then(|()| driver.flush())
         .map_err(AppError::io)?;
     app.prev_frame = Some(frame);
-    app.drawn_revision = Some(revision);
+    app.screen_dirty = false;
     Ok(())
 }
 
@@ -834,6 +893,7 @@ fn run_loop(
         let size = size_from_host(size).map_err(AppError::msg)?;
         app.apply_resize(size)?;
 
+        note_selection_events(app);
         draw_selected(driver, app)?;
 
         if app.pending.is_none() {
@@ -1030,7 +1090,7 @@ mod tests {
             next_process_poll: Instant::now(),
             pump_cursor: 0,
             quit: false,
-            drawn_revision: None,
+            screen_dirty: true,
             prev_frame: None,
         }
     }

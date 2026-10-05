@@ -78,7 +78,7 @@ After, there is one loop and one thing to match on:
 while let Some(event) = term.next_event() {
     match event {
         Event::ScreenUpdated => redraw(&term),
-        Event::ScrollbackUpdated => refresh_history_view(&term),
+        Event::ScrollbackLineAdded => refresh_history_view(&term),
         Event::TitleUpdated => update_title(&term),
         Event::TerminalReset => {
             // Everything derived from the child is stale.
@@ -108,7 +108,7 @@ to remember and no counter to keep.
 ```rust
 pub enum Event {
     ScreenUpdated,
-    ScrollbackUpdated,
+    ScrollbackLineAdded,
     TitleUpdated,
     TerminalReset,
     RequestReceived(ChildRequest),
@@ -117,12 +117,15 @@ pub enum Event {
 
 The names are not forced into one verb. A variant is named for what actually
 happened in the crate: the screen is replaced cell by cell, so it is
-`ScreenUpdated`; a line is only ever appended to the history, never rewritten,
-so `ScrollbackUpdated` carries that the history grew (the one-directional fact
-is spelled out in its documentation rather than in its name, so that a caller
-sees one word, `Updated`, for everything that updates); a title is replaced, so
-it is `TitleUpdated`; a reset is the whole terminal, so it is `TerminalReset`;
-a request is received from the child, so it is `RequestReceived`.
+`ScreenUpdated`; a title is replaced, so it is `TitleUpdated`; a reset is the
+whole terminal, so it is `TerminalReset`; a request is received from the child,
+so it is `RequestReceived`. The history is the exception that proves the rule:
+a line is only ever appended to it, never rewritten or removed by the crate, so
+its variant is `ScrollbackLineAdded` rather than `ScrollbackUpdated`. Calling it
+`Updated` would sit in the `Updated` family with `ScreenUpdated` and
+`TitleUpdated` while saying something false about the history - that an existing
+line could change - so the one-directional name is kept, and the vocabulary is
+traded for accuracy.
 
 `Events` is the collecting type. It is private, an implementation detail the
 caller does not name or hold; the one public accessor is a drain loop:
@@ -143,6 +146,27 @@ impl Iterator for Events {
 }
 ```
 
+The same accessor is mirrored on `Session`, which owns a `TerminalState` and
+otherwise exposes only `terminal_state() -> &TerminalState`. A host that drives
+a session reaches its events through the session, without borrowing the state
+out from under it:
+
+```rust
+impl Session {
+    /// Returns the next event from the session's terminal and consumes it.
+    pub fn next_event(&mut self) -> Option<Event>;
+}
+```
+
+It is a thin delegate to [`TerminalState::next_event()`], so there is one
+implementation and one set of semantics; the mirror exists only because
+`next_event()` takes `&mut self` and a session cannot hand out a mutable
+borrow of its terminal without giving up its own invariants. This is the
+minimal form of the session-level channel; a fuller one that also reports
+process exit is a future possibility.
+
+[`TerminalState::next_event()`]: TerminalState::next_event
+
 The name is `next_event()`, not `take_event()`. `take` in Rust means "swap the
 whole thing out for its default" (`mem::take`, `Option::take`) or "cut the
 iterator short here" (`Iterator::take`); neither carries the idea of a queue
@@ -156,9 +180,12 @@ only `next_event()` - but the internal shape and the name agree.
 Collecting is per variant, and the difference between a variant that may be
 merged and one that may not is the crux of the design:
 
-- `ScreenUpdated`, `ScrollbackUpdated`, `TitleUpdated` and `TerminalReset` are
-  *mergeable*: two of each in one `feed` are one fact, and the caller wants the
-  latest state, not a count. They are stored as flags and yielded once.
+- `ScreenUpdated`, `ScrollbackLineAdded`, `TitleUpdated` and `TerminalReset`
+  are *mergeable*: two of each in one `feed` are one fact, and the caller wants
+  the latest state, not a count. They are stored as flags and yielded once.
+  `ScrollbackLineAdded` merging means "at least one line was added since the
+  last drain", which is all a caller needs to re-read the history; whether one
+  line or ten arrived is a count the flag deliberately does not keep.
 - `RequestReceived(ChildRequest)` is *not* mergeable: three clipboard writes and
   three bells in one `feed` are three things to do, in order. The requests are
   held in a queue and every one is yielded.
@@ -262,7 +289,7 @@ is fixed as follows:
 ```text
 1. TerminalReset
 2. ScreenUpdated
-3. ScrollbackUpdated
+3. ScrollbackLineAdded
 4. TitleUpdated
 5. RequestReceived(...)
 ```
@@ -287,10 +314,11 @@ facts in the order they invalidate, not to enforce a safety property.
 - **More event kinds.** Mouse reporting, hyperlink activation, or any other
   child-driven signal gains a home as a new variant, with its merge rule as
   part of its definition.
-- **A matching channel on `Session`.** Process exit is currently reported
-  through `Session::try_wait()` and `status()`, which is a third notification
-  shape. A `Session`-level events value could unify it with the terminal's,
-  without merging the two layers.
+- **A fuller channel on `Session`.** This RFC adds the minimal mirror, a
+  `Session::next_event()` that delegates to the terminal's. It does not touch
+  process exit, still reported through `Session::try_wait()` and `status()`,
+  which is a third notification shape. A later `Session`-level events value
+  could unify exit with the terminal's events, without merging the two layers.
 - **The request enum shrinks.** As features move from "the host carries it
   out" to "the crate holds it as state", `ChildRequest` may one day hold only
   the asks the crate genuinely cannot resolve - a clipboard read, whose target
