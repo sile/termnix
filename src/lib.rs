@@ -26,7 +26,7 @@ pub use pty::SignalOutcome;
 pub use session::{Interests, PumpBudget, Session, SessionCounters, SessionStatus};
 pub use size::Size;
 pub use terminal::{
-    Cell, ClipboardSelection, Color, MouseReporting, OscRequest, Position, ScrollbackLine, Style,
+    Cell, ChildRequest, ClipboardSelection, Color, MouseReporting, Position, ScrollbackLine, Style,
     TerminalModes, TerminalState,
 };
 

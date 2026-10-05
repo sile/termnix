@@ -17,7 +17,7 @@
 //! - CSI queries: DSR, CPR, primary DA (`CSI c` / `CSI ? c`); DA2 and DA3 are
 //!   recognized but not answered
 //! - OSC 0/2: window title (stored); OSC 52: clipboard request (stored for
-//!   [`TerminalState::take_osc_request()`]); other OSC ignored without becoming
+//!   [`TerminalState::take_child_request()`]); other OSC ignored without becoming
 //!   text
 //! - Alternate screen: DECSET/DECRST 1049 (also 47 / 1047)
 //!
@@ -39,7 +39,7 @@
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
 pub use crate::terminal_types::{
-    Cell, ClipboardSelection, Color, MouseReporting, OscRequest, Position, ScrollbackLine, Style,
+    Cell, ChildRequest, ClipboardSelection, Color, MouseReporting, Position, ScrollbackLine, Style,
     TerminalModes,
 };
 
@@ -70,7 +70,7 @@ use crate::terminal_types::SavedCursor;
 ///   cursor visibility, bracketed paste, mouse reporting (including SGR)
 /// - **Alternate screen**: `?1049`, `?47`, `?1047`
 /// - **OSC 0/2**: window title (stored); **OSC 52**: clipboard request,
-///   taken with [`take_osc_request()`](TerminalState::take_osc_request)
+///   taken with [`take_child_request()`](TerminalState::take_child_request)
 /// - **Queries**: DSR, CPR, and primary DA, answered through
 ///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes). DA2
 ///   (`CSI > c`) and DA3 (`CSI = c`) are recognized but deliberately not
@@ -96,7 +96,8 @@ pub struct TerminalState {
     pub(crate) replies: ReplyBuf,
     pub(crate) scrollback: VecDeque<ScrollbackLine>,
     pub(crate) scrollback_cells: usize,
-    /// OSC requests the caller has not taken yet, oldest-first.
+    /// Requests the child has sent and the caller has not taken yet,
+    /// oldest-first.
     ///
     /// A queue rather than a single slot: a request is an event, and more than
     /// one can arrive in a single `feed` (two OSC 52 sequences, or later a
@@ -104,9 +105,9 @@ pub struct TerminalState {
     /// the rest, and there is no later point at which such a request could be
     /// re-delivered.
     ///
-    /// Not part of `VisibleScalars` and does not bump `revision`: an OSC
-    /// request draws nothing, so it is not a visible change.
-    pub(crate) osc_requests: VecDeque<OscRequest>,
+    /// Not part of `VisibleScalars` and does not bump `revision`: a request
+    /// draws nothing, so it is not a visible change.
+    pub(crate) child_requests: VecDeque<ChildRequest>,
     pub(crate) revision: u64,
     /// Set by `osc_dispatch` when it stores a new title. The title is the one
     /// visible field that is not `Copy`, so it cannot join the before/after
@@ -222,7 +223,7 @@ impl TerminalState {
             replies: ReplyBuf::new(),
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
-            osc_requests: VecDeque::new(),
+            child_requests: VecDeque::new(),
             revision: 0,
             title_changed: false,
         }
@@ -390,10 +391,10 @@ impl TerminalState {
         &self.title
     }
 
-    /// Takes the oldest pending OSC request, if any.
+    /// Takes the oldest pending request from the child, if any.
     ///
-    /// A request is what a child asked for in an OSC sequence that termnix
-    /// interprets but cannot act on itself, such as an OSC 52 clipboard write
+    /// A request is what a child asked the caller to carry out but termnix
+    /// cannot act on itself, such as an OSC 52 clipboard write
     /// (`ESC ] 52 ; <Pc> ; <Pd> ST`). termnix holds no clipboard, so it only
     /// records the ask; acting on it (writing the text to the host terminal
     /// through whatever library owns that terminal) is the caller's job.
@@ -418,8 +419,8 @@ impl TerminalState {
     ///
     /// A request is not a visible change, so taking one does not move
     /// [`revision()`](TerminalState::revision); nor did storing it.
-    pub fn take_osc_request(&mut self) -> Option<OscRequest> {
-        self.osc_requests.pop_front()
+    pub fn take_child_request(&mut self) -> Option<ChildRequest> {
+        self.child_requests.pop_front()
     }
 
     /// Returns the current drawing style (SGR pen).

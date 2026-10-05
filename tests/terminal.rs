@@ -861,8 +861,8 @@ fn term(rows: u16, cols: u16) -> termnix::TerminalState {
 /// test if the request belongs to another variant (there is only one today,
 /// but the match is the point of the channel).
 fn set_clipboard(t: &mut termnix::TerminalState) -> Option<ClipboardWrite> {
-    match t.take_osc_request()? {
-        termnix::OscRequest::SetClipboard {
+    match t.take_child_request()? {
+        termnix::ChildRequest::SetClipboard {
             text,
             selection,
             append,
@@ -874,7 +874,7 @@ fn set_clipboard(t: &mut termnix::TerminalState) -> Option<ClipboardWrite> {
     }
 }
 
-/// The fields of an [`OscRequest::SetClipboard`](termnix::OscRequest::SetClipboard)
+/// The fields of a [`ChildRequest::SetClipboard`](termnix::ChildRequest::SetClipboard)
 /// unpacked, so a test can assert on them directly.
 struct ClipboardWrite {
     text: Vec<u8>,
@@ -1214,9 +1214,9 @@ fn osc_52_clipboard_is_recorded_and_taken_once() {
     // The accessor is a take: the same sequence is not re-delivered on a later
     // feed, which is what keeps "the child asked once" from becoming "the
     // caller acts once per repaint".
-    assert!(t.take_osc_request().is_none());
+    assert!(t.take_child_request().is_none());
     t.feed(b"");
-    assert!(t.take_osc_request().is_none());
+    assert!(t.take_child_request().is_none());
 }
 
 #[test]
@@ -1227,7 +1227,7 @@ fn osc_52_requests_queue_and_drain_oldest_first() {
     t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]52;p;d29ybGQ=\x07");
     assert_eq!(set_clipboard(&mut t).unwrap().text, b"hello");
     assert_eq!(set_clipboard(&mut t).unwrap().text, b"world");
-    assert!(t.take_osc_request().is_none());
+    assert!(t.take_child_request().is_none());
 }
 
 #[test]
@@ -1238,7 +1238,7 @@ fn osc_52_queue_keeps_one_entry_per_identical_request() {
     t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]52;c;aGVsbG8=\x07");
     assert!(set_clipboard(&mut t).is_some());
     assert!(set_clipboard(&mut t).is_some());
-    assert!(t.take_osc_request().is_none());
+    assert!(t.take_child_request().is_none());
 }
 
 #[test]
@@ -1291,7 +1291,7 @@ fn osc_52_empty_payload_is_a_clear_request() {
 fn osc_52_read_request_is_not_a_request() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;?\x07");
-    assert!(t.take_osc_request().is_none());
+    assert!(t.take_child_request().is_none());
 }
 
 #[test]
@@ -1299,7 +1299,7 @@ fn osc_52_invalid_base64_stores_nothing() {
     let mut t = term(1, 8);
     // `!` is not in the base64 alphabet.
     t.feed(b"\x1b]52;c;!!!\x07");
-    assert!(t.take_osc_request().is_none());
+    assert!(t.take_child_request().is_none());
 }
 
 #[test]
@@ -1333,7 +1333,7 @@ fn osc_52_does_not_advance_revision() {
     let base = t.revision();
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
     assert_eq!(t.revision(), base);
-    let _ = t.take_osc_request();
+    let _ = t.take_child_request();
     assert_eq!(t.revision(), base);
 }
 
@@ -1355,7 +1355,7 @@ fn osc_52_survives_a_hard_reset() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
     t.feed(b"\x1bc");
-    assert!(t.take_osc_request().is_none());
+    assert!(t.take_child_request().is_none());
 }
 
 #[test]
