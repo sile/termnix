@@ -1,6 +1,6 @@
 # RFC: Route clipboard reads to the caller
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -284,3 +284,23 @@ that decides direction, so it is worth a comment saying so.
   wherever an OSC number has both a set and a query. This is the first such
   case, and it fixes the shape: direction is a property of the message, not a
   flag on a shared type.
+
+## Outcome
+
+Implemented in [#19](https://github.com/sile/termnix/pull/19) (merged as `776d53f`).
+
+Implemented as described: the `52` arm of `osc_clipboard` now branches on the
+payload, pushing `ChildRequest::GetClipboard { selection }` for `?` and
+`SetClipboard { text, selection, append }` otherwise. The selection is resolved
+once, before the branch, so a read reports the same `ClipboardSelection` a set
+would. `GetClipboard` is a struct variant carrying only `selection`, as
+settled.
+
+The one Unresolved question that the implementation closed is the last: whether
+to document the caller's obligation more strongly. It is now documented on the
+variant (the doc note says termnix cannot answer, that the caller that owns the
+selection answers by writing an OSC 52 set to the PTY master, and that a caller
+ignoring the variant leaves the child waiting). The other two questions stand as
+written; the variant shape is unchanged from the proposal.
+
+The scope is unchanged from what is described above.
