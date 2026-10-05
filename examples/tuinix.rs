@@ -819,12 +819,13 @@ fn note_selection_events(app: &mut App) {
                 // title, so there is nothing to do.
                 termnix::Event::TitleUpdated => {}
                 // A child request (a clipboard write, a clipboard read, a
-                // bell) has to be read like any other event, or the request
-                // queue would grow without bound; a real host would carry it
-                // out here, for a background session as well. This example owns
-                // no clipboard and silences no bell, so it drops every ask -
-                // including a read, which a host that owns a selection would
-                // answer with an OSC 52 set written to the child.
+                // bell, or an OSC termnix does not interpret) has to be read
+                // like any other event, or the request queue would grow
+                // without bound; a real host would carry it out here, for a
+                // background session as well. This example owns no clipboard
+                // and silences no bell, so it drops every ask - including a
+                // read, which a host that owns a selection would answer with
+                // an OSC 52 set written to the child.
                 termnix::Event::RequestReceived(_request) => {}
             }
         }
