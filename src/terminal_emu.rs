@@ -97,11 +97,13 @@ impl Perform for Emulator<'_> {
 }
 
 impl Emulator<'_> {
-    /// Records an OSC 52 clipboard write (`ESC ] 52 ; <Pc> ; <Pd> ST`).
+    /// Records an OSC 52 clipboard message (`ESC ] 52 ; <Pc> ; <Pd> ST`).
     ///
-    /// The write is pushed onto the caller's request queue as
-    /// [`ChildRequest::SetClipboard`]; termnix holds no clipboard, so the ask
-    /// is all it can keep.
+    /// A set (`<Pd>` being base64, possibly `+`-prefixed) is pushed onto the
+    /// caller's request queue as [`ChildRequest::SetClipboard`]; a read
+    /// (`<Pd>` being `?`) is pushed as [`ChildRequest::GetClipboard`]. termnix
+    /// holds no clipboard, so it can neither apply a set nor answer a read; in
+    /// both cases the ask is all it can keep.
     ///
     /// `vte` splits OSC parameters on `;`, so a payload containing `;` cannot
     /// reach here intact; that is a property of the protocol's framing rather
@@ -118,9 +120,14 @@ impl Emulator<'_> {
         };
 
         let payload = params.get(2).copied().unwrap_or(b"");
-        // A read request (`?`) asks the terminal to send the selection back;
-        // termnix has nothing to answer with and stores nothing.
+        // `?` is the one payload that points the other way: a read asks the
+        // caller for a selection's contents instead of telling it what to
+        // store. Both directions stay on the request channel, in the order the
+        // child wrote them.
         if payload == b"?" {
+            self.term
+                .events
+                .push_request(ChildRequest::GetClipboard { selection });
             return;
         }
         let (append, encoded) = match payload.split_first() {
