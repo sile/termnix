@@ -4,7 +4,7 @@
 //!
 //! - Deterministic example tests for the public emulator API (text,
 //!   controls, wide characters, resizing, private modes, query replies, and the
-//!   visible-state revision counter).
+//!   events reported through [`termnix::TerminalState::next_event`]).
 //! - Property tests for chunk-independent feeding and parser continuation
 //!   equivalence. The oracle is a metamorphic relation: the same logical byte
 //!   stream fed through different feed partitions must leave observationally
@@ -874,10 +874,8 @@ fn drain(t: &mut termnix::TerminalState) -> Vec<termnix::Event> {
 /// Drains the pending events and returns whether a `ScreenUpdated` was among
 /// them.
 ///
-/// This is the event-channel replacement for reading the old `revision()`
-/// counter: "the visible screen moved since the last drain". Unlike the
-/// counter it does not survive across a drain, because reporting the change
-/// consumes it; a test that wants to check a later feed re-drains.
+/// "The visible screen moved since the last drain". Reporting the change
+/// consumes it, so a test that wants to check a later feed re-drains.
 fn screen_updated(t: &mut termnix::TerminalState) -> bool {
     drain(t)
         .iter()
@@ -900,7 +898,7 @@ fn next_request(t: &mut termnix::TerminalState) -> Option<termnix::ChildRequest>
     None
 }
 
-/// Drains the next request and unwraps it as a `SetClipboard`, failing the
+/// Drains the next request and matches it as a `SetClipboard`, failing the
 /// test if the request belongs to another variant (there is only one today,
 /// but the match is the point of the channel).
 fn set_clipboard(t: &mut termnix::TerminalState) -> Option<ClipboardWrite> {
@@ -999,7 +997,10 @@ fn horizontal_tab_moves_to_next_stop() {
 }
 
 #[test]
-fn bell_is_ignored() {
+fn bell_is_not_visible_text() {
+    // BEL prints nothing, so the row is unchanged. It is not silent, though:
+    // the bell is reported as a `RingBell` request (see
+    // `screen_updated_stays_clear_without_visible_change`).
     let mut t = term(1, 8);
     t.feed(b"a\x07b");
     assert_eq!(text_at(&t, 0), "ab");
@@ -1269,8 +1270,8 @@ fn osc_52_requests_queue_and_drain_oldest_first() {
     // single-slot design would have kept only the second.
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]52;p;d29ybGQ=\x07");
-    assert_eq!(set_clipboard(&mut t).unwrap().text, b"hello");
-    assert_eq!(set_clipboard(&mut t).unwrap().text, b"world");
+    assert_eq!(set_clipboard(&mut t).expect("hello").text, b"hello");
+    assert_eq!(set_clipboard(&mut t).expect("world").text, b"world");
     assert!(next_request(&mut t).is_none());
 }
 
@@ -1291,7 +1292,7 @@ fn osc_52_missing_selection_means_the_clipboard() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;;aGVsbG8=\x07");
     assert_eq!(
-        set_clipboard(&mut t).unwrap().selection,
+        set_clipboard(&mut t).expect("clipboard").selection,
         ClipboardSelection::Clipboard
     );
 }
@@ -1302,12 +1303,12 @@ fn osc_52_names_other_selections() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;p;aGVsbG8=\x07");
     assert_eq!(
-        set_clipboard(&mut t).unwrap().selection,
+        set_clipboard(&mut t).expect("primary").selection,
         ClipboardSelection::Primary
     );
     t.feed(b"\x1b]52;x;aGVsbG8=\x07");
     assert_eq!(
-        set_clipboard(&mut t).unwrap().selection,
+        set_clipboard(&mut t).expect("other").selection,
         ClipboardSelection::Other(b"x".to_vec())
     );
 }
@@ -1316,7 +1317,7 @@ fn osc_52_names_other_selections() {
 fn osc_52_records_an_append() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;+aGVsbG8=\x07");
-    let request = set_clipboard(&mut t).unwrap();
+    let request = set_clipboard(&mut t).expect("append");
     assert_eq!(request.text, b"hello");
     assert!(request.append);
 }
@@ -1352,7 +1353,7 @@ fn osc_52_payload_need_not_be_utf8() {
     // is stored as-is rather than repaired or rejected.
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;/w==\x07");
-    assert_eq!(set_clipboard(&mut t).unwrap().text, vec![0xff]);
+    assert_eq!(set_clipboard(&mut t).expect("bytes").text, vec![0xff]);
 }
 
 #[test]
@@ -1363,7 +1364,9 @@ fn osc_52_other_selection_need_not_be_utf8() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;\xff;aGVsbG8=\x07");
     assert_eq!(
-        set_clipboard(&mut t).unwrap().selection,
+        set_clipboard(&mut t)
+            .expect("non-utf8 selection name")
+            .selection,
         ClipboardSelection::Other(vec![0xff])
     );
 }
@@ -1398,7 +1401,7 @@ fn osc_52_payload_cannot_contain_a_semicolon() {
     // parameter channel.
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=;x\x07");
-    assert_eq!(set_clipboard(&mut t).unwrap().text, b"hello");
+    assert_eq!(set_clipboard(&mut t).expect("payload").text, b"hello");
 }
 
 #[test]

@@ -7,7 +7,7 @@
 //!
 //! # Supported sequences (modes milestone)
 //!
-//! - C0: BEL (ignored), BS, HT, LF, VT, FF, CR
+//! - C0: BEL (reported as [`ChildRequest::RingBell`]), BS, HT, LF, VT, FF, CR
 //! - ESC: IND (`D`), NEL (`E`), RI (`M`), DECSC/DECRC (`7`/`8`), RIS (`c`)
 //! - CSI cursor: CUU/CUD/CUF/CUB, CNL/CPL, CHA/HPA, VPA, CUP/HVP
 //! - CSI edit: ICH, DCH, IL, DL, ED, EL, ECH, SU, SD
@@ -60,7 +60,7 @@ use crate::terminal_types::SavedCursor;
 ///
 /// The supported sequences are:
 ///
-/// - **C0**: BEL (ignored), BS, HT, LF/VT/FF, CR
+/// - **C0**: BEL (reported as [`ChildRequest::RingBell`]), BS, HT, LF/VT/FF, CR
 /// - **ESC**: IND, NEL, RI, DECSC/DECRC, RIS
 /// - **CSI cursor**: CUU/CUD/CUF/CUB, CNL/CPL, CHA/HPA, VPA, CUP/HVP
 /// - **CSI editing**: ICH/DCH/IL/DL/ED/EL/ECH/SU/SD, DECSTBM scroll regions
@@ -197,7 +197,7 @@ impl Iterator for Events {
 /// The scroll region (`scroll_top` / `scroll_bottom`) is deliberately absent:
 /// setting it changes how later scrolls behave, but nothing is drawn until such
 /// a scroll happens, so a feed that only sets the region is not a visible
-/// change. This matches the fields the previous fingerprint hashed.
+/// change.
 #[derive(Clone, Copy, PartialEq)]
 struct VisibleScalars {
     size: Size,

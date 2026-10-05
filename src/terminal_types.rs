@@ -317,7 +317,7 @@ pub enum ClipboardSelection {
 /// Something a child asked for in an OSC sequence, retained for the caller.
 ///
 /// termnix interprets a handful of command sequences and does not act on the
-/// resources they name itself (a clipboard, a bell, later a window title). For
+/// resources they name itself (a clipboard, a bell). For
 /// those it records the ask and leaves carrying it out to the caller. Every
 /// such ask arrives as `Event::RequestReceived`, one variant at a time; the
 /// enum is the whole family of asks, so the one a caller cares about is an arm
@@ -409,13 +409,6 @@ pub enum Event {
     /// ([`trim_scrollback()`](crate::TerminalState::trim_scrollback)) and is
     /// not reported. Read the new lines through
     /// [`scrollback_lines()`](crate::TerminalState::scrollback_lines).
-    ///
-    /// The name is deliberately not `ScrollbackUpdated`, unlike
-    /// [`ScreenUpdated`](Event::ScreenUpdated) and
-    /// [`TitleUpdated`](Event::TitleUpdated): those report state that is
-    /// *replaced*, whereas the history is only ever appended to. Naming the
-    /// one-directional fact directly keeps a caller from reading an update
-    /// where none can happen.
     ScrollbackLineAdded,
     /// The window title changed (OSC 0 / OSC 2, or a reset clearing it).
     ///

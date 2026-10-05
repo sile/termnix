@@ -774,26 +774,36 @@ fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
     Ok(())
 }
 
-/// Drains the selected session's events, marking the screen dirty when one
-/// says a repaint is due.
+/// Drains every session's events, marking the screen dirty when one says a
+/// repaint is due.
 ///
-/// `ScreenUpdated` and `TerminalReset` both mean "repaint": a reset leaves the
-/// screen blank and everything the example drew is stale. The remaining events
-/// (new history, a title change, and a child request such as a clipboard write
-/// or a bell) have no effect on the visible grid this example projects, so they
-/// are dropped; a real host would act on [`Event::RequestReceived`] here.
-/// Draining always runs so no event is left unconsumed on a session the example
-/// owns.
+/// Every owned session is drained, not just the selected one: an event is
+/// consumed by reading it, so leaving a background session's events unread
+/// would queue its requests (a clipboard write, a bell) without bound. Only the
+/// selected session's events can affect the drawn frame, but all of them must be
+/// read.
+///
+/// `ScreenUpdated` and `TerminalReset` on the selected session both mean
+/// "repaint": a reset leaves the screen blank and everything the example drew is
+/// stale. The remaining events (new history, a title change, and a child request
+/// such as a clipboard write or a bell) have no effect on the visible grid this
+/// example projects, so they are dropped; a real host would act on
+/// [`Event::RequestReceived`] here, including for a background session.
 fn note_selection_events(app: &mut App) {
-    let Some(session) = app.sessions[app.selected].as_mut() else {
-        return;
-    };
-    while let Some(event) = session.next_event() {
-        if matches!(
-            event,
-            termnix::Event::ScreenUpdated | termnix::Event::TerminalReset
-        ) {
-            app.screen_dirty = true;
+    for slot in 0..SESSION_COUNT {
+        let Some(session) = app.sessions[slot].as_mut() else {
+            continue;
+        };
+        let selected = slot == app.selected;
+        while let Some(event) = session.next_event() {
+            if selected
+                && matches!(
+                    event,
+                    termnix::Event::ScreenUpdated | termnix::Event::TerminalReset
+                )
+            {
+                app.screen_dirty = true;
+            }
         }
     }
 }
