@@ -924,6 +924,23 @@ fn get_clipboard(t: &mut termnix::TerminalState) -> Option<termnix::ClipboardSel
     }
 }
 
+/// Drains the next request and matches it as an `OtherOsc`, failing the test
+/// if the request belongs to another variant.
+fn other_osc(t: &mut termnix::TerminalState) -> Option<OtherOsc> {
+    match next_request(t)? {
+        termnix::ChildRequest::OtherOsc { id, params } => Some(OtherOsc { id, params }),
+        other => panic!("expected an OtherOsc request, got {other:?}"),
+    }
+}
+
+/// The fields of a [`ChildRequest::OtherOsc`](termnix::ChildRequest::OtherOsc)
+/// unpacked, so a test can assert on them directly.
+#[derive(Debug, PartialEq, Eq)]
+struct OtherOsc {
+    id: Vec<u8>,
+    params: Vec<Vec<u8>>,
+}
+
 /// The fields of a [`ChildRequest::SetClipboard`](termnix::ChildRequest::SetClipboard)
 /// unpacked, so a test can assert on them directly.
 struct ClipboardWrite {
@@ -1189,10 +1206,160 @@ fn incomplete_csi_recovers_for_later_text() {
 }
 
 #[test]
-fn unsupported_osc_does_not_become_text() {
+fn unmodelled_osc_is_offered_and_does_not_become_text() {
+    // The sequence must not leak into the grid, and it must not vanish either:
+    // a number termnix does not interpret is offered to the caller whole.
     let mut t = term(2, 24);
-    t.feed(b"\x1b]999;payload-should-vanish\x07ok");
+    t.feed(b"\x1b]999;payload\x07ok");
     assert_eq!(text_at(&t, 0), "ok");
+    assert_eq!(
+        other_osc(&mut t),
+        Some(OtherOsc {
+            id: b"999".to_vec(),
+            params: vec![b"payload".to_vec()],
+        })
+    );
+}
+
+#[test]
+fn unmodelled_osc_carries_the_identifier_and_split_arguments() {
+    // A working-directory announcement, the canonical case passthrough exists
+    // for: the crate splits the fields and hands them over undecoded.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]7;file://host/home/user\x07");
+    assert_eq!(
+        other_osc(&mut t),
+        Some(OtherOsc {
+            id: b"7".to_vec(),
+            params: vec![b"file://host/home/user".to_vec()],
+        })
+    );
+}
+
+#[test]
+fn unmodelled_osc_with_no_arguments_has_empty_params() {
+    // `ESC ] 7 ST` has an identifier and nothing else. The honest answer is an
+    // empty argument list, not a placeholder field.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]7\x07");
+    assert_eq!(
+        other_osc(&mut t),
+        Some(OtherOsc {
+            id: b"7".to_vec(),
+            params: Vec::new(),
+        })
+    );
+}
+
+#[test]
+fn unmodelled_osc_keeps_empty_argument_fields() {
+    // Framing, not interpretation: `a;;b` is three fields, and the empty one
+    // in the middle is preserved rather than collapsed.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]133;a;;b\x07");
+    assert_eq!(
+        other_osc(&mut t),
+        Some(OtherOsc {
+            id: b"133".to_vec(),
+            params: vec![b"a".to_vec(), Vec::new(), b"b".to_vec()],
+        })
+    );
+}
+
+#[test]
+fn unmodelled_osc_identifier_need_not_be_utf8() {
+    // Identifiers are conventional rather than numeric, and the field is not
+    // required to be valid UTF-8. Such a sequence is uninterpreted, so it is
+    // offered as bytes rather than dropped by a decoding gate.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]\xff\xfe;x\x07");
+    assert_eq!(
+        other_osc(&mut t),
+        Some(OtherOsc {
+            id: vec![0xff, 0xfe],
+            params: vec![b"x".to_vec()],
+        })
+    );
+}
+
+#[test]
+fn unmodelled_osc_arguments_need_not_be_utf8() {
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]9;\xff\x07");
+    assert_eq!(
+        other_osc(&mut t),
+        Some(OtherOsc {
+            id: b"9".to_vec(),
+            params: vec![vec![0xff]],
+        })
+    );
+}
+
+#[test]
+fn unmodelled_osc_does_not_raise_screen_updated() {
+    // Offering a sequence draws nothing, so a caller repainting on
+    // `ScreenUpdated` is not told to repaint because an unknown OSC arrived.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]7;file://host/x\x07");
+    let events = drain(&mut t);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::ScreenUpdated)),
+        "an unmodelled OSC is not a visible change: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            termnix::Event::RequestReceived(termnix::ChildRequest::OtherOsc { .. })
+        )),
+        "the sequence itself is still reported: {events:?}"
+    );
+}
+
+#[test]
+fn unmodelled_osc_keeps_its_order_among_other_requests() {
+    // Requests are not merged, so an unmodelled OSC between two clipboard
+    // asks stays between them: a caller that cares about OSC ordering sees
+    // what the child wrote.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]7;file://host/x\x07\x1b]52;p;d29ybGQ=\x07");
+    assert_eq!(set_clipboard(&mut t).expect("first").text, b"hello");
+    assert_eq!(
+        other_osc(&mut t),
+        Some(OtherOsc {
+            id: b"7".to_vec(),
+            params: vec![b"file://host/x".to_vec()],
+        })
+    );
+    assert_eq!(set_clipboard(&mut t).expect("second").text, b"world");
+    assert!(next_request(&mut t).is_none());
+}
+
+#[test]
+fn unmodelled_osc_survives_a_hard_reset() {
+    // Like the other asks, a passthrough sequence belongs to the session being
+    // reset and must not outlive RIS.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]7;file://host/x\x07");
+    t.feed(b"\x1bc");
+    assert!(next_request(&mut t).is_none());
+}
+
+#[test]
+fn a_semicolon_in_an_unmodelled_payload_is_a_field_boundary() {
+    // `vte` splits OSC parameters on `;` before the crate sees them, so an
+    // argument containing `;` arrives as more fields than the sender wrote.
+    // That is a property of OSC framing, not a choice made here.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]7;a;b\x07");
+    assert_eq!(
+        other_osc(&mut t),
+        Some(OtherOsc {
+            id: b"7".to_vec(),
+            params: vec![b"a".to_vec(), b"b".to_vec()],
+        })
+    );
 }
 
 #[test]
@@ -1638,10 +1805,10 @@ fn screen_updated_stays_clear_without_visible_change() {
         "partial sequence must not raise ScreenUpdated"
     );
 
-    t.feed(b"\x1b]999;ignored\x07"); // unsupported OSC is ignored
+    t.feed(b"\x1b]999;offered\x07"); // unmodelled OSC is offered, not applied
     assert!(
         !screen_updated(&mut t),
-        "ignored OSC must not raise ScreenUpdated"
+        "an offered OSC must not raise ScreenUpdated"
     );
 }
 

@@ -319,10 +319,13 @@ pub enum ClipboardSelection {
 /// termnix interprets a handful of command sequences and does not act on the
 /// resources they name itself (a clipboard, a bell). For those it records the
 /// ask and leaves carrying it out to the caller - a write to make, a bell to
-/// ring, or, for a clipboard read, a question only the caller can answer.
-/// Every such ask arrives as `Event::RequestReceived`, one variant at a time; the
-/// enum is the whole family of asks, so the one a caller cares about is an arm
-/// it matches rather than a method it remembers to call.
+/// ring, or, for a clipboard read, a question only the caller can answer. A
+/// sequence it does not interpret at all is also offered, under
+/// [`ChildRequest::OtherOsc`], so an unmodelled number reaches a caller that
+/// knows it instead of being discarded. Every such ask arrives as
+/// `Event::RequestReceived`, one variant at a time; the enum is the whole
+/// family of asks, so the one a caller cares about is an arm it matches rather
+/// than a method it remembers to call.
 ///
 /// A request is not merely an observation: it is something the caller is
 /// expected to do, and it is not merged with the others, so three asks in one
@@ -374,6 +377,36 @@ pub enum ChildRequest {
     /// caller's job. Bells are not merged: `BEL BEL` is two asks, and a caller
     /// that wants a burst collapsed counts them itself.
     RingBell,
+    /// An OSC sequence termnix does not interpret, handed over as written.
+    ///
+    /// The crate frames every OSC and routes it by identifier; one it has no
+    /// meaning for is not dropped but offered, so a caller that does know the
+    /// number (a working-directory announcement, a prompt mark, a vendor
+    /// extension) can act on it without tokenizing the PTY stream itself.
+    ///
+    /// The variant carries no action verb, unlike the others, because the
+    /// crate did not interpret the sequence and so cannot say which direction
+    /// it points: the child may have asked for a change, asked for contents,
+    /// or merely reported something. `OtherOsc` keeps the frame in the name
+    /// because that much is known - the sequence is an OSC, and this is the
+    /// home for the ones termnix leaves unread.
+    OtherOsc {
+        /// The identifier field (`<number>` in `ESC ] <number> ; ... ST`).
+        ///
+        /// Raw bytes rather than a number or a string: identifiers are
+        /// conventional rather than numeric, so a vendor extension may use a
+        /// non-integer one, and the field is not required to be valid UTF-8.
+        /// A caller that knows its own identifier compares bytes.
+        id: Vec<u8>,
+        /// The argument fields, split on `;` exactly as the tokenizer framed
+        /// them and otherwise untouched.
+        ///
+        /// Empty when the sequence had no arguments. The split is framing, not
+        /// interpretation: the crate knows where an OSC's fields end, so it
+        /// passes them on whole rather than making every caller re-split the
+        /// same bytes. Nothing past the split has been decoded.
+        params: Vec<Vec<u8>>,
+    },
 }
 
 /// Something that happened in the terminal that a caller may want to react to.

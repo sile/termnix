@@ -17,7 +17,8 @@
 //! - CSI queries: DSR, CPR, primary DA (`CSI c` / `CSI ? c`); DA2 and DA3 are
 //!   recognized but not answered
 //! - OSC 0/2: window title (stored); OSC 52: clipboard request (reported through
-//!   [`TerminalState::next_event()`]); other OSC ignored without becoming text
+//!   [`TerminalState::next_event()`]); other OSC offered to the caller as
+//!   [`ChildRequest::OtherOsc`] without becoming text
 //! - Alternate screen: DECSET/DECRST 1049 (also 47 / 1047)
 //!
 //! # Explicitly out of scope
@@ -69,7 +70,8 @@ use crate::terminal_types::SavedCursor;
 ///   cursor visibility, bracketed paste, mouse reporting (including SGR)
 /// - **Alternate screen**: `?1049`, `?47`, `?1047`
 /// - **OSC 0/2**: window title (stored); **OSC 52**: clipboard request,
-///   reported through [`next_event()`](TerminalState::next_event)
+///   reported through [`next_event()`](TerminalState::next_event); any other
+///   identifier is offered uninterpreted as [`ChildRequest::OtherOsc`]
 /// - **Queries**: DSR, CPR, and primary DA, answered through
 ///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes). DA2
 ///   (`CSI > c`) and DA3 (`CSI = c`) are recognized but deliberately not

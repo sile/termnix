@@ -39,28 +39,31 @@ impl Perform for Emulator<'_> {
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         // OSC 0 / 2 store the window title; OSC 52 records a clipboard
-        // request. Other OSC numbers are ignored so their payloads never
-        // appear as printable text.
+        // request. Every other identifier is unmodelled and offered to the
+        // caller as `ChildRequest::OtherOsc`, so its payload neither becomes
+        // printable text nor is silently lost.
         // xterm OSC catalogue: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-        // (OSC identifiers evolve; termnix only retains title text and OSC 52
-        // selection data.)
-        if params.is_empty() {
-            return;
-        }
-        let Ok(id) = std::str::from_utf8(params[0]) else {
+        // (OSC identifiers evolve; termnix reads title text and OSC 52
+        // selection data, and passes the rest through.)
+        let Some((&id, rest)) = params.split_first() else {
             return;
         };
+        // Match on the identifier's bytes, not on a decoded string: the known
+        // identifiers are ASCII, so a byte match is exact, and an identifier
+        // that is not valid UTF-8 must still reach the passthrough arm rather
+        // than being dropped before it. (A `str::from_utf8` gate here would
+        // discard exactly the vendor extensions passthrough exists for.)
         match id {
-            "0" | "2" => {
-                self.term.title = params
-                    .get(1)
+            b"0" | b"2" => {
+                self.term.title = rest
+                    .first()
                     .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
                     .unwrap_or_default();
                 self.term.title_changed = true;
                 self.term.events.mark_title_updated();
             }
-            "52" => self.osc_clipboard(params),
-            _ => {}
+            b"52" => self.osc_clipboard(params),
+            _ => self.other_osc(id, rest),
         }
     }
 
@@ -142,6 +145,21 @@ impl Emulator<'_> {
             text,
             selection,
             append,
+        });
+    }
+
+    /// Offers an OSC identifier termnix does not interpret to the caller.
+    ///
+    /// `id` is the identifier field and `rest` the argument fields, both as
+    /// the tokenizer framed them. Nothing is decoded: the crate knows where an
+    /// OSC's fields end and stops there, leaving the meaning of the arguments
+    /// (a URI, a mark code, a vendor payload) to a caller that knows the
+    /// number. An empty argument list stays empty rather than being filled
+    /// with a placeholder, which is the honest answer for `ESC ] 7 ST`.
+    fn other_osc(&mut self, id: &[u8], rest: &[&[u8]]) {
+        self.term.events.push_request(ChildRequest::OtherOsc {
+            id: id.to_vec(),
+            params: rest.iter().map(|param| param.to_vec()).collect(),
         });
     }
 }
