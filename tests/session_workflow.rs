@@ -25,18 +25,17 @@ use helpers::{
     DEADLINE, Teardown, default_size, enqueue, poll_once, pump_all, pump_until, rotate_until,
     screen_text, snapshot_text, snapshots, spawn, write_raw,
 };
-use termnix::{Input, PumpBudget, Session, SessionStatus};
-
 /// Per-`pump_io` work ceiling used throughout the workflow.
 ///
-/// Deliberately far below [`PumpBudget::default`] so a modest fixture cannot
+/// Deliberately far below [`PumpBudget::default`](termnix::PumpBudget::default)
+/// so a modest fixture cannot
 /// be drained in one call. That makes the fairness check non-vacuous without
 /// guessing an internal constant: the only requirement is that A's burst
 /// exceeds one call's budget, which this budget guarantees, and the loop's
 /// rotation is then observable. It also keeps the test fast, since the
 /// smallest burst that stalls a pump is enough. The ceiling is expressed in
 /// syscalls (4), because the filler emits one line per `printf` / read.
-const WORK_BUDGET: PumpBudget = PumpBudget {
+const WORK_BUDGET: termnix::PumpBudget = termnix::PumpBudget {
     bytes: 48,
     syscalls: 4,
 };
@@ -81,10 +80,10 @@ fn session_script(prefix: &str, exit_marker: &str, with_filler: bool) -> String 
 }
 
 /// Reaps one session, advancing it to `Reaped` within the test deadline.
-fn reap(session: &mut Session) {
+fn reap(session: &mut termnix::Session) {
     let deadline = Instant::now() + DEADLINE;
     while Instant::now() < deadline {
-        if session.status() == SessionStatus::Reaped {
+        if session.status() == termnix::SessionStatus::Reaped {
             return;
         }
         let _ = session.try_wait().expect("try_wait");
@@ -102,7 +101,7 @@ fn reap(session: &mut Session) {
 ///
 /// Takes the whole slice rather than `&mut sessions[0]` so the poll loop can
 /// keep driving A alongside B while A winds down.
-fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
+fn exit_and_drain_a(sessions: &mut [termnix::Session]) -> RawFd {
     // Wait until A has emitted its whole burst and drained to idle. Leaving
     // filler in flight would let the exit and the final payload be decoded in
     // the same pump, turning the required ordering into a scheduler race.
@@ -119,7 +118,7 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
         "A filler fully emitted and drained",
         |sessions| {
             let a = &sessions[0];
-            a.status() == SessionStatus::Live && !a.needs_pump()
+            a.status() == termnix::SessionStatus::Live && !a.needs_pump()
         },
     );
     // The marker confirms the oracle: the whole burst really was emitted.
@@ -128,7 +127,7 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
         "A went idle without emitting its whole burst"
     );
 
-    enqueue(sessions, 0, Input::Raw(b"EXIT\n"));
+    enqueue(sessions, 0, termnix::Input::Raw(b"EXIT\n"));
     // Flush the queued `EXIT` to A's PTY with exactly one pump, then observe
     // the child's exit with `try_wait` alone. A is never pumped again until the
     // exit has been seen, so `A_FINAL` cannot be read out of the PTY before
@@ -154,7 +153,7 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
             snapshot_text(&sessions[0]).contains(A_FINAL)
                 && matches!(
                     sessions[0].status(),
-                    SessionStatus::Eof | SessionStatus::Reaped
+                    termnix::SessionStatus::Eof | termnix::SessionStatus::Reaped
                 )
         },
     );
@@ -170,7 +169,7 @@ fn exit_and_drain_a(sessions: &mut [Session]) -> RawFd {
 /// child's exit is guaranteed to be observed while `A_FINAL` is still sitting
 /// unread in the PTY, which is what makes the ordering assertion deterministic
 /// rather than a scheduler race.
-fn wait_exit_without_reading_a(sessions: &mut [Session]) -> ExitStatus {
+fn wait_exit_without_reading_a(sessions: &mut [termnix::Session]) -> ExitStatus {
     let deadline = Instant::now() + DEADLINE;
     while Instant::now() < deadline {
         if let Some(status) = sessions[0].try_wait().expect("try_wait A") {
@@ -194,7 +193,7 @@ fn wait_exit_without_reading_a(sessions: &mut [Session]) -> ExitStatus {
 }
 
 /// Step 10: writes `stale_fd` and asserts C neither advances nor emits output.
-fn assert_stale_fd_does_not_drive(c: &mut Session, stale_fd: RawFd) {
+fn assert_stale_fd_does_not_drive(c: &mut termnix::Session, stale_fd: RawFd) {
     // A's fd number may or may not have been reused by C; either way, writing
     // the saved number must not, by itself, produce C's marker.
     let _ = write_raw(stale_fd, b"stale-charlie\n");
@@ -264,8 +263,8 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
     );
 
     // Step 4: distinct input routed to each session.
-    enqueue(&mut sessions, 0, Input::Raw(b"alpha\n"));
-    enqueue(&mut sessions, 1, Input::Raw(b"beta\n"));
+    enqueue(&mut sessions, 0, termnix::Input::Raw(b"alpha\n"));
+    enqueue(&mut sessions, 1, termnix::Input::Raw(b"beta\n"));
     pump_until(
         &mut sessions,
         WORK_BUDGET,
@@ -298,7 +297,7 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
         size,
         "resizing B changed A's size"
     );
-    enqueue(&mut sessions, 1, Input::Raw(b"SIZE\n"));
+    enqueue(&mut sessions, 1, termnix::Input::Raw(b"SIZE\n"));
     pump_until(
         &mut sessions,
         WORK_BUDGET,
@@ -314,7 +313,7 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
     let stale_fd = exit_and_drain_a(&mut sessions);
 
     // Step 9: B keeps working after A is reaped.
-    enqueue(&mut sessions, 1, Input::Raw(b"gamma\n"));
+    enqueue(&mut sessions, 1, termnix::Input::Raw(b"gamma\n"));
     pump_until(
         &mut sessions,
         WORK_BUDGET,
@@ -323,7 +322,7 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
     );
     let shrink = helpers::size(20, 60);
     sessions[1].resize(shrink).expect("resize B again");
-    enqueue(&mut sessions, 1, Input::Raw(b"SIZE\n"));
+    enqueue(&mut sessions, 1, termnix::Input::Raw(b"SIZE\n"));
     pump_until(
         &mut sessions,
         WORK_BUDGET,
@@ -338,7 +337,11 @@ fn sessions_survive_exit_reap_and_a_stale_fd() {
         size,
     );
     assert_stale_fd_does_not_drive(&mut c, stale_fd);
-    enqueue(std::slice::from_mut(&mut c), 0, Input::Raw(b"charlie\n"));
+    enqueue(
+        std::slice::from_mut(&mut c),
+        0,
+        termnix::Input::Raw(b"charlie\n"),
+    );
     pump_until(
         std::slice::from_mut(&mut c),
         WORK_BUDGET,

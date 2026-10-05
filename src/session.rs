@@ -128,12 +128,11 @@ const READ_COMPACT_THRESHOLD: usize = 4096;
 /// # Examples
 ///
 /// ```
-/// # use termnix::PumpBudget;
 /// // The usual case: take the recommended ceiling.
-/// let budget = PumpBudget::default();
+/// let budget = termnix::PumpBudget::default();
 ///
 /// // Tighten it, so a pump stops after a single syscall.
-/// let budget = PumpBudget { bytes: 65536, syscalls: 1 };
+/// let budget = termnix::PumpBudget { bytes: 65536, syscalls: 1 };
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PumpBudget {

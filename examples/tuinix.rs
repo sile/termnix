@@ -40,8 +40,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tuinix::{Frame, TerminalDriver};
-
 /// Number of session slots; the example fixes it at two.
 const SESSION_COUNT: usize = 2;
 
@@ -176,7 +174,7 @@ struct App {
     /// differ from this frame; it is also the reference for the host cursor.
     /// `None` after a resize or a selection switch, so the whole screen is
     /// repainted rather than diffed against a stale frame.
-    prev_frame: Option<Frame>,
+    prev_frame: Option<tuinix::Frame>,
 }
 
 impl App {
@@ -588,7 +586,7 @@ fn poll_timeout_ms(deadline: Instant) -> i32 {
 /// partial sequences across calls, so a sequence split over two `poll`
 /// wakeups is still parsed exactly once.
 fn drain_host_inputs(
-    driver: &mut TerminalDriver,
+    driver: &mut tuinix::TerminalDriver,
     decoder: &mut tuinix::InputDecoder,
     budget: usize,
 ) -> Result<(), AppError> {
@@ -749,7 +747,7 @@ fn to_host_style(style: termnix::Style) -> tuinix::Style {
 /// A cell that [`fits`](tuinix::Frame::fits) rejects means the grid and the
 /// frame disagree about their geometry; that is a bug in this example, not a
 /// condition to paper over, so it is reported as an error.
-fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
+fn write_grid(frame: &mut tuinix::Frame, grid: &Projection) -> Result<(), String> {
     for (row_index, row) in grid.rows.iter().enumerate() {
         let mut col = 0usize;
         for cell in row {
@@ -837,7 +835,7 @@ fn note_selection_events(app: &mut App) {
 /// The dirty flag is set by [`note_selection_events`] when a `ScreenUpdated` or
 /// `TerminalReset` event arrives, and cleared here once the frame has been
 /// written.
-fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppError> {
+fn draw_selected(driver: &mut tuinix::TerminalDriver, app: &mut App) -> Result<(), AppError> {
     let Some(session) = app.sessions[app.selected].as_ref() else {
         app.prev_frame = None;
         return Ok(());
@@ -851,7 +849,7 @@ fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppEr
         rows: usize::from(projection.size.rows.get()),
         cols: usize::from(projection.size.cols.get()),
     };
-    let mut frame = Frame::new(frame_size);
+    let mut frame = tuinix::Frame::new(frame_size);
     write_grid(&mut frame, &projection).map_err(AppError::msg)?;
     // `None` hides the host cursor; `Some` shows it at the session cursor.
     let cursor = projection
@@ -869,7 +867,7 @@ fn draw_selected(driver: &mut TerminalDriver, app: &mut App) -> Result<(), AppEr
 
 /// Runs the main loop until quit, error, or both sessions are gone.
 fn run_loop(
-    driver: &mut TerminalDriver,
+    driver: &mut tuinix::TerminalDriver,
     decoder: &mut tuinix::InputDecoder,
     app: &mut App,
     host_input_fd: RawFd,
@@ -958,7 +956,7 @@ fn deliver_host_inputs(decoder: &mut tuinix::InputDecoder, app: &mut App) -> Res
 
 /// Drives the example: setup, loop, and a single explicit shutdown pass.
 fn run() -> Result<(), AppError> {
-    let mut driver = TerminalDriver::new().map_err(AppError::io)?;
+    let mut driver = tuinix::TerminalDriver::new().map_err(AppError::io)?;
     let host_input_fd = driver.input_fd();
     let host_signal_fd = driver.resize_signal_fd();
     let mut decoder = tuinix::InputDecoder::new();
@@ -1288,7 +1286,7 @@ mod tests {
             cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,
         };
-        let mut frame = Frame::new(tuinix::Size { rows: 2, cols: 6 });
+        let mut frame = tuinix::Frame::new(tuinix::Size { rows: 2, cols: 6 });
         write_grid(&mut frame, &grid).expect("write");
         let written = frame
             .chars()
@@ -1313,7 +1311,7 @@ mod tests {
             cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,
         };
-        let mut frame = Frame::new(tuinix::Size { rows: 1, cols: 6 });
+        let mut frame = tuinix::Frame::new(tuinix::Size { rows: 1, cols: 6 });
         let err = write_grid(&mut frame, &grid).expect_err("clipped cell");
         assert!(err.contains("clipped"), "unexpected error: {err}");
     }

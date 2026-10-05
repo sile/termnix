@@ -14,8 +14,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use termnix::{Interests, PumpBudget, Session, SessionStatus, Size};
-
 /// Whole-test deadline: any longer wait is a hang, not slow progress.
 pub const DEADLINE: Duration = Duration::from_secs(15);
 
@@ -27,23 +25,23 @@ pub const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const POLL_TIMEOUT_MS: libc::c_int = 10;
 
 /// The `24x80` grid used by every session in the workflow test.
-pub fn default_size() -> Size {
+pub fn default_size() -> termnix::Size {
     size(24, 80)
 }
 
 /// Builds a grid size from two dimensions known non-zero at the call site.
-pub fn size(rows: u16, cols: u16) -> Size {
-    Size {
+pub fn size(rows: u16, cols: u16) -> termnix::Size {
+    termnix::Size {
         rows: NonZeroU16::new(rows).expect("rows is non-zero"),
         cols: NonZeroU16::new(cols).expect("cols is non-zero"),
     }
 }
 
 /// Spawns `/bin/sh -c <script>` in a PTY-backed session of `size`.
-pub fn spawn(script: &str, size: Size) -> Session {
+pub fn spawn(script: &str, size: termnix::Size) -> termnix::Session {
     let mut command = Command::new("/bin/sh");
     command.arg("-c").arg(script);
-    Session::new(&mut command, size).expect("create session")
+    termnix::Session::new(&mut command, size).expect("create session")
 }
 
 /// Renders the terminal state as newline-terminated rows with trailing blanks
@@ -54,7 +52,7 @@ pub fn spawn(script: &str, size: Size) -> Session {
 /// otherwise disappear from assertions. Normalization matters twice:
 /// assertions match on it, and timeout diagnostics print it, so a failure
 /// shows what the child actually emitted rather than a screenful of padding.
-pub fn snapshot_text(session: &Session) -> String {
+pub fn snapshot_text(session: &termnix::Session) -> String {
     let state = session.terminal_state();
     let mut out = String::new();
     for line in state.scrollback_lines().iter() {
@@ -70,7 +68,7 @@ pub fn snapshot_text(session: &Session) -> String {
 ///
 /// Cheap enough to call inside a wait loop: freshly written output is always on
 /// screen, and scrollback can be thousands of lines long.
-pub fn screen_text(session: &Session) -> String {
+pub fn screen_text(session: &termnix::Session) -> String {
     let mut out = String::new();
     for row in session.terminal_state().rows() {
         out.push_str(&render_row(row));
@@ -95,7 +93,7 @@ fn render_row(cells: &[termnix::Cell]) -> String {
 ///
 /// Suitable for ordinary progress: any session whose internal work is still
 /// executable is taken to idle, so a caller does not have to re-poll.
-pub fn pump_all(sessions: &mut [Session], budget: PumpBudget) {
+pub fn pump_all(sessions: &mut [termnix::Session], budget: termnix::PumpBudget) {
     for session in sessions.iter_mut() {
         session.pump_io(budget).expect("pump");
         while session.needs_pump() {
@@ -111,7 +109,7 @@ pub fn pump_all(sessions: &mut [Session], budget: PumpBudget) {
 /// is the scheduling quantum a fair multi-session loop uses, and it is what
 /// lets a short burst on one session be observed before a large burst on
 /// another is exhausted.
-pub fn rotate_once(sessions: &mut [Session], budget: PumpBudget) {
+pub fn rotate_once(sessions: &mut [termnix::Session], budget: termnix::PumpBudget) {
     for session in sessions.iter_mut() {
         session.pump_io(budget).expect("pump");
     }
@@ -123,9 +121,13 @@ pub fn rotate_once(sessions: &mut [Session], budget: PumpBudget) {
 /// a large burst on one session cannot hide another's progress. `budget` is
 /// the per-`pump_io` ceiling; a tight budget makes any non-empty backlog spill
 /// across rotations even with a small fixture.
-pub fn rotate_until<F>(sessions: &mut [Session], budget: PumpBudget, context: &str, mut cond: F)
-where
-    F: FnMut(&mut [Session]) -> bool,
+pub fn rotate_until<F>(
+    sessions: &mut [termnix::Session],
+    budget: termnix::PumpBudget,
+    context: &str,
+    mut cond: F,
+) where
+    F: FnMut(&mut [termnix::Session]) -> bool,
 {
     let deadline = Instant::now() + DEADLINE;
     while Instant::now() < deadline {
@@ -143,7 +145,7 @@ where
 }
 
 /// Enqueues `input` into `sessions[index]`.
-pub fn enqueue(sessions: &mut [Session], index: usize, input: termnix::Input<'_>) {
+pub fn enqueue(sessions: &mut [termnix::Session], index: usize, input: termnix::Input<'_>) {
     sessions[index].enqueue_input(input).expect("enqueue input");
 }
 
@@ -154,9 +156,13 @@ pub fn enqueue(sessions: &mut [Session], index: usize, input: termnix::Input<'_>
 /// can reap, close, or feed a session as part of the condition. Panics with
 /// `context`, the per-session statuses, and the normalized snapshots when the
 /// deadline expires. `budget` is the per-`pump_io` ceiling used for every pump.
-pub fn pump_until<F>(sessions: &mut [Session], budget: PumpBudget, context: &str, mut cond: F)
-where
-    F: FnMut(&mut [Session]) -> bool,
+pub fn pump_until<F>(
+    sessions: &mut [termnix::Session],
+    budget: termnix::PumpBudget,
+    context: &str,
+    mut cond: F,
+) where
+    F: FnMut(&mut [termnix::Session]) -> bool,
 {
     let deadline = Instant::now() + DEADLINE;
     let mut next_process_poll = Instant::now();
@@ -183,9 +189,9 @@ where
 ///
 /// Errors are ignored: a poll attempt is opportunistic and `try_wait` is not
 /// what the condition under test is about.
-pub fn poll_children(sessions: &mut [Session]) {
+pub fn poll_children(sessions: &mut [termnix::Session]) {
     for session in sessions.iter_mut() {
-        if session.fd().is_some() || session.status() == SessionStatus::Eof {
+        if session.fd().is_some() || session.status() == termnix::SessionStatus::Eof {
             let _ = session.try_wait();
         }
     }
@@ -196,13 +202,13 @@ pub fn poll_children(sessions: &mut [Session]) {
 /// Returns the number of fds that reported readiness. `EINTR` is retried; any
 /// other error is a test failure. A session without an fd contributes nothing,
 /// which is how a closed or reaped session leaves the loop.
-pub fn poll_once(sessions: &[Session], timeout_ms: libc::c_int) -> usize {
+pub fn poll_once(sessions: &[termnix::Session], timeout_ms: libc::c_int) -> usize {
     let mut pollfds = Vec::new();
     for session in sessions {
         let Some(fd) = session.fd() else {
             continue;
         };
-        let Interests { readable, writable } = session.interests();
+        let termnix::Interests { readable, writable } = session.interests();
         let mut events = 0;
         if readable {
             events |= libc::POLLIN;
@@ -254,8 +260,8 @@ pub fn write_raw(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
 }
 
 /// Lifecycle phases for every session, for failure diagnostics.
-fn statuses(sessions: &[Session]) -> Vec<SessionStatus> {
-    sessions.iter().map(Session::status).collect()
+fn statuses(sessions: &[termnix::Session]) -> Vec<termnix::SessionStatus> {
+    sessions.iter().map(termnix::Session::status).collect()
 }
 
 /// Number of trailing snapshot lines kept for failure diagnostics.
@@ -266,7 +272,7 @@ fn statuses(sessions: &[Session]) -> Vec<SessionStatus> {
 const DIAGNOSTIC_TAIL_LINES: usize = 12;
 
 /// Tail of each session's normalized snapshot, for failure diagnostics.
-pub fn snapshots(sessions: &[Session]) -> String {
+pub fn snapshots(sessions: &[termnix::Session]) -> String {
     let mut out = String::new();
     for (index, session) in sessions.iter().enumerate() {
         let text = snapshot_text(session);
@@ -293,12 +299,12 @@ pub fn snapshots(sessions: &[Session]) -> String {
 /// reported rather than swallowed.
 #[derive(Default)]
 pub struct Teardown {
-    sessions: Vec<Session>,
+    sessions: Vec<termnix::Session>,
 }
 
 impl Teardown {
     /// Adopts one session for end-of-test teardown.
-    pub fn adopt(&mut self, session: Session) {
+    pub fn adopt(&mut self, session: termnix::Session) {
         self.sessions.push(session);
     }
 

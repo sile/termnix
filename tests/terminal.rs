@@ -1249,12 +1249,11 @@ fn osc_title_is_stored() {
 
 #[test]
 fn osc_52_clipboard_is_recorded_and_taken_once() {
-    use termnix::ClipboardSelection;
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
     let request = set_clipboard(&mut t).expect("request should be pending");
     assert_eq!(request.text, b"hello");
-    assert_eq!(request.selection, ClipboardSelection::Clipboard);
+    assert_eq!(request.selection, termnix::ClipboardSelection::Clipboard);
     assert!(!request.append);
     // The accessor is a take: the same sequence is not re-delivered on a later
     // feed, which is what keeps "the child asked once" from becoming "the
@@ -1288,28 +1287,26 @@ fn osc_52_queue_keeps_one_entry_per_identical_request() {
 
 #[test]
 fn osc_52_missing_selection_means_the_clipboard() {
-    use termnix::ClipboardSelection;
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;;aGVsbG8=\x07");
     assert_eq!(
         set_clipboard(&mut t).expect("clipboard").selection,
-        ClipboardSelection::Clipboard
+        termnix::ClipboardSelection::Clipboard
     );
 }
 
 #[test]
 fn osc_52_names_other_selections() {
-    use termnix::ClipboardSelection;
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;p;aGVsbG8=\x07");
     assert_eq!(
         set_clipboard(&mut t).expect("primary").selection,
-        ClipboardSelection::Primary
+        termnix::ClipboardSelection::Primary
     );
     t.feed(b"\x1b]52;x;aGVsbG8=\x07");
     assert_eq!(
         set_clipboard(&mut t).expect("other").selection,
-        ClipboardSelection::Other(b"x".to_vec())
+        termnix::ClipboardSelection::Other(b"x".to_vec())
     );
 }
 
@@ -1360,14 +1357,13 @@ fn osc_52_payload_need_not_be_utf8() {
 fn osc_52_other_selection_need_not_be_utf8() {
     // A `Pc` the terminal does not model is kept as bytes too, so a caller that
     // hands the name onward gets back what the child sent.
-    use termnix::ClipboardSelection;
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;\xff;aGVsbG8=\x07");
     assert_eq!(
         set_clipboard(&mut t)
             .expect("non-utf8 selection name")
             .selection,
-        ClipboardSelection::Other(vec![0xff])
+        termnix::ClipboardSelection::Other(vec![0xff])
     );
 }
 
