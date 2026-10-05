@@ -216,15 +216,15 @@ The reply cannot precede a caller's write to the PTY because the reply buffer is
 drained by the caller through the existing API; this RFC adds nothing to the
 session layer.
 
-### Effect on `revision()`
+### Effect on visible-change detection
 
 The palette and the colour slots are not cells. Setting one changes what a later
 paint of an `Indexed` cell *means*, but it does not paint a cell, and no cell
 value changes because of it. Two consequences, both matching the OSC 8
 reasoning:
 
-- Setting a colour does not by itself mark the screen dirty. `revision()` does
-  not move for the sequence alone.
+- Setting a colour does not by itself mark the screen dirty. No
+  `Event::ScreenUpdated` is reported for the sequence alone.
 - An existing `Indexed` cell that is later repainted (because the child prints
   something that overwrites it, or the screen is resized) resolves through the
   new palette, and that paint sets the existing `primary_dirty` flag as any
@@ -232,13 +232,14 @@ reasoning:
 
 This is deliberate, and it is the point where a caller *can* disagree: a host
 that repaints its own copy of the screen from the accessors will want to
-repaint when a colour changes, and nothing in `revision()` tells it to. A
+repaint when a colour changes, and no `Event::ScreenUpdated` tells it to. A
 future notification for colour changes (see Unresolved) is where that would be
 addressed; this RFC does not add one.
 
-### Effect on `soft_reset` / RIS
+### Effect on RIS
 
-RIS restores the terminal, so it clears both pieces of state: every
+RIS (`reset_child_state`) restores the terminal, so it clears both pieces of
+state: every
 `palette` entry returns to `None` and every `default_colors` slot to its
 `None`. The built-in default table is a constant and is not cleared. This
 matches the title (cleared) and the link table (dropped): RIS returns the
@@ -278,15 +279,15 @@ the way the hyperlink table can, but it is still state the crate must clear on
   The crate cannot fold the two without coupling the value type to terminal
   state, so the duplication of *answers* (not of tables) is the price.
 - **The accessors are `&self` and read state a caller may not repaint on.** A
-  host that caches its own rendering sees no signal from `revision()` that a
+  host that caches its own rendering sees no `Event::ScreenUpdated` when a
   colour changed, so it must poll or repaint unconditionally. This is the
   deliberate cost of treating a non-drawing change as a non-drawing change;
   the alternative (mark the screen dirty on every colour set) over-triggers.
 - **A `?` reply can be generated even though nothing on screen changed.** A
   child that queries a palette entry gets an answer while the grid is
   untouched; that is correct, but it means "a reply was produced" and "the
-  screen changed" are independent, which a caller reading `revision()` alone
-  must understand (it already must, for DSR/CPR).
+  screen changed" are independent, which a caller relying on
+  `Event::ScreenUpdated` alone must understand (it already must, for DSR/CPR).
 
 ## Rationale and alternatives
 

@@ -52,22 +52,25 @@ could not:
 // dropped inside `osc_dispatch`.
 ```
 
-After, the sequence arrives on the same channel as the clipboard request, and
-the host drains it like any other request:
+After, the sequence arrives on the same event stream as the clipboard request,
+and the host drains it like any other event:
 
 ```rust
-while let Some(request) = term.take_child_request() {
-    match request {
-        ChildRequest::SetClipboard { text, selection, append } => {
-            // the crate decoded this one for us
-            set_clipboard(selection, &text, append);
-        }
-        ChildRequest::OtherOsc { id, params } => {
-            // the crate handed this one over uninterpreted
-            if id == b"7" {
-                set_working_directory(params.first().map(Vec::as_slice));
+while let Some(event) = term.next_event() {
+    if let Event::RequestReceived(request) = event {
+        match request {
+            ChildRequest::SetClipboard { text, selection, append } => {
+                // the crate decoded this one for us
+                set_clipboard(selection, &text, append);
             }
-            // anything else: decide, or ignore
+            ChildRequest::OtherOsc { id, params } => {
+                // the crate handed this one over uninterpreted
+                if id == b"7" {
+                    set_working_directory(params.first().map(Vec::as_slice));
+                }
+                // anything else: decide, or ignore
+            }
+            // other requests
         }
     }
 }
@@ -114,13 +117,13 @@ a guess the crate is not in a position to make, so the variant stays a noun.
 It is `OtherOsc`, not a bare `Other`, because on a type called `ChildRequest`
 `Other` would read as "any other child request" and lose the one thing that
 bounds it: an unmodelled OSC is still an OSC. The rest of the channel does not
-need the framing in its variant names - `SetClipboard` and `Reset` do not name
-`Osc` or `Ris` - because the type name carries the direction and the variant
-carries the action. This variant is the exception: its action *is* "an OSC the
-crate did not interpret", so the framing is the only part of its meaning that
-the name can keep. It is also the mirror of `Reset`: that variant is the only
-non-OSC one, and it is the only one whose name needs no framing, since `Reset`
-is exhaustive on its own.
+need the framing in its variant names - `SetClipboard` does not name `Osc` -
+because the type name carries the direction and the variant carries the action.
+This variant is the exception: its action *is* "an OSC the crate did not
+interpret", so the framing is the only part of its meaning that the name can
+keep. A reset is reported elsewhere, as `Event::TerminalReset`, because it is a
+change of terminal state rather than a request, so `OtherOsc` is the only
+variant here whose name has to say what frame it came from.
 
 `id` is `Vec<u8>`, not a number and not `String`. Not a number because a
 number is only conventional: a vendor extension may use an identifier that is
@@ -140,7 +143,7 @@ split through to the caller.
 
 ```rust
 // inside osc_dispatch, replacing the current `_ => {}` arm
-_ => self.term.child_requests.push_back(ChildRequest::OtherOsc {
+_ => self.events.push_request(ChildRequest::OtherOsc {
     id: params[0].to_vec(),
     params: params[1..].iter().map(|p| p.to_vec()).collect(),
 }),
@@ -175,13 +178,13 @@ arm stays interpreted, so a read request never becomes an `OtherOsc`. Routing
 read requests is a separate question the policy leaves open, and nothing here
 prejudges it.
 
-### Ordering and the queue
+### Ordering
 
-The channel is a queue, so an `OtherOsc` keeps its position relative to other
+Requests are not merged, so an `OtherOsc` keeps its position relative to other
 requests from the same `feed`. A caller that cares about OSC ordering (a
 prompt mark arriving after output, say) sees the order the child wrote. The
-queue is unbounded, as the channel already is; an `OtherOsc` adds no new bound
-question beyond the one the channel has.
+pending-request buffer is unbounded, as it already is; an `OtherOsc` adds no
+new bound question beyond the one that buffer has.
 
 ## Drawbacks
 
@@ -192,10 +195,11 @@ question beyond the one the channel has.
   alternative is a `_ => {}` that hides the next variant too - but it is a
   real cost on the common caller.
 - **The crate now copies bytes it may never be asked for.** Every unmodelled
-  OSC is copied out of the tokenizer's buffers into owned `Vec`s on the queue,
-  whether or not the caller ever drains it. A caller that ignores `OtherOsc`
-  pays for it in allocation and memory, not just in a match arm. How large that
-  can get is a property of the child's output, and the queue is unbounded.
+  OSC is copied out of the tokenizer's buffers into owned `Vec`s held for the
+  caller, whether or not the caller ever drains it. A caller that ignores
+  `OtherOsc` pays for it in allocation and memory, not just in a match arm. How
+  large that can get is a property of the child's output, and the buffer is
+  unbounded.
 - **Passthrough is not free of interpretation.** Choosing `id` + `params`
   means the crate commits to `;` being the field separator for *every* number,
   including ones whose grammar might treat `;` differently. `vte` already makes
@@ -246,11 +250,11 @@ question beyond the one the channel has.
   an identifier and no arguments (`params` has one element) would carry an empty
   `Vec`. Whether that is worth a special case, or whether an empty `Vec` is the
   honest answer, is open.
-- **Does the queue need a bound now that it can carry arbitrary child bytes?**
-  The channel was already unbounded; `OtherOsc` makes the growth easier to
-  trigger (a child can emit unmodelled sequences freely) but does not change the
-  question. It is the same bound question the channel owns; if that one is
-  settled with a bound, this variant inherits it.
+- **Does the pending-request buffer need a bound now that it can carry
+  arbitrary child bytes?** It was already unbounded; `OtherOsc` makes the
+  growth easier to trigger (a child can emit unmodelled sequences freely) but
+  does not change the question. It is the same bound question the buffer owns;
+  if that one is settled with a bound, this variant inherits it.
 - **Where do the argument bytes come from as a sequence grows?** Each field is
   copied into its own `Vec`. Whether a single allocation for the whole sequence
   plus offsets is worth it is an implementation detail, not part of this

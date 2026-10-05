@@ -182,7 +182,7 @@ path. It stores the bytes as the `String` the tokenizer produced, keeping the
 same lossy decoding the title and clipboard paths use. A URI is displayed or
 handed to the host, not interpreted by the crate.
 
-### Effect on `revision()`
+### Effect on visible-change detection
 
 The pen is part of visible state, but only through the cells it paints. Setting
 the pen's hyperlink does not by itself change a cell - it changes the *next*
@@ -190,17 +190,18 @@ cell painted. Once a cell is painted with the pen, that cell differs from what
 it was, so the paint already marks the screen dirty by the mechanism that marks
 any paint dirty. This RFC adds no new visible-change path: the hyperlink rides
 the existing `primary_dirty` flag that a cell write sets. If the sequence sets a
-link and no cell is painted before the run ends, nothing was drawn and
-`revision()` correctly does not move.
+link and no cell is painted before the run ends, nothing was drawn and no
+`Event::ScreenUpdated` is reported.
 
 The pen itself is not in `visible_scalars()` and is not compared across a feed,
 which is unchanged: a pen change is observable only when a cell is painted with
 it, and that paint is the change.
 
-### Effect on `soft_reset` / RIS
+### Effect on RIS
 
-RIS restores the terminal, so it clears the pen (`self.pen = Style::default()`,
-which now also clears the hyperlink) and drops the link table. Clearing the
+RIS (`reset_child_state`) restores the terminal, so it clears the pen
+(`self.pen = Style::default()`, which now also clears the hyperlink) and drops
+the link table. Clearing the
 pen is already there; dropping the table is the only addition. A cell painted
 before the reset keeps the id it was given, but after a reset the table is
 gone, so `hyperlink()` returns `None` for it - the id is a reference into state

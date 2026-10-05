@@ -43,11 +43,11 @@ understand.
 There is also an asymmetry that a list cannot explain and a policy can. OSC 0
 and 2 (the title) are held as *state*: `title()` is a non-destructive getter and
 the value is a plain property of the terminal. OSC 52 is held as a *consumed
-once event*: `take_clipboard()` is destructive, and the value is gone after it
-is read. Nothing in the current docs says why one is state and the other an
-event, or which rule the next sequence should follow. Without that rule, every
-new OSC is an argument from scratch, and the argument has been decided
-differently each time.
+once event*: it arrives as `Event::RequestReceived`, and the value is gone once
+the caller has drained it. Nothing in the current docs says why one is state
+and the other an event, or which rule the next sequence should follow. Without
+that rule, every new OSC is an argument from scratch, and the argument has been
+decided differently each time.
 
 The cost is concrete at the boundary the crate straddles. A host application
 that wants to support an OSC termnix does not model - a working directory
@@ -110,7 +110,7 @@ The answer picks the home:
 | interprets? | uses internally? | home |
 | ----------- | ---------------- | ---- |
 | yes | yes | **state**: a getter, like `title()` is today |
-| yes | no | **event**: a take, like `take_clipboard()` is today |
+| yes | no | **event**: delivered to the caller, like the OSC 52 request is today |
 | no | no | **passthrough**: offered to the caller unparsed |
 | no | yes | impossible; using a value internally requires decoding it |
 
@@ -132,10 +132,11 @@ From a caller's point of view the change is that "unknown OSC" stops meaning
 announcement, or a prompt mark, or a vendor extension, registers nothing and
 models nothing: it reads the offered sequence and decides for itself. A caller
 that wants none of them ignores what it is offered, exactly as it ignores the
-`None` from `take_clipboard()` today. Nothing a caller does today changes
-meaning: the title stays where it is until the title proposal moves it, OSC 52
-keeps its current accessor until the request-channel proposal replaces it, and
-sequences that were dropped are dropped until the passthrough proposal lands.
+requests it already receives on the event stream today. Nothing a caller does
+today changes meaning: the title stays where it is (state, plus its
+`Event::TitleUpdated` notification), OSC 52 keeps its current request variant
+until the request-channel proposal extends it, and sequences that were dropped
+are dropped until the passthrough proposal lands.
 
 ## Reference-level explanation
 
@@ -148,14 +149,16 @@ of precedence:
    of the terminal's own condition - the grid, the pen, the modes, the scroll
    region, or anything else a later paint reads. Such a value is a property of
    the terminal, read with a non-destructive getter, and participates in
-   visible-change detection (`revision()`). A value in this row may also have an
-event, but only if the change itself is a thing a caller must act on; the
-   property and its notification are then separate.
+   visible-change detection (`Event::ScreenUpdated`). A value in this row may
+   also have an event, but only if the change itself is a thing a caller must
+   act on; the property and its notification are then separate, as they are for
+   the window title, which stays state (`title()`) and still reports
+   `Event::TitleUpdated`.
 2. **Event**, when termnix decodes the arguments but the value is not part of
    the terminal's condition - the child is asking the caller to do something or
    telling it something, and termnix holds it only to hand it over. Such a
-value is consumed once, taken rather than read, and is deliberately not part of
-   `revision()` because it draws nothing.
+   value is consumed once, delivered as `Event::RequestReceived`, and is
+   deliberately not part of visible-change detection because it draws nothing.
 3. **Passthrough**, when termnix does not decode the arguments at all. The
    sequence is offered to the caller as the identifier plus the raw arguments
    `vte` produced, with no interpretation. A passthrough value is not terminal
@@ -177,7 +180,7 @@ modelled at all. "Today" is a separate column so the two are not confused.
 
 | identifier | today | if modelled: interprets? | if modelled: uses internally? | home |
 | ---------- | ----- | ------------------------ | ----------------------------- | ---- |
-| OSC 0, 2 (title) | state | yes | no | event (the title proposal decides the move) |
+| OSC 0, 2 (title) | state | yes | no | state: remains a getter, with `Event::TitleUpdated` as its notification |
 | OSC 52 (clipboard) | event | yes | no | event (already a take) |
 | OSC 7 (working directory) | dropped | no | no | passthrough |
 | OSC 8 (hyperlink) | dropped | yes | yes | state, once modelled |
@@ -213,26 +216,26 @@ one. The dependency order is that the request channel is a container the others
 put things into, so it comes first; passthrough answers where an unmodelled or
 `?` sequence goes, so the question of read requests lands there.
 
-- **The request channel.** Introduce a single consumed-once channel on
-  `TerminalState` (`take_child_request()`), and decide whether the existing
-  clipboard take folds into it or sits beside it. The RFC that adds it owns the
-  shape of the `ChildRequest` type; this umbrella fixes only that the rule above
-  assigns each sequence a home, and that a family of consumed-once requests is
-  what the rule's "event" row produces. The type is named for the ask rather
-  than the effect because every value on it is something the child asked the
-  caller to do.
+- **The request channel.** Deliver consumed-once requests on a single stream
+  the caller drains (`next_event()`), rather than through a separate accessor
+  per request kind. The umbrella fixes only that the rule above assigns each
+  sequence a home, and that a family of consumed-once requests is what the
+  rule's "event" row produces; the shape of the `ChildRequest` type and how it
+  shares the stream with state changes (each request arrives as
+  `Event::RequestReceived`) are what the channel's own RFC settles. The type is
+  named for the ask rather than the effect because every value on it is
+  something the child asked the caller to do.
 - **Passthrough.** Expose unmodelled OSC sequences to the caller, with the
   framing already done. Open questions to settle there, not here: whether the
   offered value carries the identifier and split arguments as `vte` produced
   them or the raw sequence bytes; whether passthrough is a take (a caller drains
   it) or a queue (a caller keeps all of them); and, if a queue, its bound and
   what happens on overflow.
-- **The title.** Decide whether the window title moves from state to the
-  request row, as the rule says it may. The proposal owns the question of whether the
-  move is worth it, including the loss of the current-value getter (a caller
-  that wants the latest title would then keep it itself) weighed against the
-  removal of the title's special-case bookkeeping (`title_changed` and its
-  exclusion from the `Copy`-field compare).
+- **The title.** Settled against the move: the window title stays state, read
+  through `title()`, and its change is reported as `Event::TitleUpdated` rather
+  than as a request variant. `title_changed` is gone, so the title no longer
+  needs a change-tracking flag of its own, and the notification is how a caller
+  following the title learns it changed.
 - **Grid-affecting sequences.** Modelling OSC 4 and 10-12 as pen/palette
   state, and OSC 8 as a hyperlink attribute, is left to its own proposals. This umbrella deliberately does not design them: the work is a
   grid/pen change, not an OSC-policy change, and it is larger than the rest of
@@ -323,7 +326,7 @@ decisions in other documents. If the follow-ons are never written, it is a
 - **Do nothing.** The cost is that the list in the rustdoc keeps standing in
   for a rule, every new OSC re-litigates the same question, and a host
   embedding a child cannot support an unmodelled extension without its own
-  tokenizer. The asymmetry between `title()` and `take_clipboard()` stays
+  tokenizer. The asymmetry between `title()` and the OSC 52 request stays
   unexplained, which means the next sequence is as likely to be placed by
   accident as by argument.
 
@@ -335,15 +338,14 @@ decisions in other documents. If the follow-ons are never written, it is a
   `_ => {}` arm is not a deliberate drop but the absence of passthrough, and
   the passthrough proposal replaces it. If a sequence that must be withheld
   ever turns up, this is where the row would be added.
-- **Does a state-row value ever need its own event?** The policy allows a
-  state value to have a separate notification when the *change* is something a
-  caller must act on, but no current or planned sequence is an example, so
-  whether that clause has content is open. If it does not, the policy can drop
-  it; if it does, the request-channel proposal is where it lands.
-- **Does the title move at all?** The rule places the title in the event row,
-  but "the rule says it may move" is not "it should move". The title proposal
-  owns this, including whether the `title_changed` bookkeeping is worth
-  removing.
+- **Does a state-row value ever need its own event?** Yes: the window title is
+  the example. It stays state (`title()`), and its change is reported as
+  `Event::TitleUpdated`, so the clause has content and the state row does carry
+  a notification that a caller can act on.
+- **Does the title move at all?** Settled: it does not. The rule places the
+  title in the event row, but its notification was made a state-row event
+  instead - it stays state (`title()`) and reports `Event::TitleUpdated` - so
+  the title keeps its getter and drops only the `title_changed` bookkeeping.
 - **Where does `?` land?** Routed to the reply buffer for modeled state, to
   passthrough otherwise - but whether the passthrough proposal is the right
   owner of that routing, or whether it deserves its own proposal, is open.

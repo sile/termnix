@@ -54,21 +54,23 @@ Before, a child's paste request vanished:
 // until its own timeout. The host is never told a request was made.
 ```
 
-After, the request arrives on the channel, and the host - which owns the
+After, the request arrives on the event stream, and the host - which owns the
 clipboard - answers it:
 
 ```rust
-while let Some(request) = term.take_child_request() {
-    match request {
-        ChildRequest::SetClipboard { text, selection, append } => {
-            // the child asked us to replace a selection
-            apply_write(text, selection, append);
+while let Some(event) = term.next_event() {
+    if let Event::RequestReceived(request) = event {
+        match request {
+            ChildRequest::SetClipboard { text, selection, append } => {
+                // the child asked us to replace a selection
+                apply_write(text, selection, append);
+            }
+            ChildRequest::GetClipboard { selection } => {
+                // the child asked us for a selection's contents
+                answer_read(session, selection);
+            }
+            // ... other variants
         }
-        ChildRequest::GetClipboard { selection } => {
-            // the child asked us for a selection's contents
-            answer_read(session, selection);
-        }
-        // ... other variants
     }
 }
 ```
@@ -107,7 +109,7 @@ arm no longer has a single outcome. The selection is resolved first (as
 ```rust
 let payload = params.get(2).copied().unwrap_or(b"");
 if payload == b"?" {
-    self.term.child_requests.push_back(ChildRequest::GetClipboard { selection });
+    self.events.push_request(ChildRequest::GetClipboard { selection });
     return;
 }
 ```
@@ -192,17 +194,18 @@ and re-derive the selection from bytes - the framing work the crate already
 did. Because `52` stays an interpreted number, a read never reaches the
 passthrough arm.
 
-### Effect on `revision()` and state
+### Effect on visible-change detection and state
 
-None in either direction. A read request changes no cell and no mode, so
-`revision()` does not move; like a set, it draws nothing. And a read is a
-request, not state, so there is nothing to clear on `soft_reset` (the set side
-has a stored request to clear, which is why that side is touched there; a read
-is consumed by `take_child_request()` and is gone).
+None in either direction. A read request changes no cell and no mode, so no
+`Event::ScreenUpdated` is reported; like a set, it draws nothing. And a read is
+a request, not state, so there is nothing to clear on a reset (the set side has
+a stored request to clear, which is why that side is touched in
+`reset_child_state`; a read is delivered once through
+`Event::RequestReceived` and is gone).
 
 ### Ordering
 
-A read is pushed onto the same queue as everything else, so a read that
+A read is delivered on the same event stream as everything else, so a read that
 follows a set in one `feed` arrives after it, and a caller that both applies
 sets and answers reads sees them in the order the child wrote them.
 
