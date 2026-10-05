@@ -1,6 +1,6 @@
 # RFC: Pass unmodelled OSC sequences through as requests
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -280,3 +280,25 @@ new bound question beyond the one that buffer has.
   now ignores in `hook`/`put`/`unhook`. That is a separate frame with its own
   framing rules and is not covered here, but the shape of this decision is the
   shape that one will take.
+
+## Outcome
+
+Implemented in [#20](https://github.com/sile/termnix/pull/20) (merged as `9c3b6e4`).
+
+The fallback arm of `osc_dispatch` now hands the sequence to the caller instead
+of dropping it, adding `ChildRequest::OtherOsc` to carry the identifier and the
+parameter fields.
+
+One decision the proposal did not make: the old code rejected any sequence whose
+identifier was not valid UTF-8 before it reached the match, so a binary
+identifier was dropped silently. Since that is exactly the kind of sequence this
+change exists for, the dispatch now matches on the identifier bytes, keeping the
+known identifiers' matching behaviour unchanged while letting anything else
+through. Unmodelled OSC sequences reached the caller on those terms only because
+the sequence is handed over whole; the crate still interprets nothing it did not
+already.
+
+Of the unresolved questions, the variant name stood as `OtherOsc`, and an empty
+`params` is kept rather than special-cased.
+
+The scope is unchanged from what is described above.
