@@ -1492,7 +1492,7 @@ mod tests {
             cursor: termnix::Position { row: 0, col: 0 },
             cursor_visible: true,
         };
-        let mut frame = Frame::new(tuinix::Size { rows: 2, cols: 2 });
+        let mut frame = tuinix::Frame::new(tuinix::Size { rows: 2, cols: 2 });
         write_grid(&mut frame, &grid).expect("write");
         assert_eq!(
             frame.chars().filter(|(_, c)| !c.is_blank()).count(),
