@@ -313,13 +313,15 @@ impl TerminalState {
     /// looping until it returns `None`:
     ///
     /// ```
-    /// # use termnix::{TerminalState, Event};
-    /// # fn example(term: &mut TerminalState) {
+    /// # fn example(term: &mut termnix::TerminalState) {
     /// while let Some(event) = term.next_event() {
     ///     match event {
-    ///         Event::ScreenUpdated => { /* repaint */ }
-    ///         Event::RequestReceived(_request) => { /* act on it */ }
-    ///         _ => {}
+    ///         termnix::Event::ScreenUpdated => { /* repaint */ }
+    ///         termnix::Event::TerminalReset => { /* drop derived state, repaint */ }
+    ///         // History has no built-in bound; cap it (here 1000 lines).
+    ///         termnix::Event::ScrollbackLineAdded => term.trim_scrollback(1000, 100_000),
+    ///         termnix::Event::TitleUpdated => { /* read term.title() */ }
+    ///         termnix::Event::RequestReceived(request) => { /* act on `request` */ }
     ///     }
     /// }
     /// # }

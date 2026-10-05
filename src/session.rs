@@ -762,8 +762,20 @@ impl Session {
     /// ```no_run
     /// # fn example(session: &mut termnix::Session) {
     /// while let Some(event) = session.next_event() {
-    ///     if matches!(event, termnix::Event::ScreenUpdated) {
-    ///         // repaint from `session.terminal_state()`
+    ///     match event {
+    ///         termnix::Event::ScreenUpdated => {
+    ///             // repaint from `session.terminal_state()`
+    ///         }
+    ///         termnix::Event::TerminalReset => {
+    ///             // the child reset the terminal; repaint from scratch
+    ///         }
+    ///         termnix::Event::ScrollbackLineAdded => session.trim_scrollback(1000, 100_000),
+    ///         termnix::Event::TitleUpdated => {
+    ///             // read `session.terminal_state().title()`
+    ///         }
+    ///         termnix::Event::RequestReceived(request) => {
+    ///             // carry out `request`
+    ///         }
     ///     }
     /// }
     /// # }

@@ -60,6 +60,17 @@ const INPUT_DRAIN_BUDGET: usize = 64;
 /// Caller-side write-queue limit; holds the key when above this.
 const WRITE_SOFT_LIMIT: usize = 4096;
 
+/// Maximum scrollback lines retained per session.
+///
+/// termnix keeps no built-in bound: history grows until the caller trims it,
+/// so this example is where the bound lives. Enforced when a
+/// [`Event::ScrollbackLineAdded`](termnix::Event::ScrollbackLineAdded) is
+/// drained.
+const SCROLLBACK_MAX_LINES: usize = 1000;
+
+/// Maximum scrollback cells retained per session (see above).
+const SCROLLBACK_MAX_CELLS: usize = 100_000;
+
 /// Which fd a poll entry watches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PollTarget {
@@ -783,12 +794,8 @@ fn write_grid(frame: &mut Frame, grid: &Projection) -> Result<(), String> {
 /// selected session's events can affect the drawn frame, but all of them must be
 /// read.
 ///
-/// `ScreenUpdated` and `TerminalReset` on the selected session both mean
-/// "repaint": a reset leaves the screen blank and everything the example drew is
-/// stale. The remaining events (new history, a title change, and a child request
-/// such as a clipboard write or a bell) have no effect on the visible grid this
-/// example projects, so they are dropped; a real host would act on
-/// [`Event::RequestReceived`] here, including for a background session.
+/// Every variant is matched, so a new event kind is a compile error here rather
+/// than a silently dropped notification.
 fn note_selection_events(app: &mut App) {
     for slot in 0..SESSION_COUNT {
         let Some(session) = app.sessions[slot].as_mut() else {
@@ -796,13 +803,28 @@ fn note_selection_events(app: &mut App) {
         };
         let selected = slot == app.selected;
         while let Some(event) = session.next_event() {
-            if selected
-                && matches!(
-                    event,
-                    termnix::Event::ScreenUpdated | termnix::Event::TerminalReset
-                )
-            {
-                app.screen_dirty = true;
+            match event {
+                // The visible grid this session projects changed; a reset also
+                // blanks it, so everything already drawn is stale too.
+                termnix::Event::ScreenUpdated | termnix::Event::TerminalReset => {
+                    if selected {
+                        app.screen_dirty = true;
+                    }
+                }
+                // History gained a line. termnix imposes no bound, so the cap
+                // this example chose is applied here; a long-running child
+                // would otherwise grow the history without limit.
+                termnix::Event::ScrollbackLineAdded => {
+                    session.trim_scrollback(SCROLLBACK_MAX_LINES, SCROLLBACK_MAX_CELLS);
+                }
+                // The title is state termnix holds; this example shows no
+                // title, so there is nothing to do.
+                termnix::Event::TitleUpdated => {}
+                // A child request (a clipboard write, a bell) has to be read
+                // like any other event, or the request queue would grow without
+                // bound; a real host would carry it out here, for a background
+                // session as well.
+                termnix::Event::RequestReceived(_request) => {}
             }
         }
     }
