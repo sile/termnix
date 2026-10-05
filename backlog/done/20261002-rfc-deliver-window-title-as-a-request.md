@@ -1,6 +1,6 @@
 # RFC: Deliver the window title as a request
 
-- Status: draft
+- Status: rejected
 
 ## Summary
 
@@ -242,3 +242,14 @@ terminals draw; neither does the crate today.
 - Removing `title_changed` leaves `visible_scalars()` with only `Copy` fields
   and the compare with nothing to special-case, which makes a future field of
   any type less likely to need its own flag.
+
+## Outcome
+
+Superseded by the unified event channel before it was implemented. The crate
+keeps the title as state reachable through `title()` and reports a change as
+`Event::TitleUpdated`, rather than removing the getter and adding a
+`ChildRequest::SetTitle` variant. The event stream carries the notification, so
+`title_changed` is gone and the title no longer needs its own change-tracking
+flag; the notification is a state variant rather than a request because the
+crate holds the current title and the caller can read it at any time. OSC 0 and
+OSC 2 remain one arm with no distinction, as proposed here.

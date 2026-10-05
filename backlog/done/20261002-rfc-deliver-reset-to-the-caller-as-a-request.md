@@ -1,6 +1,6 @@
 # RFC: Deliver a reset to the caller as a request
 
-- Status: draft
+- Status: rejected
 
 ## Summary
 
@@ -244,3 +244,15 @@ does).
   invalidate when it sees `Reset`. If the crate later holds more derived state,
   it might offer to enumerate what a reset invalidates; that would be a new
   method, not a change to this request.
+
+## Outcome
+
+Superseded by the unified event channel before it was implemented. The crate
+now reports a reset as `Event::TerminalReset`, a value on the single event
+stream the caller drains, rather than as a `ChildRequest` variant; a reset is
+state the terminal reached, and the event stream is where that is reported.
+The two proposals also disagree in the other direction: this one argued that a
+reset must not clear not-yet-taken requests, but the landed behavior does clear
+them, on the grounds that a pending request belongs to the session being reset.
+The rename it proposed (`soft_reset` to `reset_child_state`) was carried out
+separately, for the reason given above.
