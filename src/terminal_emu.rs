@@ -90,7 +90,7 @@ impl Perform for Emulator<'_> {
                 self.term.line_feed();
             }
             b'M' => self.term.reverse_index(),
-            b'c' => self.term.soft_reset(),
+            b'c' => self.term.reset_child_state(),
             _ => {}
         }
     }
@@ -251,7 +251,8 @@ impl TerminalState {
         self.events.push_request(ChildRequest::RingBell);
     }
 
-    fn soft_reset(&mut self) {
+    /// Resets the state the terminal derived from the child (RIS, `ESC c`).
+    fn reset_child_state(&mut self) {
         let size = self.size;
         self.primary = Screen::blank(size);
         self.alternate = Screen::blank(size);
