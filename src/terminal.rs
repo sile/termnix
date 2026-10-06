@@ -855,9 +855,11 @@ mod tests {
         // state the terminal holds, so this also pins that the answer does not
         // grow with repeated queries.
         use super::TerminalState;
+        // Any grid works: the reply length is the colour's, not the grid's.
+        // A small one keeps the test from allocating a grid it never reads.
         let mut term = TerminalState::new(crate::Size {
-            rows: std::num::NonZeroU16::new(u16::MAX).expect("non-zero rows"),
-            cols: std::num::NonZeroU16::new(u16::MAX).expect("non-zero cols"),
+            rows: std::num::NonZeroU16::new(24).expect("non-zero rows"),
+            cols: std::num::NonZeroU16::new(80).expect("non-zero cols"),
         });
         term.feed(b"\x1b]4;255;rgb:ff/ff/ff\x07");
         term.advance_reply_bytes(term.pending_reply_bytes().len());
