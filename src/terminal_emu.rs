@@ -3,11 +3,11 @@
 use unicode_width::UnicodeWidthChar;
 use vte::Perform;
 
-use crate::terminal::TerminalState;
+use crate::terminal::{DefaultColors, TerminalState};
 use crate::terminal_buffer::Screen;
 use crate::terminal_types::{
     ChildRequest, ClipboardSelection, Color, MouseReporting, Position, SavedCursor, Style,
-    TerminalModes,
+    TerminalModes, indexed_rgb,
 };
 
 pub(crate) struct Emulator<'a> {
@@ -38,13 +38,14 @@ impl Perform for Emulator<'_> {
     fn unhook(&mut self) {}
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        // OSC 0 / 2 store the window title; OSC 52 records a clipboard
-        // request. Every other identifier is unmodelled and offered to the
-        // caller as `ChildRequest::OtherOsc`, so its payload neither becomes
-        // printable text nor is silently lost.
+        // OSC 0 / 2 store the window title; OSC 4 and 10-12 set colour state
+        // and answer a `?` query from it; OSC 52 records a clipboard request.
+        // Every other identifier is unmodelled and offered to the caller as
+        // `ChildRequest::OtherOsc`, so its payload neither becomes printable
+        // text nor is silently lost.
         // xterm OSC catalogue: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-        // (OSC identifiers evolve; termnix reads title text and OSC 52
-        // selection data, and passes the rest through.)
+        // (OSC identifiers evolve; termnix reads title text, colour state, and
+        // OSC 52 selection data, and passes the rest through.)
         let Some((&id, rest)) = params.split_first() else {
             return;
         };
@@ -63,6 +64,14 @@ impl Perform for Emulator<'_> {
                 self.term.events.mark_title_updated();
             }
             b"52" => self.osc_clipboard(params),
+            // OSC 4 redefines a palette entry; OSC 10/11/12 set the default
+            // foreground, background, and cursor colours. All four are state
+            // a later paint reads, and all four answer a `?` query from that
+            // state, so they are handled here rather than passed through.
+            b"4" => self.osc_palette(params),
+            b"10" => self.osc_default_color(params, id, |colors| &mut colors.foreground),
+            b"11" => self.osc_default_color(params, id, |colors| &mut colors.background),
+            b"12" => self.osc_default_color(params, id, |colors| &mut colors.cursor),
             _ => self.other_osc(id, rest),
         }
     }
@@ -161,6 +170,71 @@ impl Emulator<'_> {
             id: id.to_vec(),
             params: rest.iter().map(|param| param.to_vec()).collect(),
         });
+    }
+
+    /// Handles an OSC 4 palette message (`ESC ] 4 ; <index> ; <spec> ST`).
+    ///
+    /// One sequence carries any number of `index ; spec` pairs, and the pairs
+    /// are independent: a set (`<spec>` being `rgb:...`) stores an override,
+    /// while a query (`<spec>` being `?`) answers from the state the terminal
+    /// holds - the child's override if it set one, otherwise the built-in
+    /// default for that index. A malformed pair stores nothing and answers
+    /// nothing, the same silent ignore an undecodable OSC 52 payload gets.
+    ///
+    /// A query is answered on the reply buffer, not the event channel: the
+    /// answer is the terminal's own state, which the caller has nothing to do
+    /// with producing. An odd trailing field (an index with no spec) is
+    /// ignored rather than read as a value.
+    fn osc_palette(&mut self, params: &[&[u8]]) {
+        // Each turn of the loop peels one `index ; spec` pair off the front.
+        // The pattern needs two leading fields, so an odd trailing field ends
+        // the loop instead of being read as a value.
+        let mut rest = params.get(1..).unwrap_or_default();
+        while let [key, spec, tail @ ..] = rest {
+            rest = tail;
+            let Some(index) = parse_osc_index(key) else {
+                continue;
+            };
+            if *spec == b"?" {
+                let (r, g, b) =
+                    self.term.palette[index as usize].unwrap_or_else(|| indexed_rgb(index));
+                let reply = format!("\x1b]4;{index};rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\");
+                self.term.replies.push_bounded(reply.as_bytes());
+                continue;
+            }
+            if let Some(rgb) = parse_osc_rgb(spec) {
+                self.term.palette[index as usize] = Some(rgb);
+            }
+        }
+    }
+
+    /// Handles an OSC 10, 11, or 12 message (`ESC ] <n> ; <spec> ST`).
+    ///
+    /// Unlike OSC 4 these carry no index: the identifier selects one of three
+    /// slots, which the caller hands in as a projection so the three arms above
+    /// share this body. A set stores the colour; a query answers only when the
+    /// slot holds one, because a default colour the child never set is the
+    /// *host's*, and the crate has no true answer to give. An absent or
+    /// malformed value stores nothing (xterm defines no reset form here).
+    fn osc_default_color<F>(&mut self, params: &[&[u8]], id: &[u8], slot: F)
+    where
+        F: FnOnce(&mut DefaultColors) -> &mut Option<(u8, u8, u8)>,
+    {
+        let Some(spec) = params.get(1) else {
+            return;
+        };
+        if *spec == b"?" {
+            let Some((r, g, b)) = *slot(&mut self.term.default_colors) else {
+                return;
+            };
+            let id = String::from_utf8_lossy(id);
+            let reply = format!("\x1b]{id};rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\");
+            self.term.replies.push_bounded(reply.as_bytes());
+            return;
+        }
+        if let Some(rgb) = parse_osc_rgb(spec) {
+            *slot(&mut self.term.default_colors) = Some(rgb);
+        }
     }
 }
 
@@ -292,6 +366,11 @@ impl TerminalState {
         self.wrap_pending = false;
         self.pen = Style::default();
         self.modes = TerminalModes::default();
+        // The palette and the colour slots are state the child set, so RIS
+        // returns them to the theme the terminal had before it touched them.
+        // The built-in table is a constant and is not "cleared".
+        self.palette.fill(None);
+        self.default_colors = DefaultColors::default();
         self.title.clear();
         // RIS restores the terminal, and a pending request belongs to the
         // session being reset; leaving it would let a caller act on an ask
@@ -710,6 +789,56 @@ fn parse_extended_color(values: &[u16]) -> Option<(Color, usize)> {
         }
         _ => None,
     }
+}
+
+/// Parses an OSC 4 palette index field into a `u8`.
+///
+/// The field is decimal, and an index of 255 is the largest the palette has, so
+/// a larger number names nothing and is rejected rather than wrapped. A
+/// non-numeric or empty field is rejected the same way: the OSC catalogue gives
+/// the field no other meaning.
+fn parse_osc_index(field: &[u8]) -> Option<u8> {
+    // `u8::from_str` would accept a leading `+`, which no OSC sets.
+    if field.starts_with(b"+") {
+        return None;
+    }
+    std::str::from_utf8(field).ok()?.parse().ok()
+}
+
+/// Parses an xterm colour spec (`rgb:RR/GG/BB`) into 8-bit channels.
+///
+/// Each channel is one to four hex digits, the form xterm's `OSC 4` and
+/// `OSC 10`-`12` accept. The scaling is the documented xterm one: a
+/// one-digit channel is scaled to spread it across the byte (`f` is 255, not
+/// 15), while two or more digits are taken as the most significant ones and
+/// the byte is the value shifted down (`ff` and `ffff` are both 255). That
+/// keeps `rgb:f/0/0`, `rgb:ff/00/00`, and `rgb:ffff/0000/0000` all meaning
+/// the same colour, which is what a child that queries and re-sets a colour
+/// expects.
+///
+/// A value without the `rgb:` prefix, with the wrong number of channels, with
+/// an empty channel, or with a non-hex digit returns `None` so the caller
+/// stores nothing: an unrecognized spec is not a colour to guess at.
+fn parse_osc_rgb(value: &[u8]) -> Option<(u8, u8, u8)> {
+    let digits = value.strip_prefix(b"rgb:")?;
+    let mut channels = digits.splitn(3, |byte| *byte == b'/');
+    let r = parse_osc_channel(channels.next()?)?;
+    let g = parse_osc_channel(channels.next()?)?;
+    let b = parse_osc_channel(channels.next()?)?;
+    Some((r, g, b))
+}
+
+/// Converts one hex channel of one to four digits to a `u8`, xterm-style.
+fn parse_osc_channel(field: &[u8]) -> Option<u8> {
+    if field.is_empty() || field.len() > 4 || !field.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    let digits = std::str::from_utf8(field).ok()?;
+    let value = u16::from_str_radix(digits, 16).ok()?;
+    Some(match field.len() {
+        1 => (value * 17) as u8,
+        _ => (value >> (4 * (field.len() as u32 - 2))) as u8,
+    })
 }
 
 fn param_or(params: &vte::Params, index: usize, default: u16) -> u16 {

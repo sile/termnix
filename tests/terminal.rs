@@ -1658,6 +1658,227 @@ fn osc_52_survives_a_hard_reset() {
 }
 
 #[test]
+fn osc_4_sets_a_palette_entry() {
+    let mut t = term(1, 8);
+    // Red, in the crate's own resolution, is what the child asked for.
+    assert_eq!(
+        t.palette_color(1),
+        termnix::Color::Indexed(1).to_rgb().expect("built-in")
+    );
+    t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
+    assert_eq!(t.palette_color(1), (0xff, 0x00, 0x00));
+}
+
+#[test]
+fn palette_color_is_total_and_falls_back_to_the_builtin_table() {
+    // Every index has a value; an untouched index answers with the same table
+    // `Color::to_rgb` uses.
+    let t = term(1, 8);
+    for index in [0u8, 15, 16, 231, 232, 255] {
+        assert_eq!(
+            t.palette_color(index),
+            termnix::Color::Indexed(index).to_rgb().expect("built-in"),
+            "index={index}"
+        );
+    }
+}
+
+#[test]
+fn osc_4_sets_several_entries_in_one_sequence() {
+    // One OSC 4 carries any number of `index;spec` pairs, and each is applied.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;1;rgb:11/22/33;2;rgb:44/55/66\x07");
+    assert_eq!(t.palette_color(1), (0x11, 0x22, 0x33));
+    assert_eq!(t.palette_color(2), (0x44, 0x55, 0x66));
+}
+
+#[test]
+fn osc_4_answers_a_query_from_state() {
+    // A `?` is answered on the reply buffer, not the event channel: the answer
+    // is the terminal's own state, not an ask for the caller.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;1;?\x07");
+    let builtin = termnix::Color::Indexed(1).to_rgb().expect("built-in");
+    assert_eq!(
+        t.pending_reply_bytes(),
+        format!(
+            "\x1b]4;1;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+            builtin.0, builtin.1, builtin.2
+        )
+        .as_bytes()
+    );
+    assert!(next_request(&mut t).is_none());
+}
+
+#[test]
+fn osc_4_query_reports_the_override() {
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;9;rgb:0a/0b/0c\x07");
+    t.advance_reply_bytes(t.pending_reply_bytes().len());
+    t.feed(b"\x1b]4;9;?\x07");
+    assert_eq!(t.pending_reply_bytes(), b"\x1b]4;9;rgb:0a/0b/0c\x1b\\");
+}
+
+#[test]
+fn osc_4_mixed_set_and_query_answers_only_the_query() {
+    // A sequence may set one entry and query another; each pair is independent.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;1;rgb:11/22/33;2;?\x07");
+    assert_eq!(t.palette_color(1), (0x11, 0x22, 0x33));
+    let builtin = termnix::Color::Indexed(2).to_rgb().expect("built-in");
+    assert_eq!(
+        t.pending_reply_bytes(),
+        format!(
+            "\x1b]4;2;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+            builtin.0, builtin.1, builtin.2
+        )
+        .as_bytes()
+    );
+}
+
+#[test]
+fn osc_4_ignores_a_malformed_spec_and_a_missing_value() {
+    // A spec that is not `rgb:` stores nothing, and a trailing index with no
+    // spec is ignored rather than read as a value.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;1;#ff0000;2\x07");
+    assert_eq!(
+        t.palette_color(1),
+        termnix::Color::Indexed(1).to_rgb().expect("built-in")
+    );
+    assert!(t.pending_reply_bytes().is_empty());
+}
+
+#[test]
+fn osc_4_ignores_an_out_of_range_index() {
+    // An index above 255 names nothing; it is dropped rather than wrapped.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;256;rgb:ff/00/00\x07");
+    assert!(t.pending_reply_bytes().is_empty());
+}
+
+#[test]
+fn osc_rgb_scales_by_digit_count() {
+    // One digit spreads across the byte; more digits are the high bits.
+    for spec in [
+        b"rgb:f/0/0".as_slice(),
+        b"rgb:ff/00/00",
+        b"rgb:fff/000/000",
+        b"rgb:ffff/0000/0000",
+    ] {
+        let mut t = term(1, 8);
+        t.feed(format!("\x1b]4;1;{}\x07", String::from_utf8_lossy(spec)).as_bytes());
+        assert_eq!(t.palette_color(1), (0xff, 0x00, 0x00), "spec={spec:?}");
+    }
+}
+
+#[test]
+fn osc_4_does_not_raise_screen_updated() {
+    // A colour set draws nothing; it changes what a later paint means.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
+    assert!(
+        !screen_updated(&mut t),
+        "a palette set is not a visible change"
+    );
+}
+
+#[test]
+fn osc_10_11_12_set_the_default_colour_slots() {
+    let mut t = term(1, 8);
+    assert_eq!(t.default_foreground(), None);
+    assert_eq!(t.default_background(), None);
+    assert_eq!(t.default_cursor(), None);
+    t.feed(b"\x1b]10;rgb:ff/00/00\x07\x1b]11;rgb:00/ff/00\x07\x1b]12;rgb:00/00/ff\x07");
+    assert_eq!(t.default_foreground(), Some((0xff, 0x00, 0x00)));
+    assert_eq!(t.default_background(), Some((0x00, 0xff, 0x00)));
+    assert_eq!(t.default_cursor(), Some((0x00, 0x00, 0xff)));
+}
+
+#[test]
+fn osc_10_query_answers_a_set_value_and_nothing_when_unset() {
+    // The crate has no true answer for an unset slot (the default is the
+    // host's), so a query before a set replies nothing rather than inventing
+    // one.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]10;?\x07");
+    assert!(t.pending_reply_bytes().is_empty());
+    t.feed(b"\x1b]10;rgb:12/34/56\x07");
+    t.advance_reply_bytes(t.pending_reply_bytes().len());
+    t.feed(b"\x1b]10;?\x07");
+    assert_eq!(t.pending_reply_bytes(), b"\x1b]10;rgb:12/34/56\x1b\\");
+}
+
+#[test]
+fn osc_10_with_no_value_stores_nothing() {
+    // xterm defines no reset form here, so an empty value is a no-op.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]10\x07\x1b]10;\x07\x1b]10;notacolour\x07");
+    assert_eq!(t.default_foreground(), None);
+    assert!(t.pending_reply_bytes().is_empty());
+}
+
+#[test]
+fn palette_is_terminal_state_across_the_alternate_screen() {
+    // The palette belongs to the terminal, not a screen buffer.
+    let mut t = term(2, 8);
+    t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
+    t.feed(b"\x1b[?1049h");
+    assert_eq!(t.palette_color(1), (0xff, 0x00, 0x00));
+    t.feed(b"\x1b[?1049l");
+    assert_eq!(t.palette_color(1), (0xff, 0x00, 0x00));
+}
+
+#[test]
+fn ris_clears_the_palette_and_the_colour_slots() {
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;1;rgb:ff/00/00\x07\x1b]10;rgb:ff/00/00\x07");
+    t.feed(b"\x1bc");
+    assert_eq!(
+        t.palette_color(1),
+        termnix::Color::Indexed(1).to_rgb().expect("built-in")
+    );
+    assert_eq!(t.default_foreground(), None);
+}
+
+#[test]
+fn csi_replies_fit_the_session_bound() {
+    // The session used to compare every reply's length against a fixed
+    // 14-byte CSI bound. The comparison moved, but the invariant it protected
+    // has not: a CSI reply is at most `ESC [ 65535 ; 65535 R`. The width is a
+    // property of the format, not of a live grid, so the bound is checked
+    // without allocating a 65535x65535 screen (whose cell buffer is ~86 GB).
+    let widest = format!("\x1b[{};{}R", u16::MAX, u16::MAX);
+    assert_eq!(widest, "\x1b[65535;65535R");
+    assert_eq!(widest.len(), 14);
+    // The reply the emulator actually produces follows that format, pinned on
+    // a grid small enough to allocate.
+    let mut t = term(24, 80);
+    t.feed(b"\x1b[6n");
+    assert_eq!(t.pending_reply_bytes(), b"\x1b[1;1R");
+    t.advance_reply_bytes(t.pending_reply_bytes().len());
+    // DA1 is the other fixed-shape reply, and it is shorter.
+    t.feed(b"\x1b[c");
+    assert_eq!(t.pending_reply_bytes(), b"\x1b[?6c");
+}
+
+#[test]
+fn osc_colour_reply_longer_than_a_csi_reply_is_produced() {
+    // The palette reply is longer than the CSI reply bound; it must still be
+    // produced whole rather than refused.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;255;rgb:ff/ff/ff\x07");
+    t.advance_reply_bytes(t.pending_reply_bytes().len());
+    t.feed(b"\x1b]4;255;?\x07");
+    let reply = t.pending_reply_bytes();
+    assert!(
+        reply.len() > 14,
+        "the reply should exceed the CSI bound: {reply:?}"
+    );
+    assert_eq!(reply, b"\x1b]4;255;rgb:ff/ff/ff\x1b\\");
+}
+
+#[test]
 fn cursor_position_report_is_a_pending_reply() {
     let mut t = term(5, 10);
     t.feed(b"\x1b[3;4H\x1b[6n");
