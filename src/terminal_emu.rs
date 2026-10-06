@@ -6,7 +6,7 @@ use vte::Perform;
 use crate::terminal::{DefaultColors, TerminalState};
 use crate::terminal_buffer::Screen;
 use crate::terminal_types::{
-    ChildRequest, ClipboardSelection, Color, MouseReporting, Position, SavedCursor, Style,
+    ChildRequest, ClipboardSelection, Color, MouseReporting, Position, Rgb, SavedCursor, Style,
     TerminalModes, indexed_rgb,
 };
 
@@ -196,9 +196,11 @@ impl Emulator<'_> {
                 continue;
             };
             if *spec == b"?" {
-                let (r, g, b) =
-                    self.term.palette[index as usize].unwrap_or_else(|| indexed_rgb(index));
-                let reply = format!("\x1b]4;{index};rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\");
+                let rgb = self.term.palette[index as usize].unwrap_or_else(|| indexed_rgb(index));
+                let reply = format!(
+                    "\x1b]4;{index};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+                    rgb.r, rgb.g, rgb.b
+                );
                 self.term.replies.push_bounded(reply.as_bytes());
                 continue;
             }
@@ -218,17 +220,20 @@ impl Emulator<'_> {
     /// malformed value stores nothing (xterm defines no reset form here).
     fn osc_default_color<F>(&mut self, params: &[&[u8]], id: &[u8], slot: F)
     where
-        F: FnOnce(&mut DefaultColors) -> &mut Option<(u8, u8, u8)>,
+        F: FnOnce(&mut DefaultColors) -> &mut Option<Rgb>,
     {
         let Some(spec) = params.get(1) else {
             return;
         };
         if *spec == b"?" {
-            let Some((r, g, b)) = *slot(&mut self.term.default_colors) else {
+            let Some(rgb) = *slot(&mut self.term.default_colors) else {
                 return;
             };
             let id = String::from_utf8_lossy(id);
-            let reply = format!("\x1b]{id};rgb:{r:02x}/{g:02x}/{b:02x}\x1b\\");
+            let reply = format!(
+                "\x1b]{id};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+                rgb.r, rgb.g, rgb.b
+            );
             self.term.replies.push_bounded(reply.as_bytes());
             return;
         }
@@ -819,13 +824,13 @@ fn parse_osc_index(field: &[u8]) -> Option<u8> {
 /// A value without the `rgb:` prefix, with the wrong number of channels, with
 /// an empty channel, or with a non-hex digit returns `None` so the caller
 /// stores nothing: an unrecognized spec is not a colour to guess at.
-fn parse_osc_rgb(value: &[u8]) -> Option<(u8, u8, u8)> {
+fn parse_osc_rgb(value: &[u8]) -> Option<Rgb> {
     let digits = value.strip_prefix(b"rgb:")?;
     let mut channels = digits.splitn(3, |byte| *byte == b'/');
     let r = parse_osc_channel(channels.next()?)?;
     let g = parse_osc_channel(channels.next()?)?;
     let b = parse_osc_channel(channels.next()?)?;
-    Some((r, g, b))
+    Some(Rgb::new(r, g, b))
 }
 
 /// Converts one hex channel of one to four digits to a `u8`, xterm-style.

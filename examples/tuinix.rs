@@ -703,7 +703,9 @@ fn position_to_host(position: termnix::Position) -> tuinix::Position {
 /// else resolves through [`termnix::Color::to_rgb`] (the xterm 256-color
 /// palette for `Indexed`).
 fn to_host_color(color: termnix::Color) -> Option<tuinix::Color> {
-    color.to_rgb().map(|(r, g, b)| tuinix::Color::Rgb(r, g, b))
+    color
+        .to_rgb()
+        .map(|rgb| tuinix::Color::Rgb(rgb.r, rgb.g, rgb.b))
 }
 
 /// Maps a termnix style to a tuinix style, dropping unsupported attributes.
