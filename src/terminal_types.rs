@@ -73,9 +73,16 @@ impl Color {
     ///
     /// The indexed interpretation is the usual xterm convention: indices
     /// `0..=15` are the system palette, `16..=231` are the 6x6x6 color cube,
-    /// and `232..=255` are the grayscale ramp. Host terminals may override the
-    /// first 16 entries, so an application that needs exact on-screen colors
-    /// should consult its own palette instead of relying on these values.
+    /// and `232..=255` are the grayscale ramp.
+    ///
+    /// This always resolves the *built-in default* table. A child can redefine
+    /// a palette entry with OSC 4, and this method never sees that override, so
+    /// a host rendering a cell that carries [`Color::Indexed`] should resolve
+    /// the index through
+    /// [`TerminalState::palette_color()`](crate::TerminalState::palette_color)
+    /// instead - which falls back to this table for an entry the child never
+    /// touched. The split is deliberate: `Color` is a `Copy` value type and
+    /// cannot read the terminal's mutable state.
     pub fn to_rgb(&self) -> Option<(u8, u8, u8)> {
         match *self {
             Self::Default => None,
@@ -107,8 +114,11 @@ const XTERM_SYSTEM: [(u8, u8, u8); 16] = [
 
 /// Resolves an xterm 256-color index to concrete RGB.
 ///
-/// See [`Color::to_rgb`] for the palette layout.
-fn indexed_rgb(index: u8) -> (u8, u8, u8) {
+/// See [`Color::to_rgb`] for the palette layout. This is the *built-in* table;
+/// it knows nothing about a palette override the child set with OSC 4, which
+/// [`TerminalState::palette_color`](crate::TerminalState::palette_color) layers
+/// on top for the same index.
+pub(crate) fn indexed_rgb(index: u8) -> (u8, u8, u8) {
     match index {
         0..=15 => XTERM_SYSTEM[index as usize],
         16..=231 => {
