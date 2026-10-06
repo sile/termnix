@@ -820,6 +820,14 @@ fn note_selection_events(app: &mut App) {
                 // The title is state termnix holds; this example shows no
                 // title, so there is nothing to do.
                 termnix::Event::TitleUpdated => {}
+                // A palette or default-colour change. The example resolves
+                // indexed cells through the built-in table
+                // ([`Color::to_rgb`](termnix::Color::to_rgb)), not through
+                // `palette_color()`, so a child's OSC 4 override does not
+                // change what it draws and there is nothing to re-read here. A
+                // host that draws from `palette_color()` would refresh its
+                // cached colours on this event.
+                termnix::Event::ColorsUpdated => {}
                 // A child request (a clipboard write, a clipboard read, a
                 // bell, or an OSC termnix does not interpret) has to be read
                 // like any other event, or the request queue would grow

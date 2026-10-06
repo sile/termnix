@@ -494,6 +494,21 @@ pub enum Event {
     /// The title is state termnix holds; read it through
     /// [`title()`](crate::TerminalState::title).
     TitleUpdated,
+    /// A colour the terminal resolves changed (OSC 4, OSC 10/11/12, or a reset
+    /// returning them to their defaults).
+    ///
+    /// The colours are state termnix holds, not cells: nothing was drawn and
+    /// the cells are unchanged, so this is not a repaint request on its own.
+    /// Resolve them again through
+    /// [`palette_color()`](crate::TerminalState::palette_color) and the
+    /// `default_*` accessors.
+    ///
+    /// A caller that resolves a colour every time it draws can ignore this: the
+    /// value it reads on the next repaint is already current. It matters to a
+    /// caller that resolved a colour once and kept the answer - a palette
+    /// cache, or the host's own theme painted from the default colours -
+    /// because that kept value is now stale and only this event says so.
+    ColorsUpdated,
     /// The child asked for something termnix cannot do itself.
     ///
     /// Carries one [`ChildRequest`]. Requests are not merged, so a caller that

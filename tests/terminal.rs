@@ -882,6 +882,17 @@ fn screen_updated(t: &mut termnix::TerminalState) -> bool {
         .any(|event| matches!(event, termnix::Event::ScreenUpdated))
 }
 
+/// Drains the pending events and returns whether a `ColorsUpdated` was among
+/// them.
+///
+/// "A colour the terminal resolves moved since the last drain". Like
+/// [`screen_updated`], reporting the change consumes it.
+fn colors_updated(t: &mut termnix::TerminalState) -> bool {
+    drain(t)
+        .iter()
+        .any(|event| matches!(event, termnix::Event::ColorsUpdated))
+}
+
 /// Returns the next pending request, leaving the rest queued, and drops the
 /// state-change events it walks past.
 ///
@@ -1426,6 +1437,27 @@ fn osc_title_is_stored() {
 }
 
 #[test]
+fn title_change_raises_title_updated_but_not_screen_updated() {
+    // The title is not drawn by termnix; a caller reads it through `title()`.
+    // So a title change is a title change, not a screen change.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]2;termnix-title\x07");
+    let events = drain(&mut t);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::TitleUpdated)),
+        "a title set is a title change: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::ScreenUpdated)),
+        "a title set is not a screen change: {events:?}"
+    );
+}
+
+#[test]
 fn osc_52_clipboard_is_recorded_and_taken_once() {
     let mut t = term(1, 8);
     t.feed(b"\x1b]52;c;aGVsbG8=\x07");
@@ -1780,14 +1812,60 @@ fn osc_rgb_scales_by_digit_count() {
 }
 
 #[test]
-fn osc_4_does_not_raise_screen_updated() {
-    // A colour set draws nothing; it changes what a later paint means.
+fn osc_4_raises_colors_updated_but_not_screen_updated() {
+    // A colour set draws nothing; it changes what a later paint means. So it
+    // is not a screen change, but it is a colour change.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
+    let events = drain(&mut t);
     assert!(
-        !screen_updated(&mut t),
-        "a palette set is not a visible change"
+        events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::ColorsUpdated)),
+        "a palette set is a colour change: {events:?}"
     );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, termnix::Event::ScreenUpdated)),
+        "a palette set is not a screen change: {events:?}"
+    );
+}
+
+#[test]
+fn osc_10_11_12_raise_colors_updated() {
+    let mut t = term(1, 8);
+    for feed in [
+        &b"\x1b]10;rgb:ff/00/00\x07"[..],
+        &b"\x1b]11;rgb:00/ff/00\x07"[..],
+        &b"\x1b]12;rgb:00/00/ff\x07"[..],
+    ] {
+        t.feed(feed);
+        assert!(colors_updated(&mut t), "{feed:?} is a colour change");
+    }
+}
+
+#[test]
+fn colors_updated_merges_within_one_feed() {
+    // Two colour sets in one feed are one event, like the other state flags.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;1;rgb:ff/00/00\x07\x1b]4;2;rgb:00/ff/00\x07");
+    let events = drain(&mut t);
+    let count = events
+        .iter()
+        .filter(|event| matches!(event, termnix::Event::ColorsUpdated))
+        .count();
+    assert_eq!(count, 1, "colour changes merge into one event: {events:?}");
+}
+
+#[test]
+fn osc_4_query_does_not_raise_colors_updated() {
+    // A query reads state; it stores nothing, so nothing changed.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
+    let _ = drain(&mut t);
+    t.feed(b"\x1b]4;1;?\x07");
+    assert!(!colors_updated(&mut t), "a palette query stores nothing");
 }
 
 #[test]
@@ -1968,30 +2046,33 @@ fn insert_mode_shifts_cells() {
 }
 
 #[test]
-fn screen_updated_covers_each_visible_change() {
+fn screen_updated_covers_each_screen_change() {
     let mut t = term(2, 8);
     assert!(!screen_updated(&mut t), "a fresh terminal is not dirty");
 
     t.feed(b"a");
-    assert!(screen_updated(&mut t), "text write is a visible change");
+    assert!(screen_updated(&mut t), "text write is a screen change");
 
     t.feed(b"\x1b[2;3H");
-    assert!(screen_updated(&mut t), "cursor move is a visible change");
+    assert!(screen_updated(&mut t), "cursor move is a screen change");
 
     t.feed(b"\x1b[1m");
-    assert!(screen_updated(&mut t), "SGR is a visible change");
+    assert!(screen_updated(&mut t), "SGR is a screen change");
 
     t.feed(b"\x1b[?25l");
     assert!(
         screen_updated(&mut t),
-        "cursor visibility is a visible change"
+        "cursor visibility is a screen change"
     );
 
     t.feed(b"\x1b]2;title\x07");
-    assert!(screen_updated(&mut t), "title change is a visible change");
+    assert!(
+        !screen_updated(&mut t),
+        "a title change is not a screen change"
+    );
 
     t.resize(size(3, 9));
-    assert!(screen_updated(&mut t), "resize is a visible change");
+    assert!(screen_updated(&mut t), "resize is a screen change");
 }
 
 #[test]
@@ -2051,9 +2132,10 @@ fn screen_updated_stays_clear_without_visible_change() {
 
 #[test]
 fn hard_reset_reports_reset_and_screen_updated() {
-    // RIS clears the screen and the title. If the screen was already blank and
-    // nothing else was set, the only visible effect is the title going away,
-    // which must still be reported; the reset itself is reported too.
+    // RIS blanks the screen (which is a visible change on its own, recorded by
+    // marking the screen dirty) and is reported as a reset. The title is
+    // cleared too, but the reset already covers everything derived from the
+    // child, so no separate title event is raised.
     let mut t = term(2, 8);
     t.feed(b"\x1b]2;title\x07");
     let _ = drain(&mut t);
@@ -2065,7 +2147,7 @@ fn hard_reset_reports_reset_and_screen_updated() {
         events
             .iter()
             .any(|event| matches!(event, termnix::Event::ScreenUpdated)),
-        "clearing a set title is a visible change: {events:?}"
+        "RIS blanks the screen: {events:?}"
     );
     assert!(
         events

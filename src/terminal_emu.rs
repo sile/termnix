@@ -60,7 +60,6 @@ impl Perform for Emulator<'_> {
                     .first()
                     .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
                     .unwrap_or_default();
-                self.term.title_changed = true;
                 self.term.events.mark_title_updated();
             }
             b"52" => self.osc_clipboard(params),
@@ -206,6 +205,7 @@ impl Emulator<'_> {
             }
             if let Some(rgb) = parse_osc_rgb(spec) {
                 self.term.palette[index as usize] = Some(rgb);
+                self.term.events.mark_colors_updated();
             }
         }
     }
@@ -239,6 +239,7 @@ impl Emulator<'_> {
         }
         if let Some(rgb) = parse_osc_rgb(spec) {
             *slot(&mut self.term.default_colors) = Some(rgb);
+            self.term.events.mark_colors_updated();
         }
     }
 }
