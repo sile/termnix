@@ -181,6 +181,13 @@ raises changes.
   fires for a title change has to be double-checked with `TitleUpdated`,
   turning one clear signal into two rules. Fixing it costs one removed field and
   makes the `ScreenUpdated` doc true as written.
+- **Is `ScreenUpdated` the right name for "the cells changed"?** A name like
+  `CellsChanged` would say the scope out loud and leave no room for a title or
+  a colour to be folded back in. The name is kept as it stands because the name
+  already means the right thing - "the screen was updated" - and only the
+  behaviour drifted from it; the fix here is to make the behaviour match the
+  name, not to rename around it. Renaming would also be a breaking change to a
+  public variant for a distinction its documentation can carry instead.
 - **What is the impact of doing nothing?** The two rows keep contradicting each
   other: `ScreenUpdated` over-reports for the title and under-reports for the
   colours, and neither `palette_color()`'s contract nor `ScreenUpdated`'s doc
