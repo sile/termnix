@@ -90,7 +90,7 @@ while let Some(event) = events {
             ChildRequest::GetColor { slot } => {
                 // Answer it, from the palette only we can see.
                 let rgb = self.palette.get(slot);
-                session.enqueue_input(Input::ColorResponse(ColorResponse { slot, rgb }))?;
+                session.enqueue_input(Input::ColorResponse { slot, rgb })?;
             }
             _ => {}
         }
@@ -191,16 +191,12 @@ pub enum Input<'a> {
     /// Encoded as the OSC the child asked with: OSC 4 for
     /// [`ColorSlot::Indexed`], OSC 10 / 11 / 12 for the default slots. The
     /// child is waiting for these bytes; nothing else sends them.
-    ColorResponse(ColorResponse),
-}
-
-/// The answer to a [`ChildRequest::GetColor`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ColorResponse {
-    /// Which colour is being reported.
-    pub slot: ColorSlot,
-    /// The value to report.
-    pub rgb: Rgb,
+    ColorResponse {
+        /// Which colour is being reported.
+        slot: ColorSlot,
+        /// The value to report.
+        rgb: Rgb,
+    },
 }
 ```
 
@@ -217,8 +213,8 @@ This is the one place the semantics widen rather than a new type being added.
 
 ### What `input.rs` gains
 
-`ColorResponse` needs a `write_to` arm. The encoding is fixed by the OSC that
-asked:
+`Input::ColorResponse` needs a `write_to` arm. The encoding is fixed by the OSC
+that asked:
 
 - `ColorSlot::Indexed(i)` -> `ESC ] 4 ; i ; rgb:RR/GG/BB ST`
 - `ColorSlot::DefaultForeground` -> `ESC ] 10 ; rgb:RR/GG/BB ST`
@@ -246,18 +242,49 @@ a half-decoded colour to the caller.
 
 ### What is removed
 
-- `Palette`, `Palette::XTERM`, `Palette::new`, `Palette::colors`,
-  `default_foreground`, `default_background`, `default_cursor`.
-- `TerminalState::palette()`, `TerminalState::set_palette()`.
-- `TerminalState::palette_color`, `palette_colors`, `default_foreground_color`,
+- `TerminalState::palette_color`, `default_foreground_color`,
   `default_background_color`, `default_cursor_color`.
 - `Color::Default`, and with it `Color`'s `Default` derive (a style's slots
   become `Option<Color>` where `None` is the default).
 - `Color::to_rgb`, and with it the resolution path entirely.
-- `Style::foreground_rgb`, `Style::background_rgb`.
 - The `palette` field on `TerminalState`, the `DefaultColors` struct, and the
-  `XTERM_SYSTEM` / `xterm_colors()` / `palette_level` / `indexed_rgb` tables
-  that only existed to seed a palette or resolve an index.
+  `XTERM_SYSTEM` / `indexed_rgb` / `palette_level` / `xterm_colors` tables
+  that only existed to resolve an index or seed a fallback.
+
+### API at a glance
+
+Against `main` (not against any draft that once added a `Palette`):
+
+| Item | Before | After |
+|---|---|---|
+| `ColorSlot` | - | new (`Indexed(u8)` / `DefaultForeground` / `DefaultBackground` / `DefaultCursor`) |
+| `ChildRequest::SetColor` | - | new (`{ slot, rgb }`), from OSC 4/10/11/12 set |
+| `ChildRequest::GetColor` | - | new (`{ slot }`), from OSC 4/10/11/12 query |
+| `Input` | `Raw` / `Key` / `Paste` / `Mouse` | + `ColorResponse { slot, rgb }` |
+| OSC 4/10/11/12 set | writes `TerminalState` colour state | emits `ChildRequest::SetColor` |
+| OSC 4/10/11/12 query | answered from `TerminalState` | emits `ChildRequest::GetColor` |
+| `TerminalState::palette_color(i)` | accessor (`Rgb`, xterm fallback) | removed |
+| `TerminalState::default_foreground_color()` | accessor (`Option<Rgb>`) | removed |
+| `TerminalState::default_background_color()` | accessor (`Option<Rgb>`) | removed |
+| `TerminalState::default_cursor_color()` | accessor (`Option<Rgb>`) | removed |
+| `Color::Default` | enum variant | removed; default is `Option<Color>` on `Style` |
+| `Style::foreground` / `background` | `Color` | `Option<Color>` |
+| `Color::to_rgb` | resolver | removed |
+| `palette` field / `default_colors` | state on `TerminalState` | removed |
+| `XTERM_SYSTEM` / `indexed_rgb` | internal tables | removed |
+
+Every removed accessor answered "what is this colour now?". That question is
+now the caller's, kept from the `SetColor` requests it receives:
+`palette_color(i)` from `Indexed(i)` requests, and the three
+`default_*_color()` accessors from the three default slots. The accessors'
+`Option<Rgb>` - "did the child set one?" - becomes the caller's own
+`Option<Rgb>`; termnix no longer keeps the distinction, because the caller that
+owns the palette is the one that cares whether an entry has been touched.
+
+One small loss: `Color::to_rgb` also turned a `Color::Rgb(rgb)` into its own
+`rgb`, so removing it drops the easy way to pull a direct value out of a
+`Color`. `Color` keeps both variants public, so a caller that needs it matches
+`Color::Rgb(rgb) => rgb`; nothing about the direct case required the resolver.
 
 `Color` loses its `Default` variant. A style's foreground or background
 becomes `Option<Color>`, where `None` is "the terminal default" - the SGR 39
@@ -301,7 +328,7 @@ two, but the two uses are different, and a caller's match is slightly wider
 than the message.
 - **The xterm table moves out of the crate.** A host that wants the built-in
   defaults must carry its own copy, or depend on a crate that has one. termnix
-  no longer ships the table it used to name in `Palette::XTERM`.
+  no longer ships the table it keeps today behind `palette_color`'s fallback.
 
 ## Rationale and alternatives
 
@@ -322,7 +349,7 @@ than the message.
   variant.** Rejected in favour of `Input::ColorResponse` (though both are
   workable): a session is the thing with a write queue, and `TerminalState`
   does not expose a write path. A `Session`-only `reply_color` would be a thin
-  alias for `enqueue_input(Input::ColorResponse(..))`; making the variant the
+  alias for `enqueue_input(Input::ColorResponse { .. })`; making the variant the
   primitive and skipping the alias keeps one spelling. A caller that wants to
   format bytes itself still has `Input::Raw`.
 - **Hand the child's raw OSC to the caller as `OtherOsc` and stop parsing
@@ -350,7 +377,7 @@ than the message.
 - **Should the crate ship the built-in xterm table as a public constant anyway?**
   A host that wants the standard defaults would otherwise copy it. A
   `pub const XTERM_COLORS: [Rgb; 256]` with no state attached is not a second
-  authority - it is data - so it could stay even without a `Palette`.
+  authority - it is data - so it could stay even after the state is gone.
 - **Does the answer to a `?` have to correspond to one `GetColor`?** OSC 4 has
   no round-trip number, so termnix cannot pair a reply with its ask. The caller
   is trusted to answer each `GetColor` once; a spurious `ColorResponse` is
@@ -361,7 +388,7 @@ than the message.
 
 - A `ColorSlot` -> OSC encoder helper (or a `TerminalState` convenience that
   builds an `Input::ColorResponse` from `(slot, rgb)`) would save a caller the
-  two-field struct, if the verbosity proves annoying.
+  two-field variant, if the verbosity proves annoying.
 - If OSC 4 `?` queries turn out to be common in practice (they are not today;
   see Motivation), a small crate-provided helper that answers from a caller
   palette could be added above the raw request.
