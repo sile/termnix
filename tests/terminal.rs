@@ -1707,7 +1707,7 @@ fn osc_4_set_becomes_a_set_color_request() {
     assert_eq!(
         set_color(&mut t),
         None,
-        "a fresh terminal has no colour request"
+        "a fresh terminal has no color request"
     );
     t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
     assert_eq!(
@@ -1813,7 +1813,7 @@ fn osc_rgb_scales_by_digit_count() {
 
 #[test]
 fn osc_4_set_is_not_a_screen_change() {
-    // A colour set draws nothing; the request tells the caller, and the screen
+    // A color set draws nothing; the request tells the caller, and the screen
     // is untouched.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
@@ -1878,15 +1878,15 @@ fn osc_10_query_becomes_a_get_color_request() {
 fn osc_10_with_no_value_is_no_request() {
     // xterm defines no reset form here, so an empty value is a no-op.
     let mut t = term(1, 8);
-    t.feed(b"\x1b]10\x07\x1b]10;\x07\x1b]10;notacolour\x07");
+    t.feed(b"\x1b]10\x07\x1b]10;\x07\x1b]10;notacolor\x07");
     assert!(next_request(&mut t).is_none());
     assert!(t.pending_reply_bytes().is_empty());
 }
 
 #[test]
-fn ris_does_not_emit_a_colour_request() {
+fn ris_does_not_emit_a_color_request() {
     // RIS resets the child's own state; termnix keeps no palette, so it emits
-    // nothing for colours, and a request from before the reset does not
+    // nothing for colors, and a request from before the reset does not
     // outlive it.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;rgb:ff/00/00\x07\x1b]10;rgb:ff/00/00\x07");

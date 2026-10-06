@@ -46,12 +46,12 @@ impl Position {
     pub const ORIGIN: Self = Self { row: 0, col: 0 };
 }
 
-/// A 24-bit RGB colour, one byte per channel.
+/// A 24-bit RGB color, one byte per channel.
 ///
-/// The channels are the direct value of a colour, not an index into a palette.
+/// The channels are the direct value of a color, not an index into a palette.
 /// A palette index stays a `u8`, and a host resolves it against the palette it
-/// owns. The cell colour variant [`Color::Rgb`](crate::Color::Rgb) carries
-/// this type, as do the colour requests and reports
+/// owns. The cell color variant [`Color::Rgb`](crate::Color::Rgb) carries
+/// this type, as do the color requests and reports
 /// ([`ChildRequest::SetColor`](crate::ChildRequest::SetColor),
 /// [`Input::Color`](crate::Input::Color)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -65,22 +65,22 @@ pub struct Rgb {
 }
 
 impl Rgb {
-    /// Builds a colour from its three channels.
+    /// Builds a color from its three channels.
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
     }
 }
 
-/// Cell colour.
+/// Cell color.
 ///
 /// Indexed values use the usual ANSI/xterm numbering: 0–15 are the system
 /// palette, 16–255 are the 256-color cube and grayscale ramp. SGR color forms
 /// follow ECMA-48 / ITU T.416 practice (`38;5`, `38;2`, …) and may gain new
 /// encodings in host terminals; termnix stores the decoded color.
 ///
-/// A colour is always concrete here; the "terminal default" a cell can carry
+/// A color is always concrete here; the "terminal default" a cell can carry
 /// is [`Style::foreground`] or [`Style::background`] being `None`, not a
-/// variant of this type. An [`Color::Indexed`] colour names a palette slot the
+/// variant of this type. An [`Color::Indexed`] color names a palette slot the
 /// caller resolves against the palette it owns; termnix no longer resolves it
 /// itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -91,10 +91,10 @@ pub enum Color {
     Rgb(Rgb),
 }
 
-/// One colour the terminal can be asked to set or report.
+/// One color the terminal can be asked to set or report.
 ///
 /// OSC 4 addresses a palette entry (`0..=255`); OSC 10, 11, and 12 each name
-/// one default slot. Both are "a colour the terminal can be asked about," so
+/// one default slot. Both are "a color the terminal can be asked about," so
 /// both arms live in one type and travel together in
 /// [`ChildRequest::SetColor`](crate::ChildRequest::SetColor) /
 /// [`ChildRequest::GetColor`](crate::ChildRequest::GetColor) and in
@@ -107,7 +107,7 @@ pub enum ColorSlot {
     DefaultForeground,
     /// The default background (OSC 11).
     DefaultBackground,
-    /// The cursor colour (OSC 12).
+    /// The cursor color (OSC 12).
     DefaultCursor,
 }
 
@@ -115,7 +115,7 @@ impl ColorSlot {
     /// Returns the OSC identifier that names this slot.
     ///
     /// `4` for a palette entry and `10` / `11` / `12` for the defaults. Used to
-    /// build a colour report; the value is the same number the child's query
+    /// build a color report; the value is the same number the child's query
     /// used.
     pub(crate) fn osc_id(self) -> u8 {
         match self {
@@ -367,20 +367,20 @@ pub enum ChildRequest {
         /// Which selection the application asked for.
         selection: ClipboardSelection,
     },
-    /// An OSC 4 / 10 / 11 / 12 colour write.
+    /// An OSC 4 / 10 / 11 / 12 color write.
     ///
-    /// The sequence asks the terminal to change a colour; termnix owns no
-    /// palette, so the ask is what a caller receives. Which colour it is is
+    /// The sequence asks the terminal to change a color; termnix owns no
+    /// palette, so the ask is what a caller receives. Which color it is is
     /// carried in [`ColorSlot`].
     SetColor {
-        /// Which colour the application addressed.
+        /// Which color the application addressed.
         slot: ColorSlot,
         /// The decoded 24-bit value it asked to set.
         rgb: Rgb,
     },
-    /// An OSC 4 / 10 / 11 / 12 colour read (`... ? ST`).
+    /// An OSC 4 / 10 / 11 / 12 color read (`... ? ST`).
     ///
-    /// The sequence asks the terminal to report a colour. termnix owns no
+    /// The sequence asks the terminal to report a color. termnix owns no
     /// palette and cannot see the host terminal's theme, so it cannot answer
     /// correctly and writes nothing to the output buffer: the caller that owns
     /// the palette is the one that answers, by enqueuing an
@@ -388,7 +388,7 @@ pub enum ChildRequest {
     /// variant leaves the child waiting, which is what a caller that only
     /// forwards writes will do.
     GetColor {
-        /// Which colour the application asked for.
+        /// Which color the application asked for.
         slot: ColorSlot,
     },
     /// The child rang the bell (`BEL`, `0x07`).
@@ -458,8 +458,8 @@ pub enum Event {
     /// termnix has already performed the reset by the time this is reported;
     /// the event exists so the caller knows its own derivations are stale.
     ///
-    /// Colours are not part of this: termnix keeps no palette, so the reset
-    /// has nothing to restore there and reports no colour change. A caller
+    /// Colors are not part of this: termnix keeps no palette, so the reset
+    /// has nothing to restore there and reports no color change. A caller
     /// that owns a palette the child set through OSC 4 / OSC 10 / OSC 11 /
     /// OSC 12 has to reset those itself.
     TerminalReset,

@@ -697,9 +697,9 @@ fn position_to_host(position: termnix::Position) -> tuinix::Position {
     }
 }
 
-/// Maps a termnix colour to tuinix's colour.
+/// Maps a termnix color to tuinix's color.
 ///
-/// `None` (the terminal default) maps to no explicit colour. An indexed colour
+/// `None` (the terminal default) maps to no explicit color. An indexed color
 /// stays indexed: the palette belongs to the host terminal, which is the only
 /// layer that can see its theme, so the example resolves nothing itself.
 fn to_host_color(color: Option<termnix::Color>) -> Option<tuinix::Color> {
@@ -825,7 +825,7 @@ fn note_selection_events(app: &mut App) {
                 // request queue would grow without bound; a real host would
                 // carry it out here, for a background session as well. This
                 // example owns neither a clipboard nor a palette, so it drops
-                // every ask - including the colour ones, which a host that
+                // every ask - including the color ones, which a host that
                 // tracks the host terminal's theme would answer from its own
                 // table with an OSC 4/10/11/12 written to the child.
                 termnix::Event::RequestReceived(_request) => {}
@@ -1209,7 +1209,7 @@ mod tests {
             to_host_color(Some(termnix::Color::Rgb(termnix::Rgb::new(1, 2, 3)))),
             Some(tuinix::Color::Rgb(1, 2, 3))
         );
-        // An indexed colour is passed through indexed, not resolved here.
+        // An indexed color is passed through indexed, not resolved here.
         assert_eq!(
             to_host_color(Some(termnix::Color::Indexed(42))),
             Some(tuinix::Color::Indexed(42))

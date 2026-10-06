@@ -450,5 +450,4 @@ mod tests {
         assert!(ms >= 0);
         assert!(ms <= 1000);
     }
-
 }

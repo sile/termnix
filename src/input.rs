@@ -204,7 +204,7 @@ pub struct MouseEvent {
 /// User input is the common case - `Key`, `Paste`, and `Mouse` are turned into
 /// PTY bytes with the session's current modes at enqueue time - and `Raw` is
 /// appended unchanged. A protocol message the host owes the child is also
-/// input in this direction: [`Input::Color`] carries a colour report the host
+/// input in this direction: [`Input::Color`] carries a color report the host
 /// sends in answer to a [`ChildRequest::GetColor`](crate::ChildRequest::GetColor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Input<'a> {
@@ -225,18 +225,18 @@ pub enum Input<'a> {
     Paste(&'a [u8]),
     /// A mouse event; report bytes follow the current modes.
     Mouse(MouseEvent),
-    /// A colour report, as OSC 4 / 10 / 11 / 12.
+    /// A color report, as OSC 4 / 10 / 11 / 12.
     ///
     /// Encoded as the OSC that names the slot: OSC 4 for
     /// [`ColorSlot::Indexed`](crate::ColorSlot::Indexed), OSC 10 / 11 / 12 for
     /// the default slots. OSC has no request/response framing, so this is
-    /// simply the colour message the host sends back; a child waiting on a
+    /// simply the color message the host sends back; a child waiting on a
     /// `... ?` query is the usual motive, but nothing in the wire form says so.
     /// It is the answer to a
     /// [`ChildRequest::GetColor`](crate::ChildRequest::GetColor); a caller that
     /// owns the palette builds it from its own table.
     Color {
-        /// Which colour is being reported.
+        /// Which color is being reported.
         slot: ColorSlot,
         /// The value to report.
         rgb: Rgb,
@@ -272,11 +272,11 @@ impl<'a> Input<'a> {
     }
 }
 
-/// Appends the OSC colour report for `slot` carrying `rgb`.
+/// Appends the OSC color report for `slot` carrying `rgb`.
 ///
 /// The encoding is fixed by the slot: OSC 4 for a palette entry, OSC 10 / 11 /
 /// 12 for a default. The payload is the `rgb:RR/GG/BB` form the child uses in
-/// its own colour sequences, so the report is a colour message the child can
+/// its own color sequences, so the report is a color message the child can
 /// read the same way it writes one.
 fn write_color(out: &mut Vec<u8>, slot: ColorSlot, rgb: Rgb) {
     let mut scratch = NumBuffer::<u32>::new();

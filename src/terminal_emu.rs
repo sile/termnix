@@ -38,13 +38,13 @@ impl Perform for Emulator<'_> {
     fn unhook(&mut self) {}
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        // OSC 0 / 2 store the window title; OSC 4 and 10-12 become colour
+        // OSC 0 / 2 store the window title; OSC 4 and 10-12 become color
         // requests the caller carries out; OSC 52 records a clipboard request.
         // Every other identifier is unmodelled and offered to the caller as
         // `ChildRequest::OtherOsc`, so its payload neither becomes printable
         // text nor is silently lost.
         // xterm OSC catalogue: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-        // (OSC identifiers evolve; termnix reads title text, colour state, and
+        // (OSC identifiers evolve; termnix reads title text, color state, and
         // OSC 52 selection data, and passes the rest through.)
         let Some((&id, rest)) = params.split_first() else {
             return;
@@ -64,7 +64,7 @@ impl Perform for Emulator<'_> {
             }
             b"52" => self.osc_clipboard(params),
             // OSC 4 redefines a palette entry; OSC 10/11/12 name the default
-            // foreground, background, and cursor colours. termnix owns no
+            // foreground, background, and cursor colors. termnix owns no
             // palette, so all four are handed to the caller: a set becomes a
             // `SetColor` request, a `?` a `GetColor`. The crate still frames
             // and decodes them (the field split, the `rgb:` payload), which is
@@ -213,7 +213,7 @@ impl Emulator<'_> {
     /// Unlike OSC 4 these carry no index: the identifier selects one of the
     /// three default slots, which the caller hands in so the three arms above
     /// share this body. A set becomes a [`ChildRequest::SetColor`] and a query
-    /// a [`ChildRequest::GetColor`]; termnix keeps no default-colour state, so
+    /// a [`ChildRequest::GetColor`]; termnix keeps no default-color state, so
     /// it neither stores the one nor answers the other. An absent or malformed
     /// value is ignored (xterm defines no reset form here).
     fn osc_default_color(&mut self, params: &[&[u8]], slot: ColorSlot) {
@@ -362,8 +362,8 @@ impl TerminalState {
         self.wrap_pending = false;
         self.pen = Style::default();
         self.modes = TerminalModes::default();
-        // termnix keeps no colour state, so RIS resets none: a palette the host
-        // holds is the host's to clear. The colour coordinates RIS would once
+        // termnix keeps no color state, so RIS resets none: a palette the host
+        // holds is the host's to clear. The color coordinates RIS would once
         // have returned to defaults are the child's own, and the crate no
         // longer stores them.
         self.title.clear();
@@ -800,7 +800,7 @@ fn parse_osc_index(field: &[u8]) -> Option<u8> {
     std::str::from_utf8(field).ok()?.parse().ok()
 }
 
-/// Parses an xterm colour spec (`rgb:RR/GG/BB`) into 8-bit channels.
+/// Parses an xterm color spec (`rgb:RR/GG/BB`) into 8-bit channels.
 ///
 /// Each channel is one to four hex digits, the form xterm's `OSC 4` and
 /// `OSC 10`-`12` accept. The scaling is the documented xterm one: a
@@ -808,12 +808,12 @@ fn parse_osc_index(field: &[u8]) -> Option<u8> {
 /// 15), while two or more digits are taken as the most significant ones and
 /// the byte is the value shifted down (`ff` and `ffff` are both 255). That
 /// keeps `rgb:f/0/0`, `rgb:ff/00/00`, and `rgb:ffff/0000/0000` all meaning
-/// the same colour, which is what a child that queries and re-sets a colour
+/// the same color, which is what a child that queries and re-sets a color
 /// expects.
 ///
 /// A value without the `rgb:` prefix, with the wrong number of channels, with
 /// an empty channel, or with a non-hex digit returns `None` so the caller
-/// stores nothing: an unrecognized spec is not a colour to guess at.
+/// stores nothing: an unrecognized spec is not a color to guess at.
 fn parse_osc_rgb(value: &[u8]) -> Option<Rgb> {
     let digits = value.strip_prefix(b"rgb:")?;
     let mut channels = digits.splitn(3, |byte| *byte == b'/');

@@ -72,7 +72,7 @@ use crate::terminal_types::SavedCursor;
 ///   cursor visibility, bracketed paste, mouse reporting (including SGR)
 /// - **Alternate screen**: `?1049`, `?47`, `?1047`
 /// - **OSC 0/2**: window title (stored); **OSC 4**: palette entries, and
-///   **OSC 10/11/12**: the default foreground, background, and cursor colours,
+///   **OSC 10/11/12**: the default foreground, background, and cursor colors,
 ///   all handed to the caller as
 ///   [`ChildRequest::SetColor`] / [`ChildRequest::GetColor`] through
 ///   [`next_event()`](TerminalState::next_event) (termnix keeps no palette);
