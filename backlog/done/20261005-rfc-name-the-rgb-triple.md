@@ -1,6 +1,6 @@
 # RFC: Name the RGB triple
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -198,3 +198,20 @@ bit width is not in the name.
   sequences use.
 - If a third-party colour type is ever adopted, `Rgb` is the single place a
   conversion would be written.
+
+## Outcome
+
+Implemented in [#22](https://github.com/sile/termnix/pull/22) (merged as `33187c7`).
+
+The `(u8, u8, u8)` triple has a name: the new `Rgb` value type, with public
+`r`, `g`, and `b` fields. The palette accessor, the three default-colour
+accessors, and `Color::to_rgb()` now return `Rgb`, and `Color::Rgb` carries an
+`Rgb` instead of its own three bytes. The parser and the palette table build
+`Rgb` directly, so no conversion sits between them and the accessors.
+
+`Rgb` derives `Copy`, `Eq`, and `Hash` like the tuple it replaces; `Default`
+is not derived, so `Rgb::default()` cannot silently be black. `Color` keeps
+its variants - `Indexed(u8)` stays an index and `Default` stays the absence of
+a colour - and `to_rgb()` still resolves only the built-in table.
+
+The scope is unchanged from what is described above.
