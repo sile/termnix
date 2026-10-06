@@ -1,6 +1,6 @@
 # RFC: Collect the colour state into a `Palette`
 
-- Status: draft
+- Status: rejected
 
 ## Summary
 
@@ -374,3 +374,19 @@ slot is known to hold a `Some`.
 - The `Palette` type is the natural home for a theme's cursor colour, selection
   colour, and other slots a host may add; today it holds only what the OSC
   sequences can set.
+
+## Outcome
+
+Not adopted. The premise was that termnix should keep the colors and resolve
+cells against them, but the crate moved the opposite way: the merged change for
+the color sequences removed color state from `TerminalState` entirely and hands
+OSC 4 and OSC 10-12 to the caller as requests, so a host that owns a palette is
+now the one that stores and resolves it. With no palette in the crate there is
+nothing for `Palette`, `palette()`, `set_palette()`, `foreground_rgb`, or
+`background_rgb` to attach to.
+
+Two parts of the proposal were taken anyway, because they stand on their own:
+`Color` no longer has a `Default` variant, and a style's `foreground` and
+`background` are `Option<Color>` where `None` is the terminal default. The rest
+- the `Palette` type and the resolution it carried - is rejected.
+
