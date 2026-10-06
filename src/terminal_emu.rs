@@ -798,7 +798,8 @@ fn parse_extended_color(values: &[u16]) -> Option<(Color, usize)> {
 /// non-numeric or empty field is rejected the same way: the OSC catalogue gives
 /// the field no other meaning.
 fn parse_osc_index(field: &[u8]) -> Option<u8> {
-    if field.is_empty() || !field.iter().all(u8::is_ascii_digit) {
+    // `u8::from_str` would accept a leading `+`, which no OSC sets.
+    if field.starts_with(b"+") {
         return None;
     }
     std::str::from_utf8(field).ok()?.parse().ok()
