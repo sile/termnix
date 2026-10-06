@@ -60,7 +60,7 @@ for row in term.rows() {
 ```
 
 The shift in thinking is that the pen has a hyperlink field the same way it has
-a foreground colour. Setting `OSC 8` changes the pen; painting a cell copies the
+a foreground color. Setting `OSC 8` changes the pen; painting a cell copies the
 pen into that cell. A cell does not carry the URI itself - it carries a small id
 - so a cell stays a couple of words wide and the URI is stored once per run
 rather than once per cell. A run of a thousand linked characters keeps one URI.
@@ -77,8 +77,8 @@ is new data the caller may use or ignore.
 
 ```rust
 pub struct Style {
-    pub foreground: Color,
-    pub background: Color,
+    pub foreground: Option<Color>,
+    pub background: Option<Color>,
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
@@ -184,18 +184,20 @@ handed to the host, not interpreted by the crate.
 
 ### Effect on visible-change detection
 
-The pen is part of visible state, but only through the cells it paints. Setting
-the pen's hyperlink does not by itself change a cell - it changes the *next*
-cell painted. Once a cell is painted with the pen, that cell differs from what
-it was, so the paint already marks the screen dirty by the mechanism that marks
-any paint dirty. This RFC adds no new visible-change path: the hyperlink rides
-the existing `primary_dirty` flag that a cell write sets. If the sequence sets a
-link and no cell is painted before the run ends, nothing was drawn and no
-`Event::ScreenUpdated` is reported.
+The pen is part of visible state, and it is already compared across a feed:
+`feed` snapshots `visible_scalars()` before parsing and compares it after, and
+the pen (`Style`) is one of its fields. A change to the pen is therefore a
+visible change by itself. Adding the hyperlink field does not need a new path
+for the pen half: setting or clearing the pen's hyperlink makes
+`visible_scalars()` differ, so `feed` reports `Event::ScreenUpdated`, exactly as
+it already does when an SGR sets a color.
 
-The pen itself is not in `visible_scalars()` and is not compared across a feed,
-which is unchanged: a pen change is observable only when a cell is painted with
-it, and that paint is the change.
+The cell half is unchanged. Painting a cell with the pen copies the link id
+into the cell, and that write marks the screen dirty by the mechanism that
+marks any paint dirty, so a cell painted inside a linked run differs from what
+it was. A feed that sets a link but paints no cell still reports a change,
+because the pen moved; a feed that sets a link, paints a cell, and clears the
+link reports one `ScreenUpdated` in total, the flag being merged.
 
 ### Effect on RIS
 
@@ -245,9 +247,11 @@ not a choice here. Neither changes the shape of this RFC.
   grouping being honoured rather than a loss, but a caller that wants to mark
   the runs individually cannot, and the only fix is on the child's side
   (distinct `id`s).
-- **OSC 8 has no read form.** Unlike OSC 4 and the colour sequences, there is
+- **OSC 8 has no read form.** Unlike OSC 4 and the color sequences, there is
   no `?` query for a hyperlink, so this RFC does not exercise the policy's
-  "answer a query from state" path. That path belongs to the colour RFC.
+  "answer a query from state" path. That path went unbuilt: the color
+  sequences were settled by handing their queries to the caller instead, so no
+  sequence in the crate answers a `?` from state.
 
 ## Rationale and alternatives
 
@@ -319,10 +323,13 @@ not a choice here. Neither changes the shape of this RFC.
 - A prune or bound for the link table, if the unbounded version proves a
   problem, is a change to `TerminalState` only and does not touch `Style` or
   `Cell`.
-- A later proposal for the colour sequences (OSC 4 and 10-12) is the same
-  shape - state the pen or the palette holds, read back through `&self`
-  accessors - and is the case that answers a `?` query from state, which this
-  one does not have.
+- The color sequences (OSC 4 and 10-12) are the sibling case, and the crate
+  has since settled the opposite way: rather than keep the state and resolve
+  cells against it, termnix holds no color state and hands each set and query
+  to the caller as a request. A hyperlink is different only because a cell has
+  to remember which run it belongs to; the color a cell carries is already a
+  value on the cell. So the two do not share a shape after all: the hyperlink
+  is modelled state the crate keeps, the colors are state the crate forwards.
 - A future hyperlink extension (a title, a hover text) adds a field to
   `Hyperlink`, which is a public struct the caller already looks up by id; it
   does not change `Style` or `Cell`.
