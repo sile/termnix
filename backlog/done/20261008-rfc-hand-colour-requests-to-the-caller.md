@@ -1,6 +1,6 @@
 # RFC: Hand colour requests to the caller
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -418,3 +418,30 @@ than the message.
 - The same treatment could extend to other resources termnix frames but does
   not own, if any move from "interpreted" to "handed over" (for example, a
   future sequence whose state is purely the host's).
+
+## Outcome
+
+Implemented in [#24](https://github.com/sile/termnix/pull/24) (merged as `814d100`).
+
+The color sequences no longer leave a trace in the crate. OSC 4 and OSC 10-12
+are decoded and handed to the caller as `ChildRequest::SetColor` /
+`GetColor`, so a host that owns a palette is the one that stores it and a host
+that does not simply drops the request. The reply path is the new
+`Input::Color`, an input in the output direction, which keeps the write to the
+child on the same buffer and backpressure a key press uses.
+
+`TerminalState` loses its palette and the three default colors, along with
+the accessors that read them and the xterm tables that resolved an index to a
+color. `Color::Default` is gone with them: a cell with no explicit color is
+now `Style`'s `foreground` or `background` being `None`, which is the only
+place "the terminal default" ever lived once the crate stopped holding the
+values. `ColorSlot` names either a palette entry or one of the three defaults,
+so the four sequences share one slot type, and `Rgb` stays public as the value
+a request or report carries.
+
+The asymmetry with clipboard is deliberate: OSC 52 gains no reply variant
+because nothing writes a clipboard answer back to the child, and a reply
+variant is added only where a write-back path is needed. A caller that later
+wants to answer OSC 52 can give it the same shape `Input::Color` has.
+
+The scope is unchanged from what is described above.
