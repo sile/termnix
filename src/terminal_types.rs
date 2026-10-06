@@ -457,6 +457,11 @@ pub enum Event {
     /// frame, a clipboard it filled from an OSC 52 request) should discard it.
     /// termnix has already performed the reset by the time this is reported;
     /// the event exists so the caller knows its own derivations are stale.
+    ///
+    /// Colours are not part of this: termnix keeps no palette, so the reset
+    /// has nothing to restore there and reports no colour change. A caller
+    /// that owns a palette the child set through OSC 4 / OSC 10 / OSC 11 /
+    /// OSC 12 has to reset those itself.
     TerminalReset,
     /// The visible screen changed.
     ///
