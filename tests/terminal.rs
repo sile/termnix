@@ -1793,20 +1793,20 @@ fn osc_4_does_not_raise_screen_updated() {
 #[test]
 fn osc_10_11_12_set_the_default_colour_slots() {
     let mut t = term(1, 8);
-    assert_eq!(t.default_foreground(), None);
-    assert_eq!(t.default_background(), None);
-    assert_eq!(t.default_cursor(), None);
+    assert_eq!(t.default_foreground_color(), None);
+    assert_eq!(t.default_background_color(), None);
+    assert_eq!(t.default_cursor_color(), None);
     t.feed(b"\x1b]10;rgb:ff/00/00\x07\x1b]11;rgb:00/ff/00\x07\x1b]12;rgb:00/00/ff\x07");
     assert_eq!(
-        t.default_foreground(),
+        t.default_foreground_color(),
         Some(termnix::Rgb::new(0xff, 0x00, 0x00))
     );
     assert_eq!(
-        t.default_background(),
+        t.default_background_color(),
         Some(termnix::Rgb::new(0x00, 0xff, 0x00))
     );
     assert_eq!(
-        t.default_cursor(),
+        t.default_cursor_color(),
         Some(termnix::Rgb::new(0x00, 0x00, 0xff))
     );
 }
@@ -1830,7 +1830,7 @@ fn osc_10_with_no_value_stores_nothing() {
     // xterm defines no reset form here, so an empty value is a no-op.
     let mut t = term(1, 8);
     t.feed(b"\x1b]10\x07\x1b]10;\x07\x1b]10;notacolour\x07");
-    assert_eq!(t.default_foreground(), None);
+    assert_eq!(t.default_foreground_color(), None);
     assert!(t.pending_reply_bytes().is_empty());
 }
 
@@ -1854,7 +1854,7 @@ fn ris_clears_the_palette_and_the_colour_slots() {
         t.palette_color(1),
         termnix::Color::Indexed(1).to_rgb().expect("built-in")
     );
-    assert_eq!(t.default_foreground(), None);
+    assert_eq!(t.default_foreground_color(), None);
 }
 
 #[test]

@@ -650,25 +650,25 @@ impl TerminalState {
     /// foreground is the *host's* until the child overrides it, and the crate
     /// does not know the host's colour, so inventing one would be worse than
     /// answering nothing.
-    pub fn default_foreground(&self) -> Option<Rgb> {
+    pub fn default_foreground_color(&self) -> Option<Rgb> {
         self.default_colors.foreground
     }
 
     /// Returns the default background colour the child set with OSC 11.
     ///
     /// `None` means the child never set one; see
-    /// [`default_foreground()`](TerminalState::default_foreground) for why
-    /// there is no fallback.
-    pub fn default_background(&self) -> Option<Rgb> {
+    /// [`default_foreground_color()`](TerminalState::default_foreground_color)
+    /// for why there is no fallback.
+    pub fn default_background_color(&self) -> Option<Rgb> {
         self.default_colors.background
     }
 
     /// Returns the cursor colour the child set with OSC 12.
     ///
     /// `None` means the child never set one; see
-    /// [`default_foreground()`](TerminalState::default_foreground) for why
-    /// there is no fallback.
-    pub fn default_cursor(&self) -> Option<Rgb> {
+    /// [`default_foreground_color()`](TerminalState::default_foreground_color)
+    /// for why there is no fallback.
+    pub fn default_cursor_color(&self) -> Option<Rgb> {
         self.default_colors.cursor
     }
 
