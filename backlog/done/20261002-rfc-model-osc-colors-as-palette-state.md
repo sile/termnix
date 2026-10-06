@@ -1,6 +1,6 @@
 # RFC: Model OSC colors as palette state
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -369,3 +369,22 @@ the way the hyperlink table can, but it is still state the crate must clear on
 - `Color::to_rgb()` could gain an explicit doc sentence that it resolves the
   *default* table and never a child override, pointing at `palette_color` for
   the latter - a doc change only, no code.
+
+## Outcome
+
+Implemented in [#21](https://github.com/sile/termnix/pull/21) (merged as `d019f6a`).
+
+The crate now holds the palette and the three OSC 10-12 slots, and answers a
+`?` for them from that state. Two accessors-side surfaces landed that the text
+above did not name: the palette is boxed (`Box<[Option<(u8, u8, u8)>; 256]>`)
+so a terminal that never sees a colour sequence does not carry 256 entries
+inline, and the three OSC 10-12 arms share one helper that takes the slot as a
+projection rather than three near-identical bodies.
+
+One detail moved from the text: the reply for an unset `OSC 10`-`12` slot is
+nothing at all, which the Reference-level section already argued, and it is
+what landed. The `Rgb` name in the text is a placeholder for the
+`(u8, u8, u8)` triple throughout; naming that value type is left to a later
+proposal, as the Future possibilities section anticipated.
+
+The scope is unchanged from what is described above.
