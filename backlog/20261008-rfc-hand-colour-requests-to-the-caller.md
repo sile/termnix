@@ -11,15 +11,15 @@ and a set of default slots, applies each `set` to them, and answers each `?`
 query from them. This proposal moves colour to the same footing as the
 clipboard: a child's `set` becomes a [`ChildRequest::SetColor`] the caller
 receives, and a child's `?` becomes a [`ChildRequest::GetColor`] the caller
-answers by enqueuing a colour reply as input. termnix keeps no palette and
+answers by enqueuing a colour message as input. termnix keeps no palette and
 resolves no colour; it decodes the fields and hands them over.
 
 The consequence is that there is no `Palette` type, no
 `TerminalState::palette()` / `set_palette()`, no `Color::to_rgb`, and no
 `Style::foreground_rgb` / `background_rgb`. A host that paints reads the
-child's colour requests as they arrive and writes the replies it owes; the
-rendering layer owns the palette, because it is the layer that can observe the
-host terminal's actual colours.
+child's colour requests as they arrive and writes back the colour messages it
+owes; the rendering layer owns the palette, because it is the layer that can
+observe the host terminal's actual colours.
 
 This RFC is written against the same problem as
 [`20261008-rfc-collect-colours-into-a-palette`](20261008-rfc-collect-colours-into-a-palette.md),
@@ -56,7 +56,7 @@ caller writing back to the PTY. Colour is the same kind of resource. This
 proposal makes it the same kind of request.
 
 What termnix *should* own is the framing. The OSC grammar, the field split, the
-`rgb:` decoding, and the reply encoding are tedious and easy to get wrong; a
+`rgb:` decoding, and the report encoding are tedious and easy to get wrong; a
 caller should not have to re-tokenize the PTY stream to find an OSC 4. So the
 crate keeps parsing - it hands over a decoded `slot` and `Rgb` - and gives up
 ownership.
@@ -90,7 +90,7 @@ while let Some(event) = events {
             ChildRequest::GetColor { slot } => {
                 // Answer it, from the palette only we can see.
                 let rgb = self.palette.get(slot);
-                session.enqueue_input(Input::ColorResponse { slot, rgb })?;
+                session.enqueue_input(Input::Color { slot, rgb })?;
             }
             _ => {}
         }
@@ -99,7 +99,7 @@ while let Some(event) = events {
 }
 ```
 
-The host now owns exactly one palette - its own - and termnix writes the reply
+The host now owns exactly one palette - its own - and termnix writes the report
 bytes. A host that only forwards and does not answer leaves the child waiting,
 which is the same behaviour as a caller that ignores `GetClipboard`.
 
@@ -157,11 +157,11 @@ pub enum ChildRequest {
     ///
     /// The sequence asks the terminal to report a colour. termnix owns no
     /// palette and cannot see the host terminal's theme, so it cannot answer
-    /// correctly and writes nothing to the reply buffer: the caller that owns
+    /// correctly and writes nothing to the output buffer: the caller that owns
     /// the palette is the one that answers, by enqueuing an
-    /// [`Input::ColorResponse`](crate::Input::ColorResponse). A caller that
-    /// ignores this variant leaves the child waiting, which is what a caller
-    /// that only forwards writes will do.
+    /// [`Input::Color`](crate::Input::Color). A caller that ignores this
+    /// variant leaves the child waiting, which is what a caller that only
+    /// forwards writes will do.
     GetColor {
         /// Which colour the application asked for.
         slot: ColorSlot,
@@ -173,12 +173,12 @@ pub enum ChildRequest {
 `SetClipboard`, so the new variants fit the existing derive set (`Clone`,
 `PartialEq`, `Eq`).
 
-### A reply is input
+### A colour message the host sends is input
 
-The answer to a `GetColor` is bytes on the way *to* the child, which is the
-direction [`Input`] already covers. Rather than a method on `TerminalState`
-that reaches into the session's write queue, the reply is an `Input` variant,
-so it joins the existing enqueue path with its accounting and backpressure:
+A colour report travels *toward* the child, which is the direction [`Input`]
+already covers. Rather than a method on `TerminalState` that reaches into the
+session's write queue, the report is an `Input` variant, so it joins the
+existing enqueue path with its accounting and backpressure:
 
 ```rust
 // src/input.rs
@@ -186,12 +186,14 @@ so it joins the existing enqueue path with its accounting and backpressure:
 pub enum Input<'a> {
     // ... existing variants ...
 
-    /// A colour report answering a [`ChildRequest::GetColor`].
+    /// A colour report, as OSC 4 / 10 / 11 / 12.
     ///
-    /// Encoded as the OSC the child asked with: OSC 4 for
-    /// [`ColorSlot::Indexed`], OSC 10 / 11 / 12 for the default slots. The
-    /// child is waiting for these bytes; nothing else sends them.
-    ColorResponse {
+    /// Encoded as the OSC that names the slot: OSC 4 for
+    /// [`ColorSlot::Indexed`], OSC 10 / 11 / 12 for the default slots. OSC has
+    /// no request/response framing, so this is simply the colour message the
+    /// host sends back; a child waiting on a `... ?` query is the usual
+    /// sender's motive, but nothing in the wire form says so.
+    Color {
         /// Which colour is being reported.
         slot: ColorSlot,
         /// The value to report.
@@ -200,21 +202,27 @@ pub enum Input<'a> {
 }
 ```
 
-`ColorResponse` is `Copy` and `Hash` because `ColorSlot` and `Rgb` are, so
-`Input`'s existing derives are unchanged.
+`Color` is `Copy` and `Hash` because `ColorSlot` and `Rgb` are, so `Input`'s
+existing derives are unchanged.
 
 `Input`'s doc comment currently reads "Application input to enqueue on a
 Session" and describes `Key`, `Paste`, and `Mouse` as "turned into PTY bytes
-with the session's current modes". A `ColorResponse` is not application input
-in the sense of a user action, but it is the same direction and the same queue,
-and the doc is broadened to say so: the enum is "bytes the host sends toward the
-child," of which user input is the common case and a protocol reply is another.
-This is the one place the semantics widen rather than a new type being added.
+with the session's current modes". A colour report is not application input in
+the sense of a user action, but it is the same direction and the same queue,
+and the doc is broadened to say so: the enum is "bytes the host sends toward
+the child," of which user input is the common case and a protocol message is
+another. This is the one place the semantics widen rather than a new type being
+added.
+
+The variant is named `Color` rather than `ColorResponse` or `ColorReply`
+because OSC has no request/response layer to draw the name from. A child writes
+`OSC 4 ; 1 ; ?`; the host writes `OSC 4 ; 1 ; rgb:...`; the two are the same
+kind of message in opposite directions. `Input::Color` names the resource and
+leaves the direction to the enum, matching `Key`, `Mouse`, and `Paste`.
 
 ### What `input.rs` gains
 
-`Input::ColorResponse` needs a `write_to` arm. The encoding is fixed by the OSC
-that asked:
+`Input::Color` needs a `write_to` arm. The encoding is fixed by the slot:
 
 - `ColorSlot::Indexed(i)` -> `ESC ] 4 ; i ; rgb:RR/GG/BB ST`
 - `ColorSlot::DefaultForeground` -> `ESC ] 10 ; rgb:RR/GG/BB ST`
@@ -260,7 +268,7 @@ Against `main` (not against any draft that once added a `Palette`):
 | `ColorSlot` | - | new (`Indexed(u8)` / `DefaultForeground` / `DefaultBackground` / `DefaultCursor`) |
 | `ChildRequest::SetColor` | - | new (`{ slot, rgb }`), from OSC 4/10/11/12 set |
 | `ChildRequest::GetColor` | - | new (`{ slot }`), from OSC 4/10/11/12 query |
-| `Input` | `Raw` / `Key` / `Paste` / `Mouse` | + `ColorResponse { slot, rgb }` |
+| `Input` | `Raw` / `Key` / `Paste` / `Mouse` | + `Color { slot, rgb }` |
 | OSC 4/10/11/12 set | writes `TerminalState` colour state | emits `ChildRequest::SetColor` |
 | OSC 4/10/11/12 query | answered from `TerminalState` | emits `ChildRequest::GetColor` |
 | `TerminalState::palette_color(i)` | accessor (`Rgb`, xterm fallback) | removed |
@@ -318,7 +326,7 @@ disappear; a caller that painted from `TerminalState` must now paint from its
   paint already does not care - but it is real work for a host that did lean on
   the built-in table.
 - **`Input` grows a variant that is not application input.** The enum's name
-  and doc say "input"; a protocol reply is a new kind of thing in it. The
+  and doc say "input"; a protocol message is a new kind of thing in it. The
   alternative is a separate enqueue path, which duplicates the queue,
   accounting, and backpressure. See Rationale.
 - **`ColorSlot` merges two OSC ranges.** A caller that only cares about OSC 4
@@ -346,12 +354,20 @@ than the message.
   child that trusts the report; a child that does not trust it falls back
   anyway, so no answer costs nothing.
 - **Add `TerminalState::reply_color(slot, rgb)` instead of an `Input`
-  variant.** Rejected in favour of `Input::ColorResponse` (though both are
-  workable): a session is the thing with a write queue, and `TerminalState`
-  does not expose a write path. A `Session`-only `reply_color` would be a thin
-  alias for `enqueue_input(Input::ColorResponse { .. })`; making the variant the
-  primitive and skipping the alias keeps one spelling. A caller that wants to
-  format bytes itself still has `Input::Raw`.
+  variant.** Rejected in favour of `Input::Color` (though both are workable): a
+  session is the thing with a write queue, and `TerminalState` does not expose a
+  write path. A `Session`-only `reply_color` would be a thin alias for
+  `enqueue_input(Input::Color { .. })`; making the variant the primitive and
+  skipping the alias keeps one spelling. A caller that wants to format bytes
+  itself still has `Input::Raw`.
+- **Give the clipboard the same reply variant, for symmetry.** Rejected for
+  now. An `Input` variant earns its place by being the write path for bytes the
+  host owes the child, and only the colour query needs one today: a child
+  waiting on `OSC 4 ; 1 ; ?` has nothing else to read. The clipboard read has no
+  such wait, so `Input::Clipboard` would be a variant with no sender. The two
+  are asymmetric because the crate ships only what a caller must write back;
+  if a clipboard reply is ever needed, it takes the same shape as `Input::Color`.
+  Flagged in Unresolved.
 - **Hand the child's raw OSC to the caller as `OtherOsc` and stop parsing
   colour entirely.** Rejected: the crate already frames and splits OSC fields,
   and `rgb:` decoding plus the reply encoding are exactly the fiddly parts a
@@ -379,16 +395,23 @@ than the message.
   `pub const XTERM_COLORS: [Rgb; 256]` with no state attached is not a second
   authority - it is data - so it could stay even after the state is gone.
 - **Does the answer to a `?` have to correspond to one `GetColor`?** OSC 4 has
-  no round-trip number, so termnix cannot pair a reply with its ask. The caller
-  is trusted to answer each `GetColor` once; a spurious `ColorResponse` is
-  encoded and sent regardless. Same trust the clipboard read already places in
-  the caller.
+  no round-trip number, so termnix cannot pair a colour report with its ask.
+  The caller is trusted to answer each `GetColor` once; a spurious
+  `Input::Color` is encoded and sent regardless. Same trust the clipboard read
+  already places in the caller.
+- **Should the clipboard read gain a matching reply variant?** Today
+  `ChildRequest::GetClipboard` has no `Input` counterpart, so a host that wants
+  to answer it must build the OSC 52 bytes itself (or rely on `OtherOsc`). That
+  is a real asymmetry with colour, but the clipboard read does not block a child
+  the way a colour query does, so no variant is proposed here. If a reply path
+  is wanted, it takes the same shape as `Input::Color`; the two should then
+  share a spelling.
 
 ## Future possibilities
 
 - A `ColorSlot` -> OSC encoder helper (or a `TerminalState` convenience that
-  builds an `Input::ColorResponse` from `(slot, rgb)`) would save a caller the
-  two-field variant, if the verbosity proves annoying.
+  builds an `Input::Color` from `(slot, rgb)`) would save a caller the two-field
+  variant, if the verbosity proves annoying.
 - If OSC 4 `?` queries turn out to be common in practice (they are not today;
   see Motivation), a small crate-provided helper that answers from a caller
   palette could be added above the raw request.
