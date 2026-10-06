@@ -216,12 +216,10 @@ impl Emulator<'_> {
     /// slot holds one, because a default colour the child never set is the
     /// *host's*, and the crate has no true answer to give. An absent or
     /// malformed value stores nothing (xterm defines no reset form here).
-    fn osc_default_color(
-        &mut self,
-        params: &[&[u8]],
-        id: &[u8],
-        slot: impl FnOnce(&mut DefaultColors) -> &mut Option<(u8, u8, u8)>,
-    ) {
+    fn osc_default_color<F>(&mut self, params: &[&[u8]], id: &[u8], slot: F)
+    where
+        F: FnOnce(&mut DefaultColors) -> &mut Option<(u8, u8, u8)>,
+    {
         let Some(spec) = params.get(1) else {
             return;
         };
