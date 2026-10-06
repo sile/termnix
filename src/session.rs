@@ -86,14 +86,6 @@ use crate::{
 /// not change the bound.) The emulator asserts this bound where a fixed-shape
 /// reply is built, so a reply that grew past it fails loudly instead of
 /// silently changing the session's write behaviour.
-///
-/// This bound is not the ceiling on *every* reply. An OSC query (OSC 4 and
-/// 10-12 answering `?`) echoes a value whose length the child chose, and the
-/// tokenizer may hand the whole sequence over in a single byte's worth of
-/// `feed`. Those replies are bounded where they are built, against the
-/// emulator's own larger ceiling, and surface here as
-/// [`TerminalState::take_reply_overflow()`] rather than as a length compared
-/// after the fact.
 pub(crate) const CSI_REPLY_BYTES: usize = 14;
 
 /// Maximum raw bytes held between reading from the PTY and decoding.
@@ -782,9 +774,6 @@ impl Session {
     ///         termnix::Event::TitleUpdated => {
     ///             // read `session.terminal_state().title()`
     ///         }
-    ///         termnix::Event::ColorsUpdated => {
-    ///             // re-resolve palette colours
-    ///         }
     ///         termnix::Event::RequestReceived(request) => {
     ///             // carry out `request`
     ///         }
@@ -1171,27 +1160,14 @@ impl Session {
     /// buffer) is what keeps a reply ordered ahead of later input.
     fn decode_byte(&mut self, byte: u8) -> io::Result<()> {
         self.term.feed(&[byte]);
-        // A reply whose size the emulator could not bound against its own
-        // ceiling is reported rather than written: half an answer would make
-        // the child parse a value the terminal never sent. Reading the flag is
-        // a take, so a refusal is reported once. Checked before the length of
-        // the pending buffer, because the refusal leaves nothing pending.
-        if self.term.take_reply_overflow() {
-            return Err(io::Error::new(
-                ErrorKind::InvalidData,
-                "terminal reply exceeds the internal pending reply bound",
-            ));
-        }
         let replies = self.term.pending_reply_bytes();
         // Scrollback may have grown even when no reply was produced.
         if replies.is_empty() {
             return Ok(());
         }
         // At most one reply is pending here (decoding pauses until it is
-        // written). A slice longer than a CPR can only be an OSC reply, which
-        // was bounded against the emulator's ceiling above; the CSI bound is
-        // no longer compared here because it cannot tell the two apart by
-        // length alone. It is pinned by tests on the CSI path itself.
+        // written). Every reply is fixed-shape (a CPR is at most 14 bytes, DA1
+        // is 5), pinned by tests on the CSI path itself.
         let start = self.outbound.len();
         self.outbound.extend_from_slice(replies);
         let len = replies.len();

@@ -41,7 +41,7 @@
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
 pub use crate::terminal_types::{
-    Cell, ChildRequest, ClipboardSelection, Color, Event, MouseReporting, Position, Rgb,
+    Cell, ChildRequest, ClipboardSelection, Color, ColorSlot, Event, MouseReporting, Position, Rgb,
     ScrollbackLine, Style, TerminalModes,
 };
 
@@ -72,12 +72,12 @@ use crate::terminal_types::SavedCursor;
 ///   cursor visibility, bracketed paste, mouse reporting (including SGR)
 /// - **Alternate screen**: `?1049`, `?47`, `?1047`
 /// - **OSC 0/2**: window title (stored); **OSC 4**: palette entries, and
-///   **OSC 10/11/12**: the default foreground, background, and cursor colours,
-///   all read back through [`palette_color()`](TerminalState::palette_color)
-///   and the `default_*` accessors and answered from state on a `?` query;
-///   **OSC 52**: clipboard request, reported through
-///   [`next_event()`](TerminalState::next_event); any other identifier is
-///   offered uninterpreted as [`ChildRequest::OtherOsc`]
+///   **OSC 10/11/12**: the default foreground, background, and cursor colors,
+///   all handed to the caller as
+///   [`ChildRequest::SetColor`] / [`ChildRequest::GetColor`] through
+///   [`next_event()`](TerminalState::next_event) (termnix keeps no palette);
+///   **OSC 52**: clipboard request, reported the same way; any other
+///   identifier is offered uninterpreted as [`ChildRequest::OtherOsc`]
 /// - **Queries**: DSR, CPR, and primary DA, answered through
 ///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes). DA2
 ///   (`CSI > c`) and DA3 (`CSI = c`) are recognized but deliberately not
@@ -110,31 +110,7 @@ pub struct TerminalState {
     /// channel. Not part of `VisibleScalars`: an undrained event is not itself
     /// a visible change, and draining one is not either.
     pub(crate) events: Events,
-    /// Per-entry palette overrides the child set with OSC 4, `None` until it
-    /// sets one.
-    ///
-    /// Boxed because the array is 768 bytes: keeping it behind a pointer stops
-    /// every `TerminalState` from carrying that much inline, and the entries
-    /// are read through the palette accessor rather than in bulk.
-    pub(crate) palette: Box<[Option<Rgb>; 256]>,
-    /// The OSC 10/11/12 slots (default foreground, background, cursor), `None`
-    /// until the child sets one.
-    pub(crate) default_colors: DefaultColors,
 }
-
-/// Ceiling on the bytes one terminal reply may add.
-///
-/// This type generates two kinds of reply. A CSI reply (DSR, CPR, DA1) is
-/// produced by a single final byte and has a fixed, small shape. An OSC reply
-/// (OSC 4 and 10-12, answering a `?` query) echoes a value whose length the
-/// child chose, so its shape is bounded only by the query: an `rgb:` triple is
-/// at most 12 digits plus separators and framing. The ceiling here bounds the
-/// *pending buffer*, not one decode step, so it only has to be larger than any
-/// single reply; a CSI reply is asserted against its own fixed bound where it
-/// is built ([`crate::session::CSI_REPLY_BYTES`]), and the session reads
-/// [`take_reply_overflow()`](TerminalState::take_reply_overflow) for the OSC
-/// side.
-const MAX_TERMINAL_REPLY_BYTES: usize = 4096;
 
 /// The events the caller has not drained yet.
 ///
@@ -151,7 +127,6 @@ pub(crate) struct Events {
     screen_updated: bool,
     scrollback_line_added: bool,
     title_updated: bool,
-    colors_updated: bool,
     requests: VecDeque<ChildRequest>,
 }
 
@@ -169,11 +144,6 @@ impl Events {
     /// Marks the window title as having changed.
     pub(crate) fn mark_title_updated(&mut self) {
         self.title_updated = true;
-    }
-
-    /// Marks a colour the terminal resolves as having changed.
-    pub(crate) fn mark_colors_updated(&mut self) {
-        self.colors_updated = true;
     }
 
     /// Marks the whole terminal as having been reset.
@@ -216,28 +186,8 @@ impl Iterator for Events {
         if std::mem::take(&mut self.title_updated) {
             return Some(Event::TitleUpdated);
         }
-        if std::mem::take(&mut self.colors_updated) {
-            return Some(Event::ColorsUpdated);
-        }
         self.requests.pop_front().map(Event::RequestReceived)
     }
-}
-
-/// The OSC 10/11/12 colour slots, each `None` until the child sets it.
-///
-/// A struct rather than three loose fields so the three slots move together:
-/// RIS clears them as a unit and the accessors read them through one helper.
-/// The slots are not a palette: `OSC 10` is defined as a slot, not an index, so
-/// a host may set index 0 and the default foreground independently and the
-/// crate must not conflate them.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct DefaultColors {
-    /// Default foreground (`OSC 10`).
-    pub(crate) foreground: Option<Rgb>,
-    /// Default background (`OSC 11`).
-    pub(crate) background: Option<Rgb>,
-    /// Cursor colour (`OSC 12`).
-    pub(crate) cursor: Option<Rgb>,
 }
 
 /// The `Copy` fields of [`TerminalState`] that count as part of the visible
@@ -271,27 +221,20 @@ struct VisibleScalars {
 /// their length after the fact, but an OSC query replies with a value the
 /// child chose the length of (a palette query echoes an `rgb:` triple), so the
 /// check has to happen where the reply is built, against the ceiling the
-/// session set. A reply that would cross it is not stored at all: half an
-/// answer would leave the child parsing a value the terminal never sent, so
-/// [`overflowed`](ReplyBuf::overflowed) records the event for the session to
-/// turn into an error instead.
+/// Every reply is produced by one decoded byte and has a length fixed by the
+/// sequence's shape (a CPR is at most 14 bytes; DA1 is 5), so the buffer needs
+/// no ceiling: a reply cannot be long enough to need one.
 #[derive(Debug)]
 pub(crate) struct ReplyBuf {
     bytes: Vec<u8>,
     offset: usize,
-    /// Ceiling on the bytes a single reply may add.
-    limit: usize,
-    /// Set when a reply was refused for crossing [`limit`](ReplyBuf::limit).
-    overflowed: bool,
 }
 
 impl ReplyBuf {
-    fn new(limit: usize) -> Self {
+    fn new() -> Self {
         Self {
             bytes: Vec::new(),
             offset: 0,
-            limit,
-            overflowed: false,
         }
     }
 
@@ -305,42 +248,14 @@ impl ReplyBuf {
     /// A CSI reply is emitted by one decoded byte and has a length that is
     /// fixed by the sequence's shape (a CPR is at most 14 bytes; DA1 is 5), so
     /// the caller knows it fits and there is nothing to check at run time. The
-    /// assertion below records that: it must never be the case that a reply
-    /// built by this path would cross the emulator's ceiling, because a length
-    /// the crate did not bound is exactly the bug the OSC path's
-    /// [`push_bounded`](ReplyBuf::push_bounded) exists to handle.
+    /// assertion below records that: a length the crate did not bound would be
+    /// a bug in the sequence decoder, not something to handle at run time.
     pub(crate) fn push(&mut self, bytes: &[u8]) {
         debug_assert!(
             bytes.len() <= crate::session::CSI_REPLY_BYTES,
             "a fixed-shape reply grew past the CSI bound: {bytes:?}"
         );
         self.bytes.extend_from_slice(bytes);
-    }
-
-    /// Appends a reply whose length depends on what the child asked for.
-    ///
-    /// An OSC query echoes a value the child chose the length of, so the reply
-    /// can be neither known at compile time nor truncated safely. It is stored
-    /// only if it fits under the ceiling; otherwise nothing is stored and the
-    /// overflow is recorded for the session to report. The answer is
-    /// all-or-nothing, because a truncated reply is a different (wrong) value
-    /// rather than a shorter one.
-    pub(crate) fn push_bounded(&mut self, bytes: &[u8]) {
-        if self.pending_len().saturating_add(bytes.len()) > self.limit {
-            self.overflowed = true;
-            return;
-        }
-        self.bytes.extend_from_slice(bytes);
-    }
-
-    /// Bytes still owed to the PTY master.
-    fn pending_len(&self) -> usize {
-        self.bytes.len() - self.offset
-    }
-
-    /// Takes the overflow flag, clearing it.
-    pub(crate) fn take_overflow(&mut self) -> bool {
-        std::mem::take(&mut self.overflowed)
     }
 
     /// Marks `n` bytes consumed, reclaiming the buffer when fully drained.
@@ -374,8 +289,6 @@ impl std::fmt::Debug for TerminalState {
             .field("scroll_top", &self.scroll_top)
             .field("scroll_bottom", &self.scroll_bottom)
             .field("replies", &self.replies)
-            .field("palette", &self.palette)
-            .field("default_colors", &self.default_colors)
             .field("scrollback", &self.scrollback)
             .field("scrollback_cells", &self.scrollback_cells)
             .finish_non_exhaustive()
@@ -401,12 +314,10 @@ impl TerminalState {
             title: String::new(),
             scroll_top: 0,
             scroll_bottom: size.rows.get().saturating_sub(1),
-            replies: ReplyBuf::new(MAX_TERMINAL_REPLY_BYTES),
+            replies: ReplyBuf::new(),
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
             events: Events::default(),
-            palette: Box::new([None; 256]),
-            default_colors: DefaultColors::default(),
         }
     }
 
@@ -427,7 +338,6 @@ impl TerminalState {
     ///         // History has no built-in bound; cap it (here 1000 lines).
     ///         termnix::Event::ScrollbackLineAppended => term.trim_scrollback(1000, 100_000),
     ///         termnix::Event::TitleUpdated => { /* read term.title() */ }
-    ///         termnix::Event::ColorsUpdated => { /* re-resolve palette colours */ }
     ///         termnix::Event::RequestReceived(request) => { /* act on `request` */ }
     ///     }
     /// }
@@ -508,18 +418,6 @@ impl TerminalState {
         if changed {
             self.events.mark_screen_updated();
         }
-    }
-
-    /// Takes the flag that a reply was refused for exceeding the reply bound,
-    /// clearing it.
-    ///
-    /// The bound belongs to the caller (see [`Session`](crate::Session), which
-    /// owns the PTY and decides how large a reply may be), so this type records
-    /// the refusal rather than deciding what to do about it. Reading it is a
-    /// take: the session raises an error for the feed that overflowed, and a
-    /// flag left set would report the same refusal again on the next one.
-    pub(crate) fn take_reply_overflow(&mut self) -> bool {
-        self.replies.take_overflow()
     }
 
     /// Returns the bytes the emulator has produced in response to queries, if
@@ -616,59 +514,6 @@ impl TerminalState {
     /// Returns the current drawing style (SGR pen).
     pub fn style(&self) -> Style {
         self.pen
-    }
-
-    /// Returns the colour the terminal resolves palette `index` to.
-    ///
-    /// The child can redefine a palette entry with OSC 4; when it has, this
-    /// returns that entry, and otherwise the built-in xterm default that
-    /// [`Color::to_rgb`] also resolves an [`Indexed`](Color::Indexed) colour
-    /// through. The result is total: every `u8` names a palette entry, and the
-    /// built-in table gives all of them a value, so there is no `None` to
-    /// unwrap. (`Color::to_rgb` returns an `Option` only because
-    /// [`Color::Default`] is a real "no value" case, which has no analogue
-    /// here.)
-    ///
-    /// The override is consulted first and the slot is not: indices 0-15 are a
-    /// palette, and `OSC 10` is a separate slot even though a host may render
-    /// [`Color::Default`] with it. Mixing them would make `palette_color(0)`
-    /// change meaning when the child sets `OSC 10`, which is not what the
-    /// sequences say.
-    ///
-    /// This is the accessor a host rendering a cell whose [`Style`] holds
-    /// [`Color::Indexed`] should use; [`Color::to_rgb`] answers "what is the
-    /// index in the default table", which is a different question once the
-    /// child has recoloured anything.
-    pub fn palette_color(&self, index: u8) -> Rgb {
-        self.palette[index as usize].unwrap_or_else(|| crate::terminal_types::indexed_rgb(index))
-    }
-
-    /// Returns the default foreground colour the child set with OSC 10.
-    ///
-    /// `None` means the child never set one. There is no fallback: the default
-    /// foreground is the *host's* until the child overrides it, and the crate
-    /// does not know the host's colour, so inventing one would be worse than
-    /// answering nothing.
-    pub fn default_foreground_color(&self) -> Option<Rgb> {
-        self.default_colors.foreground
-    }
-
-    /// Returns the default background colour the child set with OSC 11.
-    ///
-    /// `None` means the child never set one; see
-    /// [`default_foreground_color()`](TerminalState::default_foreground_color)
-    /// for why there is no fallback.
-    pub fn default_background_color(&self) -> Option<Rgb> {
-        self.default_colors.background
-    }
-
-    /// Returns the cursor colour the child set with OSC 12.
-    ///
-    /// `None` means the child never set one; see
-    /// [`default_foreground_color()`](TerminalState::default_foreground_color)
-    /// for why there is no fallback.
-    pub fn default_cursor_color(&self) -> Option<Rgb> {
-        self.default_colors.cursor
     }
 
     /// Returns the retained scrollback lines, oldest-first.
@@ -817,70 +662,14 @@ mod tests {
     use super::ReplyBuf;
 
     #[test]
-    fn bounded_push_refuses_the_whole_reply_and_flags_it() {
-        // All or nothing: a reply that does not fit is not stored, because a
-        // truncated one would be a different value rather than a shorter one.
-        let mut buf = ReplyBuf::new(16);
-        buf.push_bounded(b"0123456789");
-        buf.push_bounded(b"012345");
+    fn push_appends_fixed_shape_replies() {
+        let mut buf = ReplyBuf::new();
+        buf.push(b"0123456789");
+        buf.push(b"012345");
         assert_eq!(buf.pending(), b"0123456789012345");
-        buf.push_bounded(b"x");
-        assert_eq!(buf.pending(), b"0123456789012345");
-        assert!(buf.take_overflow());
-        // Taking the flag clears it, so a refusal is reported once.
-        assert!(!buf.take_overflow());
-    }
-
-    #[test]
-    fn bounded_push_measures_against_the_unwritten_remainder() {
-        // Advancing past a prefix frees room; the bound is about the bytes the
-        // PTY master is still owed, not the allocation.
-        let mut buf = ReplyBuf::new(8);
-        buf.push_bounded(b"12345678");
-        assert!(!buf.take_overflow());
-        buf.advance(8);
-        buf.push_bounded(b"abcdefgh");
-        assert_eq!(buf.pending(), b"abcdefgh");
-        assert!(!buf.take_overflow());
-    }
-
-    #[test]
-    fn colour_queries_answer_within_the_emulator_ceiling() {
-        // OSC 4 and 10-12 answer a `?` with a value whose length the child
-        // chose the *shape* of (an `rgb:` triple plus framing), and it may
-        // exceed the fixed 14-byte CSI bound. It must still fit the emulator's
-        // own larger ceiling, or the session would report an overflow for a
-        // reply the terminal itself generated. Each query is answered from
-        // state the terminal holds, so this also pins that the answer does not
-        // grow with repeated queries.
-        use super::TerminalState;
-        // Any grid works: the reply length is the colour's, not the grid's.
-        // A small one keeps the test from allocating a grid it never reads.
-        let mut term = TerminalState::new(crate::Size {
-            rows: std::num::NonZeroU16::new(24).expect("non-zero rows"),
-            cols: std::num::NonZeroU16::new(80).expect("non-zero cols"),
-        });
-        term.feed(b"\x1b]4;255;rgb:ff/ff/ff\x07");
-        term.advance_reply_bytes(term.pending_reply_bytes().len());
-        for query in [
-            b"\x1b]4;255;?\x07".as_slice(),
-            b"\x1b]10;rgb:ff/ff/ff\x07\x1b]10;?\x07",
-        ] {
-            term.feed(query);
-            let reply = term.pending_reply_bytes().to_vec();
-            assert!(
-                reply.len() >= 14,
-                "a colour reply should be at least CSI-sized: {reply:?}"
-            );
-            assert!(
-                reply.len() <= super::MAX_TERMINAL_REPLY_BYTES,
-                "a colour reply must fit the emulator ceiling: {reply:?}"
-            );
-            assert!(
-                !term.take_reply_overflow(),
-                "a colour reply must not be refused: {reply:?}"
-            );
-            term.advance_reply_bytes(reply.len());
-        }
+        buf.advance(10);
+        assert_eq!(buf.pending(), b"012345");
+        buf.advance(6);
+        assert_eq!(buf.pending(), b"");
     }
 }

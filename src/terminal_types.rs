@@ -46,12 +46,14 @@ impl Position {
     pub const ORIGIN: Self = Self { row: 0, col: 0 };
 }
 
-/// A 24-bit RGB colour, one byte per channel.
+/// A 24-bit RGB color, one byte per channel.
 ///
-/// The channels are the direct value of a colour, not an index into a palette.
-/// A palette index stays a `u8`, and a host resolves it through
-/// [`TerminalState::palette_color()`](crate::TerminalState::palette_color).
-/// The cell colour variant [`Color::Rgb`](crate::Color::Rgb) carries this type.
+/// The channels are the direct value of a color, not an index into a palette.
+/// A palette index stays a `u8`, and a host resolves it against the palette it
+/// owns. The cell color variant [`Color::Rgb`](crate::Color::Rgb) carries
+/// this type, as do the color requests and reports
+/// ([`ChildRequest::SetColor`](crate::ChildRequest::SetColor),
+/// [`Input::Color`](crate::Input::Color)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb {
     /// The red channel.
@@ -63,7 +65,7 @@ pub struct Rgb {
 }
 
 impl Rgb {
-    /// Builds a colour from its three channels.
+    /// Builds a color from its three channels.
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
     }
@@ -75,101 +77,63 @@ impl Rgb {
 /// palette, 16–255 are the 256-color cube and grayscale ramp. SGR color forms
 /// follow ECMA-48 / ITU T.416 practice (`38;5`, `38;2`, …) and may gain new
 /// encodings in host terminals; termnix stores the decoded color.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+///
+/// A color is always concrete here; the "terminal default" a cell can carry
+/// is [`Style::foreground`] or [`Style::background`] being `None`, not a
+/// variant of this type. An [`Color::Indexed`] color names a palette slot the
+/// caller resolves against the palette it owns; termnix no longer resolves it
+/// itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Color {
-    /// Terminal default foreground or background.
-    #[default]
-    Default,
     /// Palette or 256-color index (`0..=255`).
     Indexed(u8),
     /// Direct 24-bit color, already resolved to three channels.
     Rgb(Rgb),
 }
 
-impl Color {
-    /// Resolves this color to concrete 24-bit [`Rgb`].
-    ///
-    /// [`Color::Default`] has no fixed value (it is whatever the host terminal
-    /// uses for default foreground/background) and returns `None`.
-    /// [`Color::Rgb`] is returned unchanged. [`Color::Indexed`] is resolved
-    /// through the xterm 256-color palette.
-    ///
-    /// The indexed interpretation is the usual xterm convention: indices
-    /// `0..=15` are the system palette, `16..=231` are the 6x6x6 color cube,
-    /// and `232..=255` are the grayscale ramp.
-    ///
-    /// This always resolves the *built-in default* table. A child can redefine
-    /// a palette entry with OSC 4, and this method never sees that override, so
-    /// a host rendering a cell that carries [`Color::Indexed`] should resolve
-    /// the index through
-    /// [`TerminalState::palette_color()`](crate::TerminalState::palette_color)
-    /// instead - which falls back to this table for an entry the child never
-    /// touched. The split is deliberate: `Color` is a `Copy` value type and
-    /// cannot read the terminal's mutable state.
-    pub fn to_rgb(self) -> Option<Rgb> {
-        match self {
-            Self::Default => None,
-            Self::Rgb(rgb) => Some(rgb),
-            Self::Indexed(index) => Some(indexed_rgb(index)),
-        }
-    }
-}
-
-/// The 0--15 ANSI/xterm system palette.
-const XTERM_SYSTEM: [Rgb; 16] = [
-    Rgb::new(0, 0, 0),
-    Rgb::new(205, 0, 0),
-    Rgb::new(0, 205, 0),
-    Rgb::new(205, 205, 0),
-    Rgb::new(0, 0, 238),
-    Rgb::new(205, 0, 205),
-    Rgb::new(0, 205, 205),
-    Rgb::new(229, 229, 229),
-    Rgb::new(127, 127, 127),
-    Rgb::new(255, 0, 0),
-    Rgb::new(0, 255, 0),
-    Rgb::new(255, 255, 0),
-    Rgb::new(92, 92, 255),
-    Rgb::new(255, 0, 255),
-    Rgb::new(0, 255, 255),
-    Rgb::new(255, 255, 255),
-];
-
-/// Resolves an xterm 256-color index to concrete RGB.
+/// One color the terminal can be asked to set or report.
 ///
-/// See [`Color::to_rgb`] for the palette layout. This is the *built-in* table;
-/// it knows nothing about a palette override the child set with OSC 4, which
-/// [`TerminalState::palette_color`](crate::TerminalState::palette_color) layers
-/// on top for the same index.
-pub(crate) fn indexed_rgb(index: u8) -> Rgb {
-    match index {
-        0..=15 => XTERM_SYSTEM[index as usize],
-        16..=231 => {
-            let n = index - 16;
-            let r = palette_level(n / 36);
-            let g = palette_level((n % 36) / 6);
-            let b = palette_level(n % 6);
-            Rgb::new(r, g, b)
-        }
-        232..=255 => {
-            let level = 8 + (index - 232) * 10;
-            Rgb::new(level, level, level)
-        }
-    }
+/// OSC 4 addresses a palette entry (`0..=255`); OSC 10, 11, and 12 each name
+/// one default slot. Both are "a color the terminal can be asked about," so
+/// both arms live in one type and travel together in
+/// [`ChildRequest::SetColor`](crate::ChildRequest::SetColor) /
+/// [`ChildRequest::GetColor`](crate::ChildRequest::GetColor) and in
+/// [`Input::Color`](crate::Input::Color).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColorSlot {
+    /// A palette entry (`0..=255`), as OSC 4 addresses.
+    Indexed(u8),
+    /// The default foreground (OSC 10).
+    DefaultForeground,
+    /// The default background (OSC 11).
+    DefaultBackground,
+    /// The cursor color (OSC 12).
+    DefaultCursor,
 }
 
-/// Maps a 6-level color-cube component index to its 0--255 intensity.
-fn palette_level(index: u8) -> u8 {
-    if index == 0 { 0 } else { 55 + index * 40 }
+impl ColorSlot {
+    /// Returns the OSC identifier that names this slot.
+    ///
+    /// `4` for a palette entry and `10` / `11` / `12` for the defaults. Used to
+    /// build a color report; the value is the same number the child's query
+    /// used.
+    pub(crate) fn osc_id(self) -> u8 {
+        match self {
+            Self::Indexed(_) => 4,
+            Self::DefaultForeground => 10,
+            Self::DefaultBackground => 11,
+            Self::DefaultCursor => 12,
+        }
+    }
 }
 
 /// Graphic rendition applied to a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Style {
-    /// Foreground color.
-    pub foreground: Color,
-    /// Background color.
-    pub background: Color,
+    /// Foreground color, or `None` for the terminal default (SGR 39).
+    pub foreground: Option<Color>,
+    /// Background color, or `None` for the terminal default (SGR 49).
+    pub background: Option<Color>,
     /// Bold / increased intensity (SGR 1).
     pub bold: bool,
     /// Italic (SGR 3).
@@ -204,8 +168,8 @@ impl Cell {
         ch: ' ',
         width: 1,
         style: Style {
-            foreground: Color::Default,
-            background: Color::Default,
+            foreground: None,
+            background: None,
             bold: false,
             italic: false,
             underline: false,
@@ -221,8 +185,8 @@ impl Cell {
         ch: ' ',
         width: 0,
         style: Style {
-            foreground: Color::Default,
-            background: Color::Default,
+            foreground: None,
+            background: None,
             bold: false,
             italic: false,
             underline: false,
@@ -403,6 +367,30 @@ pub enum ChildRequest {
         /// Which selection the application asked for.
         selection: ClipboardSelection,
     },
+    /// An OSC 4 / 10 / 11 / 12 color write.
+    ///
+    /// The sequence asks the terminal to change a color; termnix owns no
+    /// palette, so the ask is what a caller receives. Which color it is is
+    /// carried in [`ColorSlot`].
+    SetColor {
+        /// Which color the application addressed.
+        slot: ColorSlot,
+        /// The decoded 24-bit value it asked to set.
+        rgb: Rgb,
+    },
+    /// An OSC 4 / 10 / 11 / 12 color read (`... ? ST`).
+    ///
+    /// The sequence asks the terminal to report a color. termnix owns no
+    /// palette and cannot see the host terminal's theme, so it cannot answer
+    /// correctly and writes nothing to the output buffer: the caller that owns
+    /// the palette is the one that answers, by enqueuing an
+    /// [`Input::Color`](crate::Input::Color). A caller that ignores this
+    /// variant leaves the child waiting, which is what a caller that only
+    /// forwards writes will do.
+    GetColor {
+        /// Which color the application asked for.
+        slot: ColorSlot,
+    },
     /// The child rang the bell (`BEL`, `0x07`).
     ///
     /// termnix has no way to ring anything, so it only records that the child
@@ -469,6 +457,11 @@ pub enum Event {
     /// frame, a clipboard it filled from an OSC 52 request) should discard it.
     /// termnix has already performed the reset by the time this is reported;
     /// the event exists so the caller knows its own derivations are stale.
+    ///
+    /// Colors are not part of this: termnix keeps no palette, so the reset
+    /// has nothing to restore there and reports no color change. A caller
+    /// that owns a palette the child set through OSC 4 / OSC 10 / OSC 11 /
+    /// OSC 12 has to reset those itself.
     TerminalReset,
     /// The visible screen changed.
     ///
@@ -494,67 +487,10 @@ pub enum Event {
     /// The title is state termnix holds; read it through
     /// [`title()`](crate::TerminalState::title).
     TitleUpdated,
-    /// A colour the terminal resolves changed (OSC 4, OSC 10/11/12, or a reset
-    /// returning them to their defaults).
-    ///
-    /// The colours are state termnix holds, not cells: nothing was drawn and
-    /// the cells are unchanged, so this is not a repaint request on its own.
-    /// Resolve them again through
-    /// [`palette_color()`](crate::TerminalState::palette_color) and the
-    /// `default_*` accessors.
-    ///
-    /// A caller that resolves a colour every time it draws can ignore this: the
-    /// value it reads on the next repaint is already current. It matters to a
-    /// caller that resolved a colour once and kept the answer - a palette
-    /// cache, or the host's own theme painted from the default colours -
-    /// because that kept value is now stale and only this event says so.
-    ColorsUpdated,
     /// The child asked for something termnix cannot do itself.
     ///
     /// Carries one [`ChildRequest`]. Requests are not merged, so a caller that
     /// drains until `None` sees every ask in the order the child sent them,
     /// including several that arrived in one `feed`.
     RequestReceived(ChildRequest),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Color, Rgb};
-
-    #[test]
-    fn default_has_no_rgb() {
-        assert_eq!(Color::Default.to_rgb(), None);
-    }
-
-    #[test]
-    fn rgb_is_returned_unchanged() {
-        assert_eq!(
-            Color::Rgb(Rgb::new(1, 2, 3)).to_rgb(),
-            Some(Rgb::new(1, 2, 3))
-        );
-        assert_eq!(
-            Color::Rgb(Rgb::new(255, 0, 128)).to_rgb(),
-            Some(Rgb::new(255, 0, 128))
-        );
-    }
-
-    #[test]
-    fn indexed_system_palette_boundaries() {
-        assert_eq!(Color::Indexed(0).to_rgb(), Some(Rgb::new(0, 0, 0)));
-        assert_eq!(Color::Indexed(15).to_rgb(), Some(Rgb::new(255, 255, 255)));
-    }
-
-    #[test]
-    fn indexed_color_cube() {
-        assert_eq!(Color::Indexed(16).to_rgb(), Some(Rgb::new(0, 0, 0)));
-        assert_eq!(Color::Indexed(21).to_rgb(), Some(Rgb::new(0, 0, 255)));
-        assert_eq!(Color::Indexed(196).to_rgb(), Some(Rgb::new(255, 0, 0)));
-        assert_eq!(Color::Indexed(231).to_rgb(), Some(Rgb::new(255, 255, 255)));
-    }
-
-    #[test]
-    fn indexed_grayscale_ramp() {
-        assert_eq!(Color::Indexed(232).to_rgb(), Some(Rgb::new(8, 8, 8)));
-        assert_eq!(Color::Indexed(255).to_rgb(), Some(Rgb::new(238, 238, 238)));
-    }
 }

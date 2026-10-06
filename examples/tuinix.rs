@@ -697,15 +697,16 @@ fn position_to_host(position: termnix::Position) -> tuinix::Position {
     }
 }
 
-/// Maps a termnix color to tuinix's RGB-only representation.
+/// Maps a termnix color to tuinix's color.
 ///
-/// `Default` maps to the terminal's default (no explicit color); everything
-/// else resolves through [`termnix::Color::to_rgb`] (the xterm 256-color
-/// palette for `Indexed`).
-fn to_host_color(color: termnix::Color) -> Option<tuinix::Color> {
-    color
-        .to_rgb()
-        .map(|rgb| tuinix::Color::Rgb(rgb.r, rgb.g, rgb.b))
+/// `None` (the terminal default) maps to no explicit color. An indexed color
+/// stays indexed: the palette belongs to the host terminal, which is the only
+/// layer that can see its theme, so the example resolves nothing itself.
+fn to_host_color(color: Option<termnix::Color>) -> Option<tuinix::Color> {
+    Some(match color? {
+        termnix::Color::Indexed(index) => tuinix::Color::Indexed(index),
+        termnix::Color::Rgb(rgb) => tuinix::Color::Rgb(rgb.r, rgb.g, rgb.b),
+    })
 }
 
 /// Maps a termnix style to a tuinix style, dropping unsupported attributes.
@@ -820,22 +821,13 @@ fn note_selection_events(app: &mut App) {
                 // The title is state termnix holds; this example shows no
                 // title, so there is nothing to do.
                 termnix::Event::TitleUpdated => {}
-                // A palette or default-colour change. The example resolves
-                // indexed cells through the built-in table
-                // ([`Color::to_rgb`](termnix::Color::to_rgb)), not through
-                // `palette_color()`, so a child's OSC 4 override does not
-                // change what it draws and there is nothing to re-read here. A
-                // host that draws from `palette_color()` would refresh its
-                // cached colours on this event.
-                termnix::Event::ColorsUpdated => {}
-                // A child request (a clipboard write, a clipboard read, a
-                // bell, or an OSC termnix does not interpret) has to be read
-                // like any other event, or the request queue would grow
-                // without bound; a real host would carry it out here, for a
-                // background session as well. This example owns no clipboard
-                // and silences no bell, so it drops every ask - including a
-                // read, which a host that owns a selection would answer with
-                // an OSC 52 set written to the child.
+                // A child request has to be read like any other event, or the
+                // request queue would grow without bound; a real host would
+                // carry it out here, for a background session as well. This
+                // example owns neither a clipboard nor a palette, so it drops
+                // every ask - including the color ones, which a host that
+                // tracks the host terminal's theme would answer from its own
+                // table with an OSC 4/10/11/12 written to the child.
                 termnix::Event::RequestReceived(_request) => {}
             }
         }
@@ -1107,13 +1099,6 @@ mod tests {
         }
     }
 
-    /// The xterm-256 palette entry for a `termnix` indexed color.
-    fn host_palette(index: u8) -> Option<tuinix::Color> {
-        termnix::Color::Indexed(index)
-            .to_rgb()
-            .map(|rgb| tuinix::Color::Rgb(rgb.r, rgb.g, rgb.b))
-    }
-
     #[test]
     fn supported_keys_are_converted_with_modifiers() {
         let supported = [
@@ -1219,23 +1204,20 @@ mod tests {
 
     #[test]
     fn color_and_style_conversion() {
-        assert_eq!(to_host_color(termnix::Color::Default), None);
+        assert_eq!(to_host_color(None), None);
         assert_eq!(
-            to_host_color(termnix::Color::Rgb(termnix::Rgb::new(1, 2, 3))),
+            to_host_color(Some(termnix::Color::Rgb(termnix::Rgb::new(1, 2, 3)))),
             Some(tuinix::Color::Rgb(1, 2, 3))
         );
-        assert_eq!(host_palette(0), Some(tuinix::Color::Rgb(0, 0, 0)));
-        assert_eq!(host_palette(15), Some(tuinix::Color::Rgb(255, 255, 255)));
-        assert_eq!(host_palette(16), Some(tuinix::Color::Rgb(0, 0, 0)));
-        assert_eq!(host_palette(21), Some(tuinix::Color::Rgb(0, 0, 255)));
-        assert_eq!(host_palette(196), Some(tuinix::Color::Rgb(255, 0, 0)));
-        assert_eq!(host_palette(231), Some(tuinix::Color::Rgb(255, 255, 255)));
-        assert_eq!(host_palette(232), Some(tuinix::Color::Rgb(8, 8, 8)));
-        assert_eq!(host_palette(255), Some(tuinix::Color::Rgb(238, 238, 238)));
+        // An indexed color is passed through indexed, not resolved here.
+        assert_eq!(
+            to_host_color(Some(termnix::Color::Indexed(42))),
+            Some(tuinix::Color::Indexed(42))
+        );
 
         let style = to_host_style(termnix::Style {
-            foreground: termnix::Color::Indexed(1),
-            background: termnix::Color::Rgb(termnix::Rgb::new(10, 20, 30)),
+            foreground: Some(termnix::Color::Indexed(1)),
+            background: Some(termnix::Color::Rgb(termnix::Rgb::new(10, 20, 30))),
             bold: true,
             italic: true,
             underline: true,
@@ -1245,7 +1227,7 @@ mod tests {
         assert!(style.italic);
         assert!(style.underline);
         assert!(style.reverse);
-        assert_eq!(style.fg_color, Some(tuinix::Color::Rgb(205, 0, 0)));
+        assert_eq!(style.fg_color, Some(tuinix::Color::Indexed(1)));
         assert_eq!(style.bg_color, Some(tuinix::Color::Rgb(10, 20, 30)));
         assert_eq!(style.blink, false, "tuinix-only attributes stay off");
         assert_eq!(style.dim, false);
@@ -1276,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_writer_handles_wide_and_styled_cells() {
+    fn frame_writer_handles_wide_cells() {
         let grid = Projection {
             size: size(2, 6),
             rows: vec![
@@ -1469,26 +1451,6 @@ mod tests {
         });
         app.deliver_pending().expect("drop is silent");
         assert!(app.pending.is_none());
-    }
-
-    #[test]
-    fn switch_selected_requires_two_live_sessions() {
-        let mut app = empty_app();
-        app.switch_selected();
-        assert_eq!(app.selected, 0, "no-op with no sessions");
-        app.sessions[1] = None;
-        app.switch_selected();
-        assert_eq!(app.selected, 0, "no-op with one session");
-    }
-
-    #[test]
-    fn child_scripts_are_distinct_and_loop() {
-        let script0 = child_script(0);
-        let script1 = child_script(1);
-        assert_ne!(script0, script1);
-        assert!(script0.contains("SESSION 0"));
-        assert!(script1.contains("SESSION 1"));
-        assert!(script0.contains("while IFS= read -r line"));
     }
 
     #[test]

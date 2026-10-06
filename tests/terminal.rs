@@ -882,17 +882,6 @@ fn screen_updated(t: &mut termnix::TerminalState) -> bool {
         .any(|event| matches!(event, termnix::Event::ScreenUpdated))
 }
 
-/// Drains the pending events and returns whether a `ColorsUpdated` was among
-/// them.
-///
-/// "A colour the terminal resolves moved since the last drain". Like
-/// [`screen_updated`], reporting the change consumes it.
-fn colors_updated(t: &mut termnix::TerminalState) -> bool {
-    drain(t)
-        .iter()
-        .any(|event| matches!(event, termnix::Event::ColorsUpdated))
-}
-
 /// Returns the next pending request, leaving the rest queued, and drops the
 /// state-change events it walks past.
 ///
@@ -932,6 +921,24 @@ fn get_clipboard(t: &mut termnix::TerminalState) -> Option<termnix::ClipboardSel
     match next_request(t)? {
         termnix::ChildRequest::GetClipboard { selection } => Some(selection),
         other => panic!("expected a GetClipboard request, got {other:?}"),
+    }
+}
+
+/// Drains the next request and matches it as a `SetColor`, returning its slot
+/// and value, or `None` if no request is pending.
+fn set_color(t: &mut termnix::TerminalState) -> Option<(termnix::ColorSlot, termnix::Rgb)> {
+    match next_request(t)? {
+        termnix::ChildRequest::SetColor { slot, rgb } => Some((slot, rgb)),
+        other => panic!("expected a SetColor request, got {other:?}"),
+    }
+}
+
+/// Drains the next request and matches it as a `GetColor`, returning its slot,
+/// or `None` if no request is pending.
+fn get_color(t: &mut termnix::TerminalState) -> Option<termnix::ColorSlot> {
+    match next_request(t)? {
+        termnix::ChildRequest::GetColor { slot } => Some(slot),
+        other => panic!("expected a GetColor request, got {other:?}"),
     }
 }
 
@@ -1388,7 +1395,7 @@ fn sgr_bold_and_256_color_attach_to_cells() {
     let cell = t.cell(termnix::Position { row: 0, col: 0 }).expect("cell");
     assert_eq!(cell.ch, 'Z');
     assert!(cell.style.bold);
-    assert_eq!(cell.style.foreground, termnix::Color::Indexed(196));
+    assert_eq!(cell.style.foreground, Some(termnix::Color::Indexed(196)));
 }
 
 #[test]
@@ -1399,7 +1406,7 @@ fn sgr_truecolor_and_reset() {
     let b = t.cell(termnix::Position { row: 0, col: 1 }).expect("B");
     assert_eq!(
         a.style.background,
-        termnix::Color::Rgb(termnix::Rgb::new(10, 20, 30))
+        Some(termnix::Color::Rgb(termnix::Rgb::new(10, 20, 30)))
     );
     assert_eq!(b.style, termnix::Style::default());
 }
@@ -1693,94 +1700,83 @@ fn osc_52_survives_a_hard_reset() {
 }
 
 #[test]
-fn osc_4_sets_a_palette_entry() {
+fn osc_4_set_becomes_a_set_color_request() {
+    // termnix owns no palette, so the set is the caller's request; the crate
+    // decodes the slot and value and hands them over.
     let mut t = term(1, 8);
-    // Red, in the crate's own resolution, is what the child asked for.
     assert_eq!(
-        t.palette_color(1),
-        termnix::Color::Indexed(1).to_rgb().expect("built-in")
+        set_color(&mut t),
+        None,
+        "a fresh terminal has no color request"
     );
     t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
-    assert_eq!(t.palette_color(1), termnix::Rgb::new(0xff, 0x00, 0x00));
+    assert_eq!(
+        set_color(&mut t),
+        Some((
+            termnix::ColorSlot::Indexed(1),
+            termnix::Rgb::new(0xff, 0x00, 0x00)
+        ))
+    );
+    assert!(t.pending_reply_bytes().is_empty(), "a set draws no reply");
 }
 
 #[test]
-fn palette_color_is_total_and_falls_back_to_the_builtin_table() {
-    // Every index has a value; an untouched index answers with the same table
-    // `Color::to_rgb` uses.
-    let t = term(1, 8);
-    for index in [0u8, 15, 16, 231, 232, 255] {
-        assert_eq!(
-            t.palette_color(index),
-            termnix::Color::Indexed(index).to_rgb().expect("built-in"),
-            "index={index}"
-        );
-    }
-}
-
-#[test]
-fn osc_4_sets_several_entries_in_one_sequence() {
-    // One OSC 4 carries any number of `index;spec` pairs, and each is applied.
+fn osc_4_set_of_several_entries_is_several_requests() {
+    // One OSC 4 carries any number of `index;spec` pairs, and each set is its
+    // own request, in order.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;rgb:11/22/33;2;rgb:44/55/66\x07");
-    assert_eq!(t.palette_color(1), termnix::Rgb::new(0x11, 0x22, 0x33));
-    assert_eq!(t.palette_color(2), termnix::Rgb::new(0x44, 0x55, 0x66));
+    assert_eq!(
+        set_color(&mut t),
+        Some((
+            termnix::ColorSlot::Indexed(1),
+            termnix::Rgb::new(0x11, 0x22, 0x33)
+        ))
+    );
+    assert_eq!(
+        set_color(&mut t),
+        Some((
+            termnix::ColorSlot::Indexed(2),
+            termnix::Rgb::new(0x44, 0x55, 0x66)
+        ))
+    );
 }
 
 #[test]
-fn osc_4_answers_a_query_from_state() {
-    // A `?` is answered on the reply buffer, not the event channel: the answer
-    // is the terminal's own state, not an ask for the caller.
+fn osc_4_query_becomes_a_get_color_request() {
+    // A `?` is the caller's to answer; termnix writes nothing itself because
+    // it cannot see the host terminal's theme.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;?\x07");
-    let builtin = termnix::Color::Indexed(1).to_rgb().expect("built-in");
-    assert_eq!(
-        t.pending_reply_bytes(),
-        format!(
-            "\x1b]4;1;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
-            builtin.r, builtin.g, builtin.b
-        )
-        .as_bytes()
+    assert_eq!(get_color(&mut t), Some(termnix::ColorSlot::Indexed(1)));
+    assert!(
+        t.pending_reply_bytes().is_empty(),
+        "termnix answers nothing"
     );
-    assert!(next_request(&mut t).is_none());
 }
 
 #[test]
-fn osc_4_query_reports_the_override() {
-    let mut t = term(1, 8);
-    t.feed(b"\x1b]4;9;rgb:0a/0b/0c\x07");
-    t.advance_reply_bytes(t.pending_reply_bytes().len());
-    t.feed(b"\x1b]4;9;?\x07");
-    assert_eq!(t.pending_reply_bytes(), b"\x1b]4;9;rgb:0a/0b/0c\x1b\\");
-}
-
-#[test]
-fn osc_4_mixed_set_and_query_answers_only_the_query() {
+fn osc_4_mixed_set_and_query_is_two_requests() {
     // A sequence may set one entry and query another; each pair is independent.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;rgb:11/22/33;2;?\x07");
-    assert_eq!(t.palette_color(1), termnix::Rgb::new(0x11, 0x22, 0x33));
-    let builtin = termnix::Color::Indexed(2).to_rgb().expect("built-in");
     assert_eq!(
-        t.pending_reply_bytes(),
-        format!(
-            "\x1b]4;2;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
-            builtin.r, builtin.g, builtin.b
-        )
-        .as_bytes()
+        set_color(&mut t),
+        Some((
+            termnix::ColorSlot::Indexed(1),
+            termnix::Rgb::new(0x11, 0x22, 0x33)
+        ))
     );
+    assert_eq!(get_color(&mut t), Some(termnix::ColorSlot::Indexed(2)));
 }
 
 #[test]
 fn osc_4_ignores_a_malformed_spec_and_a_missing_value() {
-    // A spec that is not `rgb:` stores nothing, and a trailing index with no
+    // A spec that is not `rgb:` is no request, and a trailing index with no
     // spec is ignored rather than read as a value.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;#ff0000;2\x07");
-    assert_eq!(
-        t.palette_color(1),
-        termnix::Color::Indexed(1).to_rgb().expect("built-in")
-    );
+    assert!(next_request(&mut t).is_none());
     assert!(t.pending_reply_bytes().is_empty());
 }
 
@@ -1789,6 +1785,7 @@ fn osc_4_ignores_an_out_of_range_index() {
     // An index above 255 names nothing; it is dropped rather than wrapped.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;256;rgb:ff/00/00\x07");
+    assert!(next_request(&mut t).is_none());
     assert!(t.pending_reply_bytes().is_empty());
 }
 
@@ -1804,25 +1801,29 @@ fn osc_rgb_scales_by_digit_count() {
         let mut t = term(1, 8);
         t.feed(format!("\x1b]4;1;{}\x07", String::from_utf8_lossy(spec)).as_bytes());
         assert_eq!(
-            t.palette_color(1),
-            termnix::Rgb::new(0xff, 0x00, 0x00),
+            set_color(&mut t),
+            Some((
+                termnix::ColorSlot::Indexed(1),
+                termnix::Rgb::new(0xff, 0x00, 0x00)
+            )),
             "spec={spec:?}"
         );
     }
 }
 
 #[test]
-fn osc_4_raises_colors_updated_but_not_screen_updated() {
-    // A colour set draws nothing; it changes what a later paint means. So it
-    // is not a screen change, but it is a colour change.
+fn osc_4_set_is_not_a_screen_change() {
+    // A color set draws nothing; the request tells the caller, and the screen
+    // is untouched.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
     let events = drain(&mut t);
     assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, termnix::Event::ColorsUpdated)),
-        "a palette set is a colour change: {events:?}"
+        events.iter().any(|event| matches!(
+            event,
+            termnix::Event::RequestReceived(termnix::ChildRequest::SetColor { .. })
+        )),
+        "a palette set is a request: {events:?}"
     );
     assert!(
         !events
@@ -1833,106 +1834,65 @@ fn osc_4_raises_colors_updated_but_not_screen_updated() {
 }
 
 #[test]
-fn osc_10_11_12_raise_colors_updated() {
+fn osc_10_11_12_set_becomes_set_color_requests() {
     let mut t = term(1, 8);
-    for feed in [
-        &b"\x1b]10;rgb:ff/00/00\x07"[..],
-        &b"\x1b]11;rgb:00/ff/00\x07"[..],
-        &b"\x1b]12;rgb:00/00/ff\x07"[..],
+    for (feed, slot) in [
+        (
+            &b"\x1b]10;rgb:ff/00/00\x07"[..],
+            termnix::ColorSlot::DefaultForeground,
+        ),
+        (
+            &b"\x1b]11;rgb:00/ff/00\x07"[..],
+            termnix::ColorSlot::DefaultBackground,
+        ),
+        (
+            &b"\x1b]12;rgb:00/00/ff\x07"[..],
+            termnix::ColorSlot::DefaultCursor,
+        ),
     ] {
         t.feed(feed);
-        assert!(colors_updated(&mut t), "{feed:?} is a colour change");
+        match set_color(&mut t) {
+            Some((got, _)) => assert_eq!(got, slot, "{feed:?} names {slot:?}"),
+            None => panic!("{feed:?} should be a SetColor request"),
+        }
     }
 }
 
 #[test]
-fn colors_updated_merges_within_one_feed() {
-    // Two colour sets in one feed are one event, like the other state flags.
-    let mut t = term(1, 8);
-    t.feed(b"\x1b]4;1;rgb:ff/00/00\x07\x1b]4;2;rgb:00/ff/00\x07");
-    let events = drain(&mut t);
-    let count = events
-        .iter()
-        .filter(|event| matches!(event, termnix::Event::ColorsUpdated))
-        .count();
-    assert_eq!(count, 1, "colour changes merge into one event: {events:?}");
-}
-
-#[test]
-fn osc_4_query_does_not_raise_colors_updated() {
-    // A query reads state; it stores nothing, so nothing changed.
-    let mut t = term(1, 8);
-    t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
-    let _ = drain(&mut t);
-    t.feed(b"\x1b]4;1;?\x07");
-    assert!(!colors_updated(&mut t), "a palette query stores nothing");
-}
-
-#[test]
-fn osc_10_11_12_set_the_default_colour_slots() {
-    let mut t = term(1, 8);
-    assert_eq!(t.default_foreground_color(), None);
-    assert_eq!(t.default_background_color(), None);
-    assert_eq!(t.default_cursor_color(), None);
-    t.feed(b"\x1b]10;rgb:ff/00/00\x07\x1b]11;rgb:00/ff/00\x07\x1b]12;rgb:00/00/ff\x07");
-    assert_eq!(
-        t.default_foreground_color(),
-        Some(termnix::Rgb::new(0xff, 0x00, 0x00))
-    );
-    assert_eq!(
-        t.default_background_color(),
-        Some(termnix::Rgb::new(0x00, 0xff, 0x00))
-    );
-    assert_eq!(
-        t.default_cursor_color(),
-        Some(termnix::Rgb::new(0x00, 0x00, 0xff))
-    );
-}
-
-#[test]
-fn osc_10_query_answers_a_set_value_and_nothing_when_unset() {
+fn osc_10_query_becomes_a_get_color_request() {
     // The crate has no true answer for an unset slot (the default is the
-    // host's), so a query before a set replies nothing rather than inventing
-    // one.
+    // host's), so it never guesses; the query is the caller's.
     let mut t = term(1, 8);
     t.feed(b"\x1b]10;?\x07");
-    assert!(t.pending_reply_bytes().is_empty());
-    t.feed(b"\x1b]10;rgb:12/34/56\x07");
-    t.advance_reply_bytes(t.pending_reply_bytes().len());
-    t.feed(b"\x1b]10;?\x07");
-    assert_eq!(t.pending_reply_bytes(), b"\x1b]10;rgb:12/34/56\x1b\\");
+    assert_eq!(
+        get_color(&mut t),
+        Some(termnix::ColorSlot::DefaultForeground)
+    );
+    assert!(
+        t.pending_reply_bytes().is_empty(),
+        "termnix answers nothing"
+    );
 }
 
 #[test]
-fn osc_10_with_no_value_stores_nothing() {
+fn osc_10_with_no_value_is_no_request() {
     // xterm defines no reset form here, so an empty value is a no-op.
     let mut t = term(1, 8);
-    t.feed(b"\x1b]10\x07\x1b]10;\x07\x1b]10;notacolour\x07");
-    assert_eq!(t.default_foreground_color(), None);
+    t.feed(b"\x1b]10\x07\x1b]10;\x07\x1b]10;notacolor\x07");
+    assert!(next_request(&mut t).is_none());
     assert!(t.pending_reply_bytes().is_empty());
 }
 
 #[test]
-fn palette_is_terminal_state_across_the_alternate_screen() {
-    // The palette belongs to the terminal, not a screen buffer.
-    let mut t = term(2, 8);
-    t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
-    t.feed(b"\x1b[?1049h");
-    assert_eq!(t.palette_color(1), termnix::Rgb::new(0xff, 0x00, 0x00));
-    t.feed(b"\x1b[?1049l");
-    assert_eq!(t.palette_color(1), termnix::Rgb::new(0xff, 0x00, 0x00));
-}
-
-#[test]
-fn ris_clears_the_palette_and_the_colour_slots() {
+fn ris_does_not_emit_a_color_request() {
+    // RIS resets the child's own state; termnix keeps no palette, so it emits
+    // nothing for colors, and a request from before the reset does not
+    // outlive it.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;rgb:ff/00/00\x07\x1b]10;rgb:ff/00/00\x07");
     t.feed(b"\x1bc");
-    assert_eq!(
-        t.palette_color(1),
-        termnix::Color::Indexed(1).to_rgb().expect("built-in")
-    );
-    assert_eq!(t.default_foreground_color(), None);
+    assert!(next_request(&mut t).is_none());
+    assert!(t.pending_reply_bytes().is_empty());
 }
 
 #[test]
@@ -1954,22 +1914,6 @@ fn csi_replies_fit_the_session_bound() {
     // DA1 is the other fixed-shape reply, and it is shorter.
     t.feed(b"\x1b[c");
     assert_eq!(t.pending_reply_bytes(), b"\x1b[?6c");
-}
-
-#[test]
-fn osc_colour_reply_longer_than_a_csi_reply_is_produced() {
-    // The palette reply is longer than the CSI reply bound; it must still be
-    // produced whole rather than refused.
-    let mut t = term(1, 8);
-    t.feed(b"\x1b]4;255;rgb:ff/ff/ff\x07");
-    t.advance_reply_bytes(t.pending_reply_bytes().len());
-    t.feed(b"\x1b]4;255;?\x07");
-    let reply = t.pending_reply_bytes();
-    assert!(
-        reply.len() > 14,
-        "the reply should exceed the CSI bound: {reply:?}"
-    );
-    assert_eq!(reply, b"\x1b]4;255;rgb:ff/ff/ff\x1b\\");
 }
 
 #[test]
