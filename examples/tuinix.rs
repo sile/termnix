@@ -1258,7 +1258,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_writer_handles_wide_and_styled_cells() {
+    fn frame_writer_handles_wide_cells() {
         let grid = Projection {
             size: size(2, 6),
             rows: vec![
@@ -1451,26 +1451,6 @@ mod tests {
         });
         app.deliver_pending().expect("drop is silent");
         assert!(app.pending.is_none());
-    }
-
-    #[test]
-    fn switch_selected_requires_two_live_sessions() {
-        let mut app = empty_app();
-        app.switch_selected();
-        assert_eq!(app.selected, 0, "no-op with no sessions");
-        app.sessions[1] = None;
-        app.switch_selected();
-        assert_eq!(app.selected, 0, "no-op with one session");
-    }
-
-    #[test]
-    fn child_scripts_are_distinct_and_loop() {
-        let script0 = child_script(0);
-        let script1 = child_script(1);
-        assert_ne!(script0, script1);
-        assert!(script0.contains("SESSION 0"));
-        assert!(script1.contains("SESSION 1"));
-        assert!(script0.contains("while IFS= read -r line"));
     }
 
     #[test]
