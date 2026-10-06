@@ -821,13 +821,10 @@ fn parse_osc_index(field: &[u8]) -> Option<u8> {
 /// stores nothing: an unrecognized spec is not a colour to guess at.
 fn parse_osc_rgb(value: &[u8]) -> Option<(u8, u8, u8)> {
     let digits = value.strip_prefix(b"rgb:")?;
-    let mut channels = digits.split(|byte| *byte == b'/');
+    let mut channels = digits.splitn(3, |byte| *byte == b'/');
     let r = parse_osc_channel(channels.next()?)?;
     let g = parse_osc_channel(channels.next()?)?;
     let b = parse_osc_channel(channels.next()?)?;
-    if channels.next().is_some() {
-        return None;
-    }
     Some((r, g, b))
 }
 
