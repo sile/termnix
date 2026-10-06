@@ -120,15 +120,6 @@ pub struct TerminalState {
     /// The OSC 10/11/12 slots (default foreground, background, cursor), `None`
     /// until the child sets one.
     pub(crate) default_colors: DefaultColors,
-    /// Set by `osc_dispatch` when it stores a new title, and cleared at the
-    /// start of each `feed`.
-    ///
-    /// This is the per-feed change detector, distinct from the
-    /// `title_updated` event flag: the title is the one visible field that is
-    /// not `Copy`, so it cannot join the before/after scalar compare without
-    /// allocating a `String` per feed, and reading-and-clearing it must not
-    /// wipe a `TitleUpdated` event that is still waiting to be drained.
-    pub(crate) title_changed: bool,
 }
 
 /// Ceiling on the bytes one terminal reply may add.
@@ -160,6 +151,7 @@ pub(crate) struct Events {
     screen_updated: bool,
     scrollback_line_added: bool,
     title_updated: bool,
+    colors_updated: bool,
     requests: VecDeque<ChildRequest>,
 }
 
@@ -177,6 +169,11 @@ impl Events {
     /// Marks the window title as having changed.
     pub(crate) fn mark_title_updated(&mut self) {
         self.title_updated = true;
+    }
+
+    /// Marks a colour the terminal resolves as having changed.
+    pub(crate) fn mark_colors_updated(&mut self) {
+        self.colors_updated = true;
     }
 
     /// Marks the whole terminal as having been reset.
@@ -218,6 +215,9 @@ impl Iterator for Events {
         }
         if std::mem::take(&mut self.title_updated) {
             return Some(Event::TitleUpdated);
+        }
+        if std::mem::take(&mut self.colors_updated) {
+            return Some(Event::ColorsUpdated);
         }
         self.requests.pop_front().map(Event::RequestReceived)
     }
@@ -407,7 +407,6 @@ impl TerminalState {
             events: Events::default(),
             palette: Box::new([None; 256]),
             default_colors: DefaultColors::default(),
-            title_changed: false,
         }
     }
 
@@ -428,6 +427,7 @@ impl TerminalState {
     ///         // History has no built-in bound; cap it (here 1000 lines).
     ///         termnix::Event::ScrollbackLineAppended => term.trim_scrollback(1000, 100_000),
     ///         termnix::Event::TitleUpdated => { /* read term.title() */ }
+    ///         termnix::Event::ColorsUpdated => { /* re-resolve palette colours */ }
     ///         termnix::Event::RequestReceived(request) => { /* act on `request` */ }
     ///     }
     /// }
@@ -493,7 +493,6 @@ impl TerminalState {
     /// no matter how many cells changed within it.
     pub fn feed(&mut self, bytes: &[u8]) {
         let before = self.visible_scalars();
-        self.title_changed = false;
         feed_bytes(self, bytes);
         // `take_dirty` clears the flag as it reads it, so it is taken into a
         // local first: the combination below is short-circuiting, and an
@@ -505,7 +504,7 @@ impl TerminalState {
         // snapshot below already carries, so polling it would only ever
         // over-detect. A write to the hidden primary is invisible by definition.
         let primary_dirty = self.primary.take_dirty();
-        let changed = primary_dirty || self.title_changed || (self.visible_scalars() != before);
+        let changed = primary_dirty || (self.visible_scalars() != before);
         if changed {
             self.events.mark_screen_updated();
         }
