@@ -8,7 +8,9 @@ Give the `(u8, u8, u8)` triple that the colour API returns a name: an `Rgb`
 value type. Today the palette accessors, the default-colour slots, and
 `Color::to_rgb()` all hand the caller a bare tuple, which carries no field names
 and no meaning in its type. A named `Rgb` says what the three bytes are and
-gives the callers a place to hang methods and docs.
+gives the callers a place to hang methods and docs. The cell colour variant
+`Color::Rgb` then carries that same `Rgb` rather than its own copy of the three
+bytes, so the crate has one spelling of "three channels" instead of two.
 
 ## Motivation
 
@@ -37,29 +39,33 @@ value type is a separate change, and this is it.
 
 ## Guide-level explanation
 
-Before, three channels are positional:
+Before, three channels are positional, and a cell colour carries its own copy
+of them:
 
 ```rust
 let (r, g, b) = term.palette_color(4);
 let color = Color::Rgb(r, g, b);
+let Color::Rgb(r, g, b) = color else { todo!() };
 ```
 
-After, the same values arrive named:
+After, the same values arrive named, and the cell colour holds the named value:
 
 ```rust
 let rgb = term.palette_color(4);
-let color = Color::Rgb(rgb.r, rgb.g, rgb.b);
+let color = Color::Rgb(rgb);
+let Rgb { r, g, b } = rgb;
 ```
 
-A caller that already destructures keeps working with one adjustment, because
-`Rgb` can be destructured like the tuple it replaces:
+A caller that works with the channels keeps the same names, because `Rgb` can be
+destructured like the tuple it replaces:
 
 ```rust
 let Rgb { r, g, b } = term.palette_color(4);
 ```
 
 The shift is small and mechanical: the triple gains a name, the signatures that
-returned it return `Rgb` instead, and the callers name the channels rather than
+returned it return `Rgb` instead, the cell colour variant carries that value
+instead of its own three bytes, and the callers name the channels rather than
 counting them.
 
 ## Reference-level explanation
@@ -97,8 +103,8 @@ plain value. `Default` is not derived, because `(u8, u8, u8)` has no `Default`
 either and `Rgb::default()` would silently be black, which is a colour a caller
 might not have meant.
 
-The fields are public and named, matching `Color::Rgb`, which already carries
-two `u8`s inline; making this type opaque would force an accessor where the cell
+The fields are public and named, matching `Color::Rgb`, which now carries this
+type inline; making this type opaque would force an accessor where the cell
 colour type needs none.
 
 ### Signatures that change
@@ -124,11 +130,10 @@ and the accessors.
 ### What does not change
 
 - [`Color`] keeps its variants. `Color::Indexed(u8)` stays an index, because an
-  index is not an `Rgb`; `Color::Default` stays a variant, because it is the
-  absence of a colour and has no `Rgb` to hold. `Color::Rgb(u8, u8, u8)` keeps
-  its two-`u8` payload rather than becoming `Color::Rgb(Rgb)`, so a
-  constructed cell colour stays a payload a match can destructure in place and
-  the constructor `Color::Rgb(r, g, b)` does not change shape.
+  index is not an `Rgb`, and `Color::Default` stays a variant, because it is
+  the absence of a colour and has no `Rgb` to hold. `Color::Rgb` now carries an
+  `Rgb` instead of the three `u8`s, so the cell colour and the resolved colour
+  share one type rather than two spellings of "three bytes".
 - `Color::to_rgb()` still resolves the *built-in* table and never a child
   override; the override is still `palette_color`'s job. The only change is
   that both now return the same named type.
@@ -142,13 +147,11 @@ bit width is not in the name.
 
 ## Drawbacks
 
-- **A new public type on the surface.** Every existing caller of the four
-  accessors and `to_rgb` sees a different return type and must adjust. The
-  crate is at `0.x` and these accessors are new, so the real cost is the
-  compiler version bump and the changelog line, not a migration in the field.
-- **One more name to learn.** A reader who knows `Color::Rgb` now meets a
-  second `Rgb`. They are deliberately the same shape, and the field names make
-  the relationship obvious, but it is a second name for "three bytes".
+- **A breaking change to `Color::Rgb`.** Every caller that constructs
+  `Color::Rgb(r, g, b)` or destructures it in a `match` must switch to
+  `Color::Rgb(Rgb::new(r, g, b))` and `Color::Rgb(rgb)`. The crate is at `0.x`,
+  so the real cost is the changelog line and the compiler version bump, not a
+  migration in the field.
 - **The tuple and the struct are layout-compatible but not interchangeable.**
   `Rgb { r, g, b }` is not `(u8, u8, u8)`, so a caller that passed the tuple to
   a function taking a tuple must switch to `(rgb.r, rgb.g, rgb.b)` or update
@@ -167,11 +170,12 @@ bit width is not in the name.
   Rejected: `Color::Rgb` is a public-field variant, so the cell colour type and
   this value type would disagree on how a channel is read for no gain; a public
   field is the same access with less ceremony.
-- **Fold `Rgb` into `Color` (for example `Color::Rgb(Rgb)`).** Rejected: the
-  two answer different questions - a cell colour may be `Default` or an index,
-  while a resolved colour is always three bytes - and merging them would make
-  every resolution return a `Color` that can be `Default`, re-introducing the
-  "no value" case the accessors already exclude.
+- **Remove `Color` and return `Option<Rgb>` everywhere.** Rejected: the two
+  answer different questions - a cell colour may be `Default` or an index,
+  while a resolved colour is always three bytes - and folding them together
+  would make every resolution return a `Color` that can be `Default` or
+  `Indexed`, re-introducing the cases the accessors already exclude. `Color`
+  keeps its variants; only the `Rgb` arm changes to carry the named value.
 - **Return a third-party colour type.** Rejected: termnix does not depend on a
   colour crate, and pulling one in to name three bytes is a dependency for a
   three-field struct.
@@ -180,11 +184,6 @@ bit width is not in the name.
 
 ## Unresolved questions
 
-- **Should `Color::Rgb` carry an `Rgb`?** This proposal keeps the payload as
-  `(u8, u8, u8)` so the variant stays a plain destructure target. If callers
-  find themselves writing `Color::Rgb(rgb.r, rgb.g, rgb.b)` often, a
-  `Color::Rgb(Rgb)` payload could be revisited, at the cost of changing how the
-  variant is matched and constructed.
 - **Should `Rgb` gain a `from(Color)` conversion?** A helper that turns an
   `Indexed` or `Rgb` cell colour into a resolved `Rgb` would duplicate what
   `to_rgb` already does; whether a `From` impl reads better than a method is

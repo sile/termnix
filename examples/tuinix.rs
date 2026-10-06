@@ -703,7 +703,9 @@ fn position_to_host(position: termnix::Position) -> tuinix::Position {
 /// else resolves through [`termnix::Color::to_rgb`] (the xterm 256-color
 /// palette for `Indexed`).
 fn to_host_color(color: termnix::Color) -> Option<tuinix::Color> {
-    color.to_rgb().map(|(r, g, b)| tuinix::Color::Rgb(r, g, b))
+    color
+        .to_rgb()
+        .map(|rgb| tuinix::Color::Rgb(rgb.r, rgb.g, rgb.b))
 }
 
 /// Maps a termnix style to a tuinix style, dropping unsupported attributes.
@@ -1101,7 +1103,7 @@ mod tests {
     fn host_palette(index: u8) -> Option<tuinix::Color> {
         termnix::Color::Indexed(index)
             .to_rgb()
-            .map(|(r, g, b)| tuinix::Color::Rgb(r, g, b))
+            .map(|rgb| tuinix::Color::Rgb(rgb.r, rgb.g, rgb.b))
     }
 
     #[test]
@@ -1211,7 +1213,7 @@ mod tests {
     fn color_and_style_conversion() {
         assert_eq!(to_host_color(termnix::Color::Default), None);
         assert_eq!(
-            to_host_color(termnix::Color::Rgb(1, 2, 3)),
+            to_host_color(termnix::Color::Rgb(termnix::Rgb::new(1, 2, 3))),
             Some(tuinix::Color::Rgb(1, 2, 3))
         );
         assert_eq!(host_palette(0), Some(tuinix::Color::Rgb(0, 0, 0)));
@@ -1225,7 +1227,7 @@ mod tests {
 
         let style = to_host_style(termnix::Style {
             foreground: termnix::Color::Indexed(1),
-            background: termnix::Color::Rgb(10, 20, 30),
+            background: termnix::Color::Rgb(termnix::Rgb::new(10, 20, 30)),
             bold: true,
             italic: true,
             underline: true,

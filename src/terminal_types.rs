@@ -46,6 +46,29 @@ impl Position {
     pub const ORIGIN: Self = Self { row: 0, col: 0 };
 }
 
+/// A 24-bit RGB colour, one byte per channel.
+///
+/// The channels are the direct value of a colour, not an index into a palette.
+/// A palette index stays a `u8`, and a host resolves it through
+/// [`TerminalState::palette_color()`](crate::TerminalState::palette_color).
+/// The cell colour variant [`Color::Rgb`](crate::Color::Rgb) carries this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Rgb {
+    /// The red channel.
+    pub r: u8,
+    /// The green channel.
+    pub g: u8,
+    /// The blue channel.
+    pub b: u8,
+}
+
+impl Rgb {
+    /// Builds a colour from its three channels.
+    pub const fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+}
+
 /// Cell color.
 ///
 /// Indexed values use the usual ANSI/xterm numbering: 0–15 are the system
@@ -59,12 +82,12 @@ pub enum Color {
     Default,
     /// Palette or 256-color index (`0..=255`).
     Indexed(u8),
-    /// Direct 24-bit color.
-    Rgb(u8, u8, u8),
+    /// Direct 24-bit color, already resolved to three channels.
+    Rgb(Rgb),
 }
 
 impl Color {
-    /// Resolves this color to concrete 24-bit RGB.
+    /// Resolves this color to concrete 24-bit [`Rgb`].
     ///
     /// [`Color::Default`] has no fixed value (it is whatever the host terminal
     /// uses for default foreground/background) and returns `None`.
@@ -83,33 +106,33 @@ impl Color {
     /// instead - which falls back to this table for an entry the child never
     /// touched. The split is deliberate: `Color` is a `Copy` value type and
     /// cannot read the terminal's mutable state.
-    pub fn to_rgb(&self) -> Option<(u8, u8, u8)> {
+    pub fn to_rgb(&self) -> Option<Rgb> {
         match *self {
             Self::Default => None,
-            Self::Rgb(r, g, b) => Some((r, g, b)),
+            Self::Rgb(rgb) => Some(rgb),
             Self::Indexed(index) => Some(indexed_rgb(index)),
         }
     }
 }
 
 /// The 0--15 ANSI/xterm system palette.
-const XTERM_SYSTEM: [(u8, u8, u8); 16] = [
-    (0, 0, 0),
-    (205, 0, 0),
-    (0, 205, 0),
-    (205, 205, 0),
-    (0, 0, 238),
-    (205, 0, 205),
-    (0, 205, 205),
-    (229, 229, 229),
-    (127, 127, 127),
-    (255, 0, 0),
-    (0, 255, 0),
-    (255, 255, 0),
-    (92, 92, 255),
-    (255, 0, 255),
-    (0, 255, 255),
-    (255, 255, 255),
+const XTERM_SYSTEM: [Rgb; 16] = [
+    Rgb::new(0, 0, 0),
+    Rgb::new(205, 0, 0),
+    Rgb::new(0, 205, 0),
+    Rgb::new(205, 205, 0),
+    Rgb::new(0, 0, 238),
+    Rgb::new(205, 0, 205),
+    Rgb::new(0, 205, 205),
+    Rgb::new(229, 229, 229),
+    Rgb::new(127, 127, 127),
+    Rgb::new(255, 0, 0),
+    Rgb::new(0, 255, 0),
+    Rgb::new(255, 255, 0),
+    Rgb::new(92, 92, 255),
+    Rgb::new(255, 0, 255),
+    Rgb::new(0, 255, 255),
+    Rgb::new(255, 255, 255),
 ];
 
 /// Resolves an xterm 256-color index to concrete RGB.
@@ -118,7 +141,7 @@ const XTERM_SYSTEM: [(u8, u8, u8); 16] = [
 /// it knows nothing about a palette override the child set with OSC 4, which
 /// [`TerminalState::palette_color`](crate::TerminalState::palette_color) layers
 /// on top for the same index.
-pub(crate) fn indexed_rgb(index: u8) -> (u8, u8, u8) {
+pub(crate) fn indexed_rgb(index: u8) -> Rgb {
     match index {
         0..=15 => XTERM_SYSTEM[index as usize],
         16..=231 => {
@@ -126,11 +149,11 @@ pub(crate) fn indexed_rgb(index: u8) -> (u8, u8, u8) {
             let r = palette_level(n / 36);
             let g = palette_level((n % 36) / 6);
             let b = palette_level(n % 6);
-            (r, g, b)
+            Rgb::new(r, g, b)
         }
         232..=255 => {
             let level = 8 + (index - 232) * 10;
-            (level, level, level)
+            Rgb::new(level, level, level)
         }
     }
 }
@@ -481,7 +504,7 @@ pub enum Event {
 
 #[cfg(test)]
 mod tests {
-    use super::Color;
+    use super::{Color, Rgb};
 
     #[test]
     fn default_has_no_rgb() {
@@ -490,27 +513,33 @@ mod tests {
 
     #[test]
     fn rgb_is_returned_unchanged() {
-        assert_eq!(Color::Rgb(1, 2, 3).to_rgb(), Some((1, 2, 3)));
-        assert_eq!(Color::Rgb(255, 0, 128).to_rgb(), Some((255, 0, 128)));
+        assert_eq!(
+            Color::Rgb(Rgb::new(1, 2, 3)).to_rgb(),
+            Some(Rgb::new(1, 2, 3))
+        );
+        assert_eq!(
+            Color::Rgb(Rgb::new(255, 0, 128)).to_rgb(),
+            Some(Rgb::new(255, 0, 128))
+        );
     }
 
     #[test]
     fn indexed_system_palette_boundaries() {
-        assert_eq!(Color::Indexed(0).to_rgb(), Some((0, 0, 0)));
-        assert_eq!(Color::Indexed(15).to_rgb(), Some((255, 255, 255)));
+        assert_eq!(Color::Indexed(0).to_rgb(), Some(Rgb::new(0, 0, 0)));
+        assert_eq!(Color::Indexed(15).to_rgb(), Some(Rgb::new(255, 255, 255)));
     }
 
     #[test]
     fn indexed_color_cube() {
-        assert_eq!(Color::Indexed(16).to_rgb(), Some((0, 0, 0)));
-        assert_eq!(Color::Indexed(21).to_rgb(), Some((0, 0, 255)));
-        assert_eq!(Color::Indexed(196).to_rgb(), Some((255, 0, 0)));
-        assert_eq!(Color::Indexed(231).to_rgb(), Some((255, 255, 255)));
+        assert_eq!(Color::Indexed(16).to_rgb(), Some(Rgb::new(0, 0, 0)));
+        assert_eq!(Color::Indexed(21).to_rgb(), Some(Rgb::new(0, 0, 255)));
+        assert_eq!(Color::Indexed(196).to_rgb(), Some(Rgb::new(255, 0, 0)));
+        assert_eq!(Color::Indexed(231).to_rgb(), Some(Rgb::new(255, 255, 255)));
     }
 
     #[test]
     fn indexed_grayscale_ramp() {
-        assert_eq!(Color::Indexed(232).to_rgb(), Some((8, 8, 8)));
-        assert_eq!(Color::Indexed(255).to_rgb(), Some((238, 238, 238)));
+        assert_eq!(Color::Indexed(232).to_rgb(), Some(Rgb::new(8, 8, 8)));
+        assert_eq!(Color::Indexed(255).to_rgb(), Some(Rgb::new(238, 238, 238)));
     }
 }

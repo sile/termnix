@@ -41,8 +41,8 @@
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
 pub use crate::terminal_types::{
-    Cell, ChildRequest, ClipboardSelection, Color, Event, MouseReporting, Position, ScrollbackLine,
-    Style, TerminalModes,
+    Cell, ChildRequest, ClipboardSelection, Color, Event, MouseReporting, Position, Rgb,
+    ScrollbackLine, Style, TerminalModes,
 };
 
 use std::collections::VecDeque;
@@ -116,7 +116,7 @@ pub struct TerminalState {
     /// Boxed because the array is 768 bytes: keeping it behind a pointer stops
     /// every `TerminalState` from carrying that much inline, and the entries
     /// are read through the palette accessor rather than in bulk.
-    pub(crate) palette: Box<[Option<(u8, u8, u8)>; 256]>,
+    pub(crate) palette: Box<[Option<Rgb>; 256]>,
     /// The OSC 10/11/12 slots (default foreground, background, cursor), `None`
     /// until the child sets one.
     pub(crate) default_colors: DefaultColors,
@@ -233,11 +233,11 @@ impl Iterator for Events {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct DefaultColors {
     /// Default foreground (`OSC 10`).
-    pub(crate) foreground: Option<(u8, u8, u8)>,
+    pub(crate) foreground: Option<Rgb>,
     /// Default background (`OSC 11`).
-    pub(crate) background: Option<(u8, u8, u8)>,
+    pub(crate) background: Option<Rgb>,
     /// Cursor colour (`OSC 12`).
-    pub(crate) cursor: Option<(u8, u8, u8)>,
+    pub(crate) cursor: Option<Rgb>,
 }
 
 /// The `Copy` fields of [`TerminalState`] that count as part of the visible
@@ -640,7 +640,7 @@ impl TerminalState {
     /// [`Color::Indexed`] should use; [`Color::to_rgb`] answers "what is the
     /// index in the default table", which is a different question once the
     /// child has recoloured anything.
-    pub fn palette_color(&self, index: u8) -> (u8, u8, u8) {
+    pub fn palette_color(&self, index: u8) -> Rgb {
         self.palette[index as usize].unwrap_or_else(|| crate::terminal_types::indexed_rgb(index))
     }
 
@@ -650,25 +650,25 @@ impl TerminalState {
     /// foreground is the *host's* until the child overrides it, and the crate
     /// does not know the host's colour, so inventing one would be worse than
     /// answering nothing.
-    pub fn default_foreground(&self) -> Option<(u8, u8, u8)> {
+    pub fn default_foreground_color(&self) -> Option<Rgb> {
         self.default_colors.foreground
     }
 
     /// Returns the default background colour the child set with OSC 11.
     ///
     /// `None` means the child never set one; see
-    /// [`default_foreground()`](TerminalState::default_foreground) for why
-    /// there is no fallback.
-    pub fn default_background(&self) -> Option<(u8, u8, u8)> {
+    /// [`default_foreground_color()`](TerminalState::default_foreground_color)
+    /// for why there is no fallback.
+    pub fn default_background_color(&self) -> Option<Rgb> {
         self.default_colors.background
     }
 
     /// Returns the cursor colour the child set with OSC 12.
     ///
     /// `None` means the child never set one; see
-    /// [`default_foreground()`](TerminalState::default_foreground) for why
-    /// there is no fallback.
-    pub fn default_cursor(&self) -> Option<(u8, u8, u8)> {
+    /// [`default_foreground_color()`](TerminalState::default_foreground_color)
+    /// for why there is no fallback.
+    pub fn default_cursor_color(&self) -> Option<Rgb> {
         self.default_colors.cursor
     }
 

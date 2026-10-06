@@ -1386,7 +1386,10 @@ fn sgr_truecolor_and_reset() {
     t.feed(b"\x1b[48;2;10;20;30mA\x1b[0mB");
     let a = t.cell(termnix::Position { row: 0, col: 0 }).expect("A");
     let b = t.cell(termnix::Position { row: 0, col: 1 }).expect("B");
-    assert_eq!(a.style.background, termnix::Color::Rgb(10, 20, 30));
+    assert_eq!(
+        a.style.background,
+        termnix::Color::Rgb(termnix::Rgb::new(10, 20, 30))
+    );
     assert_eq!(b.style, termnix::Style::default());
 }
 
@@ -1666,7 +1669,7 @@ fn osc_4_sets_a_palette_entry() {
         termnix::Color::Indexed(1).to_rgb().expect("built-in")
     );
     t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
-    assert_eq!(t.palette_color(1), (0xff, 0x00, 0x00));
+    assert_eq!(t.palette_color(1), termnix::Rgb::new(0xff, 0x00, 0x00));
 }
 
 #[test]
@@ -1688,8 +1691,8 @@ fn osc_4_sets_several_entries_in_one_sequence() {
     // One OSC 4 carries any number of `index;spec` pairs, and each is applied.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;rgb:11/22/33;2;rgb:44/55/66\x07");
-    assert_eq!(t.palette_color(1), (0x11, 0x22, 0x33));
-    assert_eq!(t.palette_color(2), (0x44, 0x55, 0x66));
+    assert_eq!(t.palette_color(1), termnix::Rgb::new(0x11, 0x22, 0x33));
+    assert_eq!(t.palette_color(2), termnix::Rgb::new(0x44, 0x55, 0x66));
 }
 
 #[test]
@@ -1703,7 +1706,7 @@ fn osc_4_answers_a_query_from_state() {
         t.pending_reply_bytes(),
         format!(
             "\x1b]4;1;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
-            builtin.0, builtin.1, builtin.2
+            builtin.r, builtin.g, builtin.b
         )
         .as_bytes()
     );
@@ -1724,13 +1727,13 @@ fn osc_4_mixed_set_and_query_answers_only_the_query() {
     // A sequence may set one entry and query another; each pair is independent.
     let mut t = term(1, 8);
     t.feed(b"\x1b]4;1;rgb:11/22/33;2;?\x07");
-    assert_eq!(t.palette_color(1), (0x11, 0x22, 0x33));
+    assert_eq!(t.palette_color(1), termnix::Rgb::new(0x11, 0x22, 0x33));
     let builtin = termnix::Color::Indexed(2).to_rgb().expect("built-in");
     assert_eq!(
         t.pending_reply_bytes(),
         format!(
             "\x1b]4;2;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
-            builtin.0, builtin.1, builtin.2
+            builtin.r, builtin.g, builtin.b
         )
         .as_bytes()
     );
@@ -1768,7 +1771,11 @@ fn osc_rgb_scales_by_digit_count() {
     ] {
         let mut t = term(1, 8);
         t.feed(format!("\x1b]4;1;{}\x07", String::from_utf8_lossy(spec)).as_bytes());
-        assert_eq!(t.palette_color(1), (0xff, 0x00, 0x00), "spec={spec:?}");
+        assert_eq!(
+            t.palette_color(1),
+            termnix::Rgb::new(0xff, 0x00, 0x00),
+            "spec={spec:?}"
+        );
     }
 }
 
@@ -1786,13 +1793,22 @@ fn osc_4_does_not_raise_screen_updated() {
 #[test]
 fn osc_10_11_12_set_the_default_colour_slots() {
     let mut t = term(1, 8);
-    assert_eq!(t.default_foreground(), None);
-    assert_eq!(t.default_background(), None);
-    assert_eq!(t.default_cursor(), None);
+    assert_eq!(t.default_foreground_color(), None);
+    assert_eq!(t.default_background_color(), None);
+    assert_eq!(t.default_cursor_color(), None);
     t.feed(b"\x1b]10;rgb:ff/00/00\x07\x1b]11;rgb:00/ff/00\x07\x1b]12;rgb:00/00/ff\x07");
-    assert_eq!(t.default_foreground(), Some((0xff, 0x00, 0x00)));
-    assert_eq!(t.default_background(), Some((0x00, 0xff, 0x00)));
-    assert_eq!(t.default_cursor(), Some((0x00, 0x00, 0xff)));
+    assert_eq!(
+        t.default_foreground_color(),
+        Some(termnix::Rgb::new(0xff, 0x00, 0x00))
+    );
+    assert_eq!(
+        t.default_background_color(),
+        Some(termnix::Rgb::new(0x00, 0xff, 0x00))
+    );
+    assert_eq!(
+        t.default_cursor_color(),
+        Some(termnix::Rgb::new(0x00, 0x00, 0xff))
+    );
 }
 
 #[test]
@@ -1814,7 +1830,7 @@ fn osc_10_with_no_value_stores_nothing() {
     // xterm defines no reset form here, so an empty value is a no-op.
     let mut t = term(1, 8);
     t.feed(b"\x1b]10\x07\x1b]10;\x07\x1b]10;notacolour\x07");
-    assert_eq!(t.default_foreground(), None);
+    assert_eq!(t.default_foreground_color(), None);
     assert!(t.pending_reply_bytes().is_empty());
 }
 
@@ -1824,9 +1840,9 @@ fn palette_is_terminal_state_across_the_alternate_screen() {
     let mut t = term(2, 8);
     t.feed(b"\x1b]4;1;rgb:ff/00/00\x07");
     t.feed(b"\x1b[?1049h");
-    assert_eq!(t.palette_color(1), (0xff, 0x00, 0x00));
+    assert_eq!(t.palette_color(1), termnix::Rgb::new(0xff, 0x00, 0x00));
     t.feed(b"\x1b[?1049l");
-    assert_eq!(t.palette_color(1), (0xff, 0x00, 0x00));
+    assert_eq!(t.palette_color(1), termnix::Rgb::new(0xff, 0x00, 0x00));
 }
 
 #[test]
@@ -1838,7 +1854,7 @@ fn ris_clears_the_palette_and_the_colour_slots() {
         t.palette_color(1),
         termnix::Color::Indexed(1).to_rgb().expect("built-in")
     );
-    assert_eq!(t.default_foreground(), None);
+    assert_eq!(t.default_foreground_color(), None);
 }
 
 #[test]
