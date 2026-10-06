@@ -60,6 +60,19 @@ different". Deciding what it means forces a decision about which state rows get
 their own event, and the title and the colours are the two rows where the
 current answer is wrong.
 
+Who actually needs the colour event is a host that resolved a colour once and
+kept the answer. A host that calls
+[`palette_color()`](crate::TerminalState::palette_color) inside its draw loop,
+every frame, never reads a stale value and can ignore `ColorsUpdated`; a host
+that resolves the palette into a cache - 256 entries, or a handful of theme
+colours - and draws from the cache has no way to learn the cache went stale
+without an event saying so. The split this RFC draws is exactly the line
+between those two hosts: state that is re-read is unaffected, state that is
+cached needs the change signal. `Color::to_rgb()`'s own documentation already
+warns that a caller rendering an [`Indexed`](Color::Indexed) cell should
+resolve it through `palette_color()` because the child can override an entry -
+and this RFC is what lets such a caller notice that the override happened.
+
 ## Guide-level explanation
 
 Before, one arm has two meanings and one change has no arm:
@@ -100,6 +113,15 @@ and the `default_*` accessors whenever the host does repaint for another
 reason. The event is a hint to look again, not the only way to see the value -
 exactly how `TitleUpdated` relates to [`title()`](crate::TerminalState::title).
 
+Concretely, the host that needs this is the one that does *not* call
+`palette_color()` on every frame. Resolving 256 entries per repaint is cheap
+enough to do lazily, but a host that keeps a palette cache, or that paints the
+host's own theme from `default_foreground_color()` and
+`default_background_color()`, holds a value that can go stale. `ColorsUpdated`
+is the signal that it did; for that host the arm above is not optional. A host
+that resolves colours fresh every frame, by contrast, can drop the event and
+never read a stale colour.
+
 ## Reference-level explanation
 
 Three changes.
@@ -120,11 +142,30 @@ fold removed, the detector is no longer needed at all, because
 `osc_dispatch` already calls `events.mark_title_updated()` next to it. Both
 `title_changed` and its per-feed reset in `feed()` go away.
 
-**2. A new `Event::ColorsUpdated` variant.** Doc shape mirrors `TitleUpdated`:
-reports that a colour the terminal resolves through
-[`palette_color()`](crate::TerminalState::palette_color) or one of the
-`default_*` accessors changed, and says nothing about the cells, so it is not a
-repaint request on its own - it is a signal to resolve those colours again.
+**2. A new `Event::ColorsUpdated` variant.** Doc shape mirrors `TitleUpdated`,
+and the doc carries the "who needs this" distinction the same way that one
+carries the `title()` pointer. The proposed rustdoc:
+
+```rust
+/// A colour the terminal resolves changed (OSC 4, OSC 10/11/12, or a reset
+/// returning them to their defaults).
+///
+/// The colours are state termnix holds, not cells: nothing was drawn, and
+/// the cells are unchanged, so this is not a repaint request on its own.
+/// Resolve them again through
+/// [`palette_color()`](crate::TerminalState::palette_color) and the
+/// `default_*` accessors.
+///
+/// A caller that resolves a colour every time it draws can ignore this: the
+/// value it reads on the next repaint is already current. It matters to a
+/// caller that resolved a colour once and kept the answer - a palette cache,
+/// or the host's own theme painted from the default colours - because that
+/// kept value is now stale and only this event says so.
+ColorsUpdated,
+```
+
+The last paragraph is the point: the event is cheap to ignore for a host that
+re-reads, and the only signal for a host that caches.
 
 **3. The colour paths mark it.** OSC 4 (`osc_palette`) and OSC 10/11/12
 (`osc_default_color`) both live in `src/terminal_emu.rs`. Each stores into
