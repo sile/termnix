@@ -186,11 +186,12 @@ impl Emulator<'_> {
     /// with producing. An odd trailing field (an index with no spec) is
     /// ignored rather than read as a value.
     fn osc_palette(&mut self, params: &[&[u8]]) {
-        let pairs = params.get(1..).unwrap_or_default();
-        for pair in pairs.chunks(2) {
-            let [key, spec] = pair else {
-                continue;
-            };
+        // Each turn of the loop peels one `index ; spec` pair off the front.
+        // The pattern needs two leading fields, so an odd trailing field ends
+        // the loop instead of being read as a value.
+        let mut rest = params.get(1..).unwrap_or_default();
+        while let [key, spec, tail @ ..] = rest {
+            rest = tail;
             let Some(index) = parse_osc_index(key) else {
                 continue;
             };
