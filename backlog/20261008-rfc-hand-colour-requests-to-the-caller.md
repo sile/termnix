@@ -251,16 +251,26 @@ a half-decoded colour to the caller.
 - `TerminalState::palette()`, `TerminalState::set_palette()`.
 - `TerminalState::palette_color`, `palette_colors`, `default_foreground_color`,
   `default_background_color`, `default_cursor_color`.
+- `Color::Default`, and with it `Color`'s `Default` derive (a style's slots
+  become `Option<Color>` where `None` is the default).
 - `Color::to_rgb`, and with it the resolution path entirely.
 - `Style::foreground_rgb`, `Style::background_rgb`.
 - The `palette` field on `TerminalState`, the `DefaultColors` struct, and the
   `XTERM_SYSTEM` / `xterm_colors()` / `palette_level` / `indexed_rgb` tables
   that only existed to seed a palette or resolve an index.
 
-`Style::foreground` and `Style::background` stay `Color` (with `Color::Default`
-kept) - the cell still has to say "the default", and the rendering layer is
-where that becomes a concrete `Rgb`. `Color` keeps `Default` for the same
-reason it always had it, now with no resolving method beside it.
+`Color` loses its `Default` variant. A style's foreground or background
+becomes `Option<Color>`, where `None` is "the terminal default" - the SGR 39
+/ 49 state. This is the same distinction `Color::Default` drew, expressed
+where it belongs: the cell still has to say "the default", but that is a
+statement about the slot, not about a colour value. `Color` becomes only a
+concrete colour request (`Indexed` or `Rgb`), and `Color`'s `Default` derive
+goes with it (a style's slots start as `None`, which `Style::default()`
+supplies).
+
+`Style::foreground` and `Style::background` thus change type from `Color` to
+`Option<Color>`; `terminal_emu`'s SGR 39 / 49 arms set them to `None` instead
+of `Color::Default`.
 
 `ColorsUpdated` may still be fired internally for a `SetColor`, so that a host
 caching a *view* of colour state can invalidate it; whether it remains depends
