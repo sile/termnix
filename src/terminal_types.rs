@@ -51,6 +51,7 @@ impl Position {
 /// The channels are the direct value of a colour, not an index into a palette.
 /// A palette index stays a `u8`, and a host resolves it through
 /// [`TerminalState::palette_color()`](crate::TerminalState::palette_color).
+/// The cell colour variant [`Color::Rgb`](crate::Color::Rgb) carries this type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb {
     /// The red channel.
@@ -81,8 +82,8 @@ pub enum Color {
     Default,
     /// Palette or 256-color index (`0..=255`).
     Indexed(u8),
-    /// Direct 24-bit color.
-    Rgb(u8, u8, u8),
+    /// Direct 24-bit color, already resolved to three channels.
+    Rgb(Rgb),
 }
 
 impl Color {
@@ -108,7 +109,7 @@ impl Color {
     pub fn to_rgb(&self) -> Option<Rgb> {
         match *self {
             Self::Default => None,
-            Self::Rgb(r, g, b) => Some(Rgb::new(r, g, b)),
+            Self::Rgb(rgb) => Some(rgb),
             Self::Indexed(index) => Some(indexed_rgb(index)),
         }
     }
@@ -512,9 +513,12 @@ mod tests {
 
     #[test]
     fn rgb_is_returned_unchanged() {
-        assert_eq!(Color::Rgb(1, 2, 3).to_rgb(), Some(Rgb::new(1, 2, 3)));
         assert_eq!(
-            Color::Rgb(255, 0, 128).to_rgb(),
+            Color::Rgb(Rgb::new(1, 2, 3)).to_rgb(),
+            Some(Rgb::new(1, 2, 3))
+        );
+        assert_eq!(
+            Color::Rgb(Rgb::new(255, 0, 128)).to_rgb(),
             Some(Rgb::new(255, 0, 128))
         );
     }

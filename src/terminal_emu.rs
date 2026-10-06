@@ -790,7 +790,7 @@ fn parse_extended_color(values: &[u16]) -> Option<(Color, usize)> {
             let r = u8::try_from(*values.get(1)?).ok()?;
             let g = u8::try_from(*values.get(2)?).ok()?;
             let b = u8::try_from(*values.get(3)?).ok()?;
-            Some((Color::Rgb(r, g, b), 4))
+            Some((Color::Rgb(Rgb::new(r, g, b)), 4))
         }
         _ => None,
     }

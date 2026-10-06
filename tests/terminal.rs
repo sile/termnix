@@ -1386,7 +1386,10 @@ fn sgr_truecolor_and_reset() {
     t.feed(b"\x1b[48;2;10;20;30mA\x1b[0mB");
     let a = t.cell(termnix::Position { row: 0, col: 0 }).expect("A");
     let b = t.cell(termnix::Position { row: 0, col: 1 }).expect("B");
-    assert_eq!(a.style.background, termnix::Color::Rgb(10, 20, 30));
+    assert_eq!(
+        a.style.background,
+        termnix::Color::Rgb(termnix::Rgb::new(10, 20, 30))
+    );
     assert_eq!(b.style, termnix::Style::default());
 }
 
