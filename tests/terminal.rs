@@ -1845,13 +1845,17 @@ fn ris_clears_the_palette_and_the_colour_slots() {
 fn csi_replies_fit_the_session_bound() {
     // The session used to compare every reply's length against a fixed
     // 14-byte CSI bound. The comparison moved, but the invariant it protected
-    // has not: a CSI reply is at most `ESC [ 65535 ; 65535 R`. The largest
-    // grid the type can hold is the widest CPR, so that is the case to pin.
-    let mut t = term(u16::MAX, u16::MAX);
-    t.feed(format!("\x1b[{};{}H", u16::MAX, u16::MAX).as_bytes());
+    // has not: a CSI reply is at most `ESC [ 65535 ; 65535 R`. The width is a
+    // property of the format, not of a live grid, so the bound is checked
+    // without allocating a 65535x65535 screen (whose cell buffer is ~86 GB).
+    let widest = format!("\x1b[{};{}R", u16::MAX, u16::MAX);
+    assert_eq!(widest, "\x1b[65535;65535R");
+    assert_eq!(widest.len(), 14);
+    // The reply the emulator actually produces follows that format, pinned on
+    // a grid small enough to allocate.
+    let mut t = term(24, 80);
     t.feed(b"\x1b[6n");
-    assert_eq!(t.pending_reply_bytes(), b"\x1b[65535;65535R");
-    assert_eq!(t.pending_reply_bytes().len(), 14);
+    assert_eq!(t.pending_reply_bytes(), b"\x1b[1;1R");
     t.advance_reply_bytes(t.pending_reply_bytes().len());
     // DA1 is the other fixed-shape reply, and it is shorter.
     t.feed(b"\x1b[c");
