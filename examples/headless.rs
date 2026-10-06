@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn default_style_is_available_for_cells() {
-        let _ = termnix::Color::Default;
+        let _ = termnix::Style::default();
         let _ = termnix::Position { row: 0, col: 0 };
     }
 }

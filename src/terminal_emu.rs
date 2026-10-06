@@ -3,11 +3,11 @@
 use unicode_width::UnicodeWidthChar;
 use vte::Perform;
 
-use crate::terminal::{DefaultColors, TerminalState};
+use crate::terminal::TerminalState;
 use crate::terminal_buffer::Screen;
 use crate::terminal_types::{
-    ChildRequest, ClipboardSelection, Color, MouseReporting, Position, Rgb, SavedCursor, Style,
-    TerminalModes, indexed_rgb,
+    ChildRequest, ClipboardSelection, Color, ColorSlot, MouseReporting, Position, Rgb, SavedCursor,
+    Style, TerminalModes,
 };
 
 pub(crate) struct Emulator<'a> {
@@ -38,8 +38,8 @@ impl Perform for Emulator<'_> {
     fn unhook(&mut self) {}
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        // OSC 0 / 2 store the window title; OSC 4 and 10-12 set colour state
-        // and answer a `?` query from it; OSC 52 records a clipboard request.
+        // OSC 0 / 2 store the window title; OSC 4 and 10-12 become colour
+        // requests the caller carries out; OSC 52 records a clipboard request.
         // Every other identifier is unmodelled and offered to the caller as
         // `ChildRequest::OtherOsc`, so its payload neither becomes printable
         // text nor is silently lost.
@@ -63,14 +63,16 @@ impl Perform for Emulator<'_> {
                 self.term.events.mark_title_updated();
             }
             b"52" => self.osc_clipboard(params),
-            // OSC 4 redefines a palette entry; OSC 10/11/12 set the default
-            // foreground, background, and cursor colours. All four are state
-            // a later paint reads, and all four answer a `?` query from that
-            // state, so they are handled here rather than passed through.
+            // OSC 4 redefines a palette entry; OSC 10/11/12 name the default
+            // foreground, background, and cursor colours. termnix owns no
+            // palette, so all four are handed to the caller: a set becomes a
+            // `SetColor` request, a `?` a `GetColor`. The crate still frames
+            // and decodes them (the field split, the `rgb:` payload), which is
+            // the fiddly part a caller should not repeat.
             b"4" => self.osc_palette(params),
-            b"10" => self.osc_default_color(params, id, |colors| &mut colors.foreground),
-            b"11" => self.osc_default_color(params, id, |colors| &mut colors.background),
-            b"12" => self.osc_default_color(params, id, |colors| &mut colors.cursor),
+            b"10" => self.osc_default_color(params, ColorSlot::DefaultForeground),
+            b"11" => self.osc_default_color(params, ColorSlot::DefaultBackground),
+            b"12" => self.osc_default_color(params, ColorSlot::DefaultCursor),
             _ => self.other_osc(id, rest),
         }
     }
@@ -174,16 +176,13 @@ impl Emulator<'_> {
     /// Handles an OSC 4 palette message (`ESC ] 4 ; <index> ; <spec> ST`).
     ///
     /// One sequence carries any number of `index ; spec` pairs, and the pairs
-    /// are independent: a set (`<spec>` being `rgb:...`) stores an override,
-    /// while a query (`<spec>` being `?`) answers from the state the terminal
-    /// holds - the child's override if it set one, otherwise the built-in
-    /// default for that index. A malformed pair stores nothing and answers
-    /// nothing, the same silent ignore an undecodable OSC 52 payload gets.
-    ///
-    /// A query is answered on the reply buffer, not the event channel: the
-    /// answer is the terminal's own state, which the caller has nothing to do
-    /// with producing. An odd trailing field (an index with no spec) is
-    /// ignored rather than read as a value.
+    /// are independent: a set (`<spec>` being `rgb:...`) becomes a
+    /// [`ChildRequest::SetColor`], while a query (`<spec>` being `?`) becomes a
+    /// [`ChildRequest::GetColor`]. termnix owns no palette, so neither is
+    /// carried out here; the decoded slot and value are handed to the caller,
+    /// which is the only party that can paint or answer. A malformed pair is
+    /// ignored rather than handed over half-decoded. An odd trailing field (an
+    /// index with no spec) is ignored rather than read as a value.
     fn osc_palette(&mut self, params: &[&[u8]]) {
         // Each turn of the loop peels one `index ; spec` pair off the front.
         // The pattern needs two leading fields, so an odd trailing field ends
@@ -194,52 +193,43 @@ impl Emulator<'_> {
             let Some(index) = parse_osc_index(key) else {
                 continue;
             };
+            let slot = ColorSlot::Indexed(index);
             if *spec == b"?" {
-                let rgb = self.term.palette[index as usize].unwrap_or_else(|| indexed_rgb(index));
-                let reply = format!(
-                    "\x1b]4;{index};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
-                    rgb.r, rgb.g, rgb.b
-                );
-                self.term.replies.push_bounded(reply.as_bytes());
+                self.term
+                    .events
+                    .push_request(ChildRequest::GetColor { slot });
                 continue;
             }
             if let Some(rgb) = parse_osc_rgb(spec) {
-                self.term.palette[index as usize] = Some(rgb);
-                self.term.events.mark_colors_updated();
+                self.term
+                    .events
+                    .push_request(ChildRequest::SetColor { slot, rgb });
             }
         }
     }
 
     /// Handles an OSC 10, 11, or 12 message (`ESC ] <n> ; <spec> ST`).
     ///
-    /// Unlike OSC 4 these carry no index: the identifier selects one of three
-    /// slots, which the caller hands in as a projection so the three arms above
-    /// share this body. A set stores the colour; a query answers only when the
-    /// slot holds one, because a default colour the child never set is the
-    /// *host's*, and the crate has no true answer to give. An absent or
-    /// malformed value stores nothing (xterm defines no reset form here).
-    fn osc_default_color<F>(&mut self, params: &[&[u8]], id: &[u8], slot: F)
-    where
-        F: FnOnce(&mut DefaultColors) -> &mut Option<Rgb>,
-    {
+    /// Unlike OSC 4 these carry no index: the identifier selects one of the
+    /// three default slots, which the caller hands in so the three arms above
+    /// share this body. A set becomes a [`ChildRequest::SetColor`] and a query
+    /// a [`ChildRequest::GetColor`]; termnix keeps no default-colour state, so
+    /// it neither stores the one nor answers the other. An absent or malformed
+    /// value is ignored (xterm defines no reset form here).
+    fn osc_default_color(&mut self, params: &[&[u8]], slot: ColorSlot) {
         let Some(spec) = params.get(1) else {
             return;
         };
         if *spec == b"?" {
-            let Some(rgb) = *slot(&mut self.term.default_colors) else {
-                return;
-            };
-            let id = String::from_utf8_lossy(id);
-            let reply = format!(
-                "\x1b]{id};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
-                rgb.r, rgb.g, rgb.b
-            );
-            self.term.replies.push_bounded(reply.as_bytes());
+            self.term
+                .events
+                .push_request(ChildRequest::GetColor { slot });
             return;
         }
         if let Some(rgb) = parse_osc_rgb(spec) {
-            *slot(&mut self.term.default_colors) = Some(rgb);
-            self.term.events.mark_colors_updated();
+            self.term
+                .events
+                .push_request(ChildRequest::SetColor { slot, rgb });
         }
     }
 }
@@ -372,11 +362,10 @@ impl TerminalState {
         self.wrap_pending = false;
         self.pen = Style::default();
         self.modes = TerminalModes::default();
-        // The palette and the colour slots are state the child set, so RIS
-        // returns them to the theme the terminal had before it touched them.
-        // The built-in table is a constant and is not "cleared".
-        self.palette.fill(None);
-        self.default_colors = DefaultColors::default();
+        // termnix keeps no colour state, so RIS resets none: a palette the host
+        // holds is the host's to clear. The colour coordinates RIS would once
+        // have returned to defaults are the child's own, and the crate no
+        // longer stores them.
         self.title.clear();
         // RIS restores the terminal, and a pending request belongs to the
         // session being reset; leaving it would let a caller act on an ask
@@ -756,21 +745,21 @@ impl TerminalState {
                 23 => self.pen.italic = false,
                 24 => self.pen.underline = false,
                 27 => self.pen.reverse = false,
-                n @ 30..=37 => self.pen.foreground = Color::Indexed((n - 30) as u8),
-                39 => self.pen.foreground = Color::Default,
-                n @ 40..=47 => self.pen.background = Color::Indexed((n - 40) as u8),
-                49 => self.pen.background = Color::Default,
-                n @ 90..=97 => self.pen.foreground = Color::Indexed((n - 90 + 8) as u8),
-                n @ 100..=107 => self.pen.background = Color::Indexed((n - 100 + 8) as u8),
+                n @ 30..=37 => self.pen.foreground = Some(Color::Indexed((n - 30) as u8)),
+                39 => self.pen.foreground = None,
+                n @ 40..=47 => self.pen.background = Some(Color::Indexed((n - 40) as u8)),
+                49 => self.pen.background = None,
+                n @ 90..=97 => self.pen.foreground = Some(Color::Indexed((n - 90 + 8) as u8)),
+                n @ 100..=107 => self.pen.background = Some(Color::Indexed((n - 100 + 8) as u8)),
                 38 => {
                     if let Some((color, consumed)) = parse_extended_color(&values[i + 1..]) {
-                        self.pen.foreground = color;
+                        self.pen.foreground = Some(color);
                         i += consumed;
                     }
                 }
                 48 => {
                     if let Some((color, consumed)) = parse_extended_color(&values[i + 1..]) {
-                        self.pen.background = color;
+                        self.pen.background = Some(color);
                         i += consumed;
                     }
                 }

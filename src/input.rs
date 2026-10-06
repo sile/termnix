@@ -18,7 +18,7 @@
 
 use core::fmt::NumBuffer;
 
-use crate::terminal_types::{MouseReporting, Position, TerminalModes};
+use crate::terminal_types::{ColorSlot, MouseReporting, Position, Rgb, TerminalModes};
 
 /// Modifier keys held with a logical key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -198,10 +198,14 @@ pub struct MouseEvent {
     pub modifiers: Modifiers,
 }
 
-/// Application input to enqueue on a [`Session`](crate::Session).
+/// Bytes the host sends toward the child, to enqueue on a
+/// [`Session`](crate::Session).
 ///
-/// `Key`, `Paste`, and `Mouse` are turned into PTY bytes with the session's
-/// current modes at enqueue time. `Raw` is appended unchanged.
+/// User input is the common case - `Key`, `Paste`, and `Mouse` are turned into
+/// PTY bytes with the session's current modes at enqueue time - and `Raw` is
+/// appended unchanged. A protocol message the host owes the child is also
+/// input in this direction: [`Input::Color`] carries a colour report the host
+/// sends in answer to a [`ChildRequest::GetColor`](crate::ChildRequest::GetColor).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Input<'a> {
     /// Already-formed PTY bytes.
@@ -221,6 +225,22 @@ pub enum Input<'a> {
     Paste(&'a [u8]),
     /// A mouse event; report bytes follow the current modes.
     Mouse(MouseEvent),
+    /// A colour report, as OSC 4 / 10 / 11 / 12.
+    ///
+    /// Encoded as the OSC that names the slot: OSC 4 for
+    /// [`ColorSlot::Indexed`](crate::ColorSlot::Indexed), OSC 10 / 11 / 12 for
+    /// the default slots. OSC has no request/response framing, so this is
+    /// simply the colour message the host sends back; a child waiting on a
+    /// `... ?` query is the usual motive, but nothing in the wire form says so.
+    /// It is the answer to a
+    /// [`ChildRequest::GetColor`](crate::ChildRequest::GetColor); a caller that
+    /// owns the palette builds it from its own table.
+    Color {
+        /// Which colour is being reported.
+        slot: ColorSlot,
+        /// The value to report.
+        rgb: Rgb,
+    },
 }
 
 impl<'a> Input<'a> {
@@ -232,7 +252,7 @@ impl<'a> Input<'a> {
     pub fn byte_len(self, modes: TerminalModes) -> usize {
         match self {
             Self::Raw(bytes) => bytes.len(),
-            Self::Key(_) | Self::Paste(_) | Self::Mouse(_) => {
+            Self::Key(_) | Self::Paste(_) | Self::Mouse(_) | Self::Color { .. } => {
                 let mut buf = Vec::new();
                 self.write_to(modes, &mut buf);
                 buf.len()
@@ -247,8 +267,39 @@ impl<'a> Input<'a> {
             Self::Key(event) => write_key(out, event, modes),
             Self::Paste(bytes) => write_paste(out, bytes, modes),
             Self::Mouse(event) => write_mouse(out, event, modes),
+            Self::Color { slot, rgb } => write_color(out, slot, rgb),
         }
     }
+}
+
+/// Appends the OSC colour report for `slot` carrying `rgb`.
+///
+/// The encoding is fixed by the slot: OSC 4 for a palette entry, OSC 10 / 11 /
+/// 12 for a default. The payload is the `rgb:RR/GG/BB` form the child uses in
+/// its own colour sequences, so the report is a colour message the child can
+/// read the same way it writes one.
+fn write_color(out: &mut Vec<u8>, slot: ColorSlot, rgb: Rgb) {
+    let mut scratch = NumBuffer::<u32>::new();
+    out.extend_from_slice(b"\x1b]");
+    push_u32(out, &mut scratch, u32::from(slot.osc_id()));
+    if let ColorSlot::Indexed(index) = slot {
+        out.push(b';');
+        push_u32(out, &mut scratch, u32::from(index));
+    }
+    out.extend_from_slice(b";rgb:");
+    write_hex_byte(out, rgb.r);
+    out.push(b'/');
+    write_hex_byte(out, rgb.g);
+    out.push(b'/');
+    write_hex_byte(out, rgb.b);
+    out.extend_from_slice(b"\x1b\\");
+}
+
+/// Appends one byte as two lowercase hex digits.
+fn write_hex_byte(out: &mut Vec<u8>, byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push(HEX[(byte >> 4) as usize]);
+    out.push(HEX[(byte & 0x0f) as usize]);
 }
 
 fn write_key(out: &mut Vec<u8>, event: KeyEvent, modes: TerminalModes) {
