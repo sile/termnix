@@ -1,6 +1,6 @@
 # RFC: Report colour changes, and report a title change only as a title change
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -258,3 +258,16 @@ raises changes.
 - `ColorsUpdated` is the first state-row event added after the pair that
   shipped with the event channel; if a third row appears, this fix makes the
   rule explicit for it to follow.
+
+## Outcome
+
+Implemented in [#23](https://github.com/sile/termnix/pull/23) (merged as `d77ee3c`).
+
+A title change is now announced by `Event::TitleUpdated` alone: `feed()` no
+longer folds it into `ScreenUpdated`, and `ScreenUpdated` is narrowed to mean
+that the cells changed. A palette or default-colour change, which previously
+raised nothing, is announced by the new `Event::ColorsUpdated`, raised when
+OSC 4 sets a palette entry and when OSC 10/11/12 set a default colour; the
+corresponding queries still raise nothing because they change no state.
+
+The scope is unchanged from what is described above.
