@@ -106,8 +106,8 @@ impl Color {
     /// instead - which falls back to this table for an entry the child never
     /// touched. The split is deliberate: `Color` is a `Copy` value type and
     /// cannot read the terminal's mutable state.
-    pub fn to_rgb(&self) -> Option<Rgb> {
-        match *self {
+    pub fn to_rgb(self) -> Option<Rgb> {
+        match self {
             Self::Default => None,
             Self::Rgb(rgb) => Some(rgb),
             Self::Indexed(index) => Some(indexed_rgb(index)),
