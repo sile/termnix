@@ -782,6 +782,9 @@ impl Session {
     ///         termnix::Event::TitleUpdated => {
     ///             // read `session.terminal_state().title()`
     ///         }
+    ///         termnix::Event::ColorsUpdated => {
+    ///             // re-resolve palette colours
+    ///         }
     ///         termnix::Event::RequestReceived(request) => {
     ///             // carry out `request`
     ///         }

@@ -427,6 +427,7 @@ impl TerminalState {
     ///         // History has no built-in bound; cap it (here 1000 lines).
     ///         termnix::Event::ScrollbackLineAppended => term.trim_scrollback(1000, 100_000),
     ///         termnix::Event::TitleUpdated => { /* read term.title() */ }
+    ///         termnix::Event::ColorsUpdated => { /* re-resolve palette colours */ }
     ///         termnix::Event::RequestReceived(request) => { /* act on `request` */ }
     ///     }
     /// }
