@@ -22,20 +22,22 @@ child that prints a clickable link - a compiler diagnostic pointing at a file,
 a `git log` pointing at a commit, a tool printing an issue URL - emits one
 `OSC 8` before the run and one after.
 
-The crate drops those sequences today. That is worse than dropping a message:
-a hyperlink is not a thing the child asks the caller to *do*, it is a thing the
-child attaches to the grid. The crate paints the run as ordinary cells with no
-record of the link, so a host that wants to make the text clickable has no way
-to know which cells are linked, and a host that wants to show the URL on hover
-has no way to get it. The only recourse is to re-tokenize the PTY stream beside
-the crate and to track the pen's hyperlink state in parallel - the exact
-bookkeeping the crate already does for the ordinary pen.
+The crate offers those sequences on the passthrough channel, so the bytes are
+not lost - but an offered sequence is not an attached attribute. A hyperlink is
+not a thing the child asks the caller to *do*, it is a thing the child attaches
+to the grid, and a caller that only sees the offered bytes has to reproduce the
+pen's hyperlink state and track which cells were painted while it was set. The
+crate paints the run as ordinary cells with no record of the link, so a host
+that wants to make the text clickable has no way to know which cells are linked
+from the grid alone, and a host that wants to show the URL on hover has to
+reconstruct the association from the passthrough stream. That reconstruction is
+the exact bookkeeping the crate already does for the ordinary pen.
 
 This is the case the OSC handling policy places on the *state* side and not the
 event side: a hyperlink attribute changes what the grid means when a later
-paint reads it, so a crate that handed it to a caller as bytes would paint
-cells with a missing attribute and no way for the host to put it back. The
-policy names OSC 8 as `state, once modelled`; this RFC is that modelling.
+paint reads it, so offering it to a caller as bytes leaves the cells painted
+with a missing attribute and no way for the host to put it back. The policy
+names OSC 8 as `state, once modelled`; this RFC is that modelling.
 
 ## Guide-level explanation
 
@@ -125,6 +127,15 @@ common case and costs nothing. The id is assigned by the crate and is opaque to
 the caller; it is not the child's `id` parameter, which is a string the child
 controls and which two runs may share.
 
+The `NonZeroU32` places a hard ceiling on how many distinct links a terminal
+can hold at once - a little over four billion - because an interned link takes
+the next id and nothing is ever reused. No session reaches it in practice (a
+distinct URI per character for the lifetime of a terminal would not), but it is
+the one true bound on an otherwise unbounded table, so it is recorded here
+rather than left implied by the integer width. Reaching it means the table is
+the limiting resource; a follow-on that prunes or reuses ids is the answer, and
+it is out of scope for this proposal.
+
 `TerminalState` holds `links: Vec<Hyperlink>` (or an intern table keyed by
 `(uri, id)`), and the id is an index into it. Two `OSC 8` sequences with the
 same `(uri, id)` resolve to the same id, so equal runs compare equal as cells;
@@ -142,9 +153,18 @@ to use distinct `id`s. This RFC does not second-guess the child's grouping.
 ### The getter
 
 ```rust
-/// Returns the hyperlink a `HyperlinkId` refers to, if the terminal has seen
-/// it.
+/// Returns the hyperlink a `HyperlinkId` refers to, or `None` if the
+/// terminal has no such link.
 ///
+/// `None` covers two cases a caller treats the same way: a cell with no
+/// link (`id` is `None`), and a cell whose link is no longer in the table.
+/// A cell painted before a reset keeps its id, and a reset drops the table,
+/// so a lookup across a reset can miss.
+///
+/// The table is terminal-wide, not per screen: it survives the
+/// alternate-screen switch, so cells on both screens may resolve through it.
+/// Two runs that interning maps to one id - the same `(uri, id)` on either
+/// screen - share that id.
 pub fn hyperlink(&self, id: Option<HyperlinkId>) -> Option<&Hyperlink> {
     id.and_then(|id| self.links.get(id.index()))
 }
@@ -153,6 +173,13 @@ pub fn hyperlink(&self, id: Option<HyperlinkId>) -> Option<&Hyperlink> {
 `&self`, like every other non-event accessor: a link is a property of the state,
 not a consumed-once message. The indirection is the point - the cell stays
 cheap, and the caller that cares pays for the lookup.
+
+Taking `Option<HyperlinkId>` rather than a bare id keeps the common call
+erased: a caller writes `term.hyperlink(cell.style.hyperlink)` and gets back
+`None` for a cell with no link without a separate `is_some` check or a
+`and_then` at every call site. The alternative - a method that panics on a
+missing id, or a second method for the `None` case - buys nothing the single
+`Option` argument does not, and makes the common path longer.
 
 ### Parsing the sequence
 
@@ -175,7 +202,12 @@ list of `key=value` pairs and `URI` is the target. In `osc_dispatch`:
 The `id` parameter is the only parameter the crate reads; it is the one xterm
 and the common clients agree on. Any other `key=value` pair is ignored (not
 dropped as a sequence - the sequence is handled, the unknown parameter is not
-modelled).
+modelled). The raw `params` string is not kept: it would duplicate the `id`
+field the crate already decodes, and the keys that appear beside `id` are
+vendor-specific, so a caller that needs them is a caller that knows the number.
+Keeping the raw string is a later, additive change (see Future possibilities),
+because `Hyperlink` is a public type the crate does not construct from a
+literal, so adding a field breaks no caller.
 
 The crate does **not** validate the URI, decode it, or split it into scheme and
 path. It stores the bytes as the `String` the tokenizer produced, keeping the
@@ -209,7 +241,7 @@ before the reset keeps the id it was given, but after a reset the table is
 gone, so `hyperlink()` returns `None` for it - the id is a reference into state
 that no longer exists. That is the honest answer: the link table is part of the
 terminal the reset restored, and the cells that survive are on the restored
-screen. This is worth a doc note on `hyperlink()`.
+screen. `hyperlink()`'s rustdoc says so.
 
 ### What is still not modelled
 
@@ -294,26 +326,30 @@ not a choice here. Neither changes the shape of this RFC.
 
 ## Unresolved questions
 
-- **Is the link table bounded, and if so how?** The table grows with distinct
-  links and is never pruned. A cap (reject new links past N), a prune (drop
-  links no live cell refers to), or leaving it unbounded are all open. This is
-  the same "unbounded table the child drives" question the event queue has, and
-  it is the strongest candidate for its own follow-on.
-- **Should `hyperlink()` take `Option<HyperlinkId>` or two methods?** Taking
-  `Option` lets a caller pass `cell.style.hyperlink` straight through, which is
-  the common call. A separate `hyperlink(id)` that panics on a missing id, or a
-  `Option`-of-`Option`, are alternatives; the `Option` argument is chosen for
-  ergonomics and to make the "no link" case explicit.
-- **Is `Hyperlink` the right public name, and should it expose `params`?** Its
-  `uri` and `id` are the fields the crate models. Whether to keep the raw
-  `params` string for a caller that wants the rest is open; today the crate
-  reads `id` and drops the rest, which loses information a host might want.
-- **Does a link need to survive the alternate-screen switch?** The table is on
-  `TerminalState`, not on a `Screen`, so it survives the switch, and a cell on
-  one screen can refer to a id shared with the other. Whether that is right (a
-  hyperlink set on the primary screen and one on the alternate are unrelated
-  runs) is open; the simplest answer is that the table is terminal-wide, as it
-  is here.
+- **Is the link table bounded, and if so how?** Settled: unbounded for now,
+  with the `NonZeroU32` id space as the only hard ceiling. A cap would silently
+  strand links; a prune needs a grid walk to find unreferenced entries and the
+  cells are `Copy`, so there is no drop hook to trigger it. "Unbounded, and
+  prune later if it proves a problem" is the answer, and the prune is a change
+  to `TerminalState` alone (see Drawbacks, Future possibilities).
+- **Should `hyperlink()` take `Option<HyperlinkId>` or two methods?** Settled:
+  `Option<HyperlinkId>`. It accepts `cell.style.hyperlink` unchanged, which is
+  the common call, and folds the no-link and stale-id cases into the one
+  answer a caller acts on either way. A panicking variant or an
+  `Option`-of-`Option` would make the common path longer for no gain.
+- **Is `Hyperlink` the right public name, and should it expose `params`?**
+  Settled: the name stands and `params` is not exposed. The crate reads `id`
+  and drops the rest; keeping the raw string would duplicate `id` and store
+  vendor keys no caller of a modelled hyperlink asked for. It is additive
+  later if a caller needs it, so declining it now costs nothing (see Future
+  possibilities).
+- **Does a link need to survive the alternate-screen switch?** Settled: it
+  does. The table is terminal-wide, so the switch leaves it intact and the
+  same `(uri, id)` on either screen interns to one id. A hyperlink set before
+  the switch and one set after are therefore the same link only when the child
+  used the same `(uri, id)` - which is exactly what the child's `id` parameter
+  asked for, so the sharing is the child's grouping, not a collision. Making
+  the table per screen would change that, and no caller has needed it.
 
 ## Future possibilities
 
@@ -323,6 +359,10 @@ not a choice here. Neither changes the shape of this RFC.
 - A prune or bound for the link table, if the unbounded version proves a
   problem, is a change to `TerminalState` only and does not touch `Style` or
   `Cell`.
+- A raw `params` string on `Hyperlink`, if a caller ever needs the keys beside
+  `id`, is additive: `Hyperlink` is built by the crate and never assembled from
+  a literal by a caller, so a new field is not a breaking change the way a new
+  `Style` field is.
 - The color sequences (OSC 4 and 10-12) are the sibling case, and the crate
   has since settled the opposite way: rather than keep the state and resolve
   cells against it, termnix holds no color state and hands each set and query
