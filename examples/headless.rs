@@ -99,6 +99,21 @@ fn child_script() -> &'static str {
 }
 
 fn workflow(session: &mut termnix::Session) -> Result<(), AppError> {
+    // No `next_event` drain here, and that is deliberate rather than an
+    // oversight. A session accumulates state changes and child requests in an
+    // internal queue, and a caller is expected to drain it with
+    // `Session::next_event`. This example does not, because its child emits
+    // none: the script asks for primary device attributes (a DA reply is
+    // written straight to the PTY, not queued as an event), prints two text
+    // markers, reads one line, and exits. It never sends an OSC 52, an OSC 7, a
+    // colour request, a bell, or any other unmodelled sequence, so the queue
+    // stays empty for the whole run.
+    //
+    // A program that drives a real child must drain it, or the queue grows with
+    // the child's output. One that only ever renders cells can drain only
+    // `ScreenUpdated`; one that also serves the child (clipboard, colours, bell,
+    // passthrough) has to handle `RequestReceived`. See the `Session` API docs
+    // for the loop shape.
     let deadline = Instant::now() + OVERALL_DEADLINE;
     let mut next_process_poll = Instant::now();
 

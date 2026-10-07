@@ -86,18 +86,23 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
     // Register this fd with these interests in your own poll loop.
     let (_fd, _interests) = (session.fd(), session.interests());
 
-    // Do the work a single readiness edge allows, without blocking.
-    session.pump_io(termnix::PumpBudget::default())?;
-
-    // Keep going while work remains, so a large backlog still drains.
+    // Keep pumping while work remains, so a large backlog still drains.
     //
-    // This is the right shape for one session, and an edge-triggered loop
-    // must do it before blocking: `interests()` reports what a poll should
-    // wait for, not what `pump_io` can do right now, so waiting while
+    // Do this before blocking on a poll: `interests()` reports what a poll
+    // should wait for, not what `pump_io` can do right now, so waiting while
     // `needs_pump()` is still true can hang. With several sessions, do not
     // drain each one in turn — see below.
-    while session.needs_pump() {
+    loop {
         session.pump_io(termnix::PumpBudget::default())?;
+        if !session.needs_pump() {
+            break;
+        }
+    }
+
+    // Drain the events the pump produced. The queue is unbounded and child-
+    // driven, so drain it until it is empty every round.
+    while let Some(event) = session.next_event() {
+        // repaint, trim, carry out a request: whatever `event` calls for
     }
 
     // Send a keystroke to the child, holding off if writes are piling up.
@@ -137,6 +142,12 @@ Both shapes are the caller's to write: the crate holds no loop and no session
 collection of its own. `Session::needs_pump()` reports whether a session has
 work that needs no new readiness edge, which is the signal to pump it again
 this round rather than wait for a poll.
+
+The round above shows the pump half only; a real loop drains each session's
+events too, because the queue is unbounded and the child drives it. Do that in
+the same visit as the pump - drain `next_event()` until `None` right after
+`pump_io` for each session - so every session is read every round and none is
+skipped.
 
 ## Examples
 
