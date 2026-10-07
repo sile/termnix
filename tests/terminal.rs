@@ -857,6 +857,11 @@ fn term(rows: u16, cols: u16) -> termnix::TerminalState {
     termnix::TerminalState::new(size(rows, cols))
 }
 
+/// A position, for reading a cell out of a state.
+fn at(row: u16, col: u16) -> termnix::Position {
+    termnix::Position { row, col }
+}
+
 /// Drains every pending event, oldest-priority-first.
 ///
 /// The event channel is the crate's whole notification surface now, so a test
@@ -1893,6 +1898,148 @@ fn ris_does_not_emit_a_color_request() {
     t.feed(b"\x1bc");
     assert!(next_request(&mut t).is_none());
     assert!(t.pending_reply_bytes().is_empty());
+}
+
+#[test]
+fn osc_8_sets_the_pen_and_painted_cells_carry_the_link() {
+    // The link is a pen attribute: cells painted after the OSC 8 remember it,
+    // the way cells painted after an SGR remember its colors.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07ab");
+    let link = t.hyperlink(t.cell(at(0, 0)).expect("cell").style.hyperlink);
+    assert_eq!(
+        link,
+        Some(&termnix::Hyperlink {
+            uri: "https://example.com".to_string(),
+            id: None,
+        })
+    );
+    // Every cell in the run points at the same link.
+    assert_eq!(
+        t.cell(at(0, 0)).expect("cell").style.hyperlink,
+        t.cell(at(0, 1)).expect("cell").style.hyperlink
+    );
+}
+
+#[test]
+fn osc_8_empty_uri_clears_the_pen() {
+    // A second OSC 8 with an empty URI closes the run; a cell painted after it
+    // has no link.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a\x1b]8;;\x07b");
+    assert!(t.cell(at(0, 0)).expect("cell").style.hyperlink.is_some());
+    assert_eq!(t.cell(at(0, 1)).expect("cell").style.hyperlink, None);
+    assert_eq!(t.style().hyperlink, None, "the pen is cleared too");
+}
+
+#[test]
+fn osc_8_same_uri_and_id_interns_to_one_id() {
+    // Two runs the child marks as one logical link share an id, so equal runs
+    // compare equal as cells.
+    let mut t = term(2, 8);
+    t.feed(b"\x1b]8;id=42;https://example.com\x07a\r\n");
+    t.feed(b"\x1b]8;;\x07\x1b]8;id=42;https://example.com\x07b");
+    assert_eq!(
+        t.cell(at(0, 0)).expect("cell").style.hyperlink,
+        t.cell(at(1, 0)).expect("cell").style.hyperlink,
+        "the same (uri, id) interns to one id"
+    );
+    let link = t
+        .hyperlink(t.cell(at(0, 0)).expect("cell").style.hyperlink)
+        .unwrap();
+    assert_eq!(link.uri, "https://example.com");
+    assert_eq!(link.id.as_deref(), Some("42"));
+}
+
+#[test]
+fn osc_8_same_uri_different_id_is_a_different_link() {
+    let mut t = term(2, 8);
+    t.feed(b"\x1b]8;id=1;https://example.com\x07a\r\n");
+    t.feed(b"\x1b]8;;\x07\x1b]8;id=2;https://example.com\x07b");
+    assert_ne!(
+        t.cell(at(0, 0)).expect("cell").style.hyperlink,
+        t.cell(at(1, 0)).expect("cell").style.hyperlink
+    );
+}
+
+#[test]
+fn osc_8_ignores_unknown_parameters() {
+    // The sequence is understood (a hyperlink); only an unmodelled parameter is
+    // ignored, so the URI is still stored and `id` is still read.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;foo=bar:id=7;https://example.com\x07a");
+    let link = t
+        .hyperlink(t.cell(at(0, 0)).expect("cell").style.hyperlink)
+        .unwrap();
+    assert_eq!(link.uri, "https://example.com");
+    assert_eq!(link.id.as_deref(), Some("7"));
+}
+
+#[test]
+fn osc_8_missing_uri_clears_the_pen() {
+    // `ESC ] 8 ; params ST` with no third field is an empty URI, which closes
+    // the run like `ESC ] 8 ; ; ST`.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a\x1b]8;id=1\x07b");
+    assert_eq!(t.cell(at(0, 1)).expect("cell").style.hyperlink, None);
+}
+
+#[test]
+fn osc_8_hyperlink_is_none_for_a_cell_with_no_link() {
+    // The common call passes a cell's (absent) id straight in and gets `None`
+    // back without an `is_some` check first.
+    let mut t = term(1, 8);
+    t.feed(b"a");
+    assert_eq!(
+        t.hyperlink(t.cell(at(0, 0)).expect("cell").style.hyperlink),
+        None
+    );
+    assert_eq!(t.hyperlink(None), None);
+}
+
+#[test]
+fn osc_8_is_a_screen_change() {
+    // The pen is part of visible state, so setting a link moves it even when
+    // no cell is painted; the change is reported like an SGR color.
+    let mut t = term(1, 8);
+    assert!(!screen_updated(&mut t));
+    t.feed(b"\x1b]8;;https://example.com\x07");
+    assert!(screen_updated(&mut t), "the pen moved");
+}
+
+#[test]
+fn osc_8_does_not_emit_a_request() {
+    // A hyperlink is state the crate keeps, not a request the caller carries
+    // out, so nothing goes on the request channel.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a");
+    assert!(next_request(&mut t).is_none());
+    assert!(t.pending_reply_bytes().is_empty());
+}
+
+#[test]
+fn osc_8_table_is_terminal_wide_across_the_alternate_screen() {
+    // The table is not per screen, so a link set before the switch is still
+    // resolvable after it, and the same (uri, id) interns to one id.
+    let mut t = term(2, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a");
+    let before = t.cell(at(0, 0)).expect("cell").style.hyperlink;
+    t.feed(b"\x1b[?1049h");
+    t.feed(b"\x1b]8;;https://example.com\x07b");
+    assert_eq!(t.cell(at(0, 0)).expect("cell").style.hyperlink, before);
+}
+
+#[test]
+fn ris_drops_the_hyperlink_table() {
+    // RIS restores the terminal, which includes the link table; a cell that
+    // survives keeps its id, but the id resolves to `None`.
+    let mut t = term(2, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a");
+    let id = t.cell(at(0, 0)).expect("cell").style.hyperlink;
+    assert!(t.hyperlink(id).is_some());
+    t.feed(b"\x1bc");
+    assert!(t.hyperlink(id).is_none(), "the table is gone after RIS");
+    assert_eq!(t.style().hyperlink, None, "RIS clears the pen");
 }
 
 #[test]

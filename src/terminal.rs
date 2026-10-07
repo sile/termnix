@@ -19,6 +19,7 @@
 //! - OSC 0/2: window title (stored); OSC 4: palette entry set/queried; OSC
 //!   10/11/12: default foreground/background/cursor set/queried; OSC 52:
 //!   clipboard request (reported through [`TerminalState::dequeue_event()`]);
+//!   OSC 8: hyperlink, carried as a cell attribute (see [`TerminalState::hyperlink()`]);
 //!   other OSC offered to the caller as [`ChildRequest::OtherOsc`] without
 //!   becoming text
 //! - Alternate screen: DECSET/DECRST 1049 (also 47 / 1047)
@@ -41,8 +42,8 @@
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
 pub use crate::terminal_types::{
-    Cell, ChildRequest, ClipboardSelection, Color, ColorSlot, Event, MouseReporting, Position, Rgb,
-    ScrollbackLine, Style, TerminalModes,
+    Cell, ChildRequest, ClipboardSelection, Color, ColorSlot, Event, Hyperlink, HyperlinkId,
+    MouseReporting, Position, Rgb, ScrollbackLine, Style, TerminalModes,
 };
 
 use std::collections::VecDeque;
@@ -76,8 +77,10 @@ use crate::terminal_types::SavedCursor;
 ///   all handed to the caller as
 ///   [`ChildRequest::SetColor`] / [`ChildRequest::GetColor`] through
 ///   [`dequeue_event()`](TerminalState::dequeue_event) (termnix keeps no palette);
-///   **OSC 52**: clipboard request, reported the same way; any other
-///   identifier is offered uninterpreted as [`ChildRequest::OtherOsc`]
+///   **OSC 52**: clipboard request, reported the same way; **OSC 8**: a
+///   hyperlink, set on the pen and copied into each painted cell
+///   ([`Style::hyperlink`], resolved with [`TerminalState::hyperlink()`]); any
+///   other identifier is offered uninterpreted as [`ChildRequest::OtherOsc`]
 /// - **Queries**: DSR, CPR, and primary DA, answered through
 ///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes). DA2
 ///   (`CSI > c`) and DA3 (`CSI = c`) are recognized but deliberately not
@@ -103,6 +106,13 @@ pub struct TerminalState {
     pub(crate) replies: ReplyBuf,
     pub(crate) scrollback: VecDeque<ScrollbackLine>,
     pub(crate) scrollback_cells: usize,
+    /// The hyperlinks the terminal has seen, indexed by [`HyperlinkId::index`].
+    ///
+    /// Terminal-wide rather than per screen, so the alternate-screen switch
+    /// leaves it intact; two runs with the same `(uri, id)` on either screen
+    /// intern to one entry. Never pruned while the terminal lives, so its only
+    /// bound is the `HyperlinkId` id space.
+    pub(crate) links: Vec<Hyperlink>,
     /// Events that have happened since the caller last drained them.
     ///
     /// The merged state-change flags and the queue of unmerged requests, held
@@ -291,6 +301,7 @@ impl std::fmt::Debug for TerminalState {
             .field("replies", &self.replies)
             .field("scrollback", &self.scrollback)
             .field("scrollback_cells", &self.scrollback_cells)
+            .field("links", &self.links)
             .finish_non_exhaustive()
     }
 }
@@ -317,6 +328,7 @@ impl TerminalState {
             replies: ReplyBuf::new(),
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
+            links: Vec::new(),
             events: Events::default(),
         }
     }
@@ -469,6 +481,46 @@ impl TerminalState {
     /// Returns the cell at `at` on the active screen, if in range.
     pub fn cell(&self, at: Position) -> Option<Cell> {
         self.active().get(at)
+    }
+
+    /// Returns the hyperlink an id refers to, or `None` if the terminal has no
+    /// such link.
+    ///
+    /// `None` covers two cases a caller treats the same way: a cell with no
+    /// link ([`Style::hyperlink`](crate::Style::hyperlink) is `None`), and a
+    /// cell whose link is no longer in the table. A cell painted before a
+    /// reset keeps its id, and a reset drops the table, so a lookup across a
+    /// reset can miss.
+    ///
+    /// The table is terminal-wide, not per screen: it survives the
+    /// alternate-screen switch, so cells on both screens may resolve through
+    /// it. Two runs that interning maps to one id - the same `(uri, id)` on
+    /// either screen - share that id.
+    pub fn hyperlink(&self, id: Option<HyperlinkId>) -> Option<&Hyperlink> {
+        self.links.get(id?.index())
+    }
+
+    /// Interns `(uri, id)`, returning the id for it.
+    ///
+    /// Two calls with the same `(uri, id)` return the same id, so equal runs
+    /// compare equal as cells; two with the same URI but a different `id` do
+    /// not. Returns `None` only when the id space is exhausted, which a caller
+    /// treats as "do not link this run".
+    pub(crate) fn intern_hyperlink(
+        &mut self,
+        uri: String,
+        id: Option<String>,
+    ) -> Option<HyperlinkId> {
+        if let Some(index) = self
+            .links
+            .iter()
+            .position(|link| link.uri == uri && link.id == id)
+        {
+            return HyperlinkId::for_index(index);
+        }
+        let link_id = HyperlinkId::for_index(self.links.len())?;
+        self.links.push(Hyperlink { uri, id });
+        Some(link_id)
     }
 
     /// Returns each visible row as a left-to-right cell slice, top to bottom.

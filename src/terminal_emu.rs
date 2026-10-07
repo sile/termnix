@@ -39,13 +39,14 @@ impl Perform for Emulator<'_> {
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         // OSC 0 / 2 store the window title; OSC 4 and 10-12 become color
-        // requests the caller carries out; OSC 52 records a clipboard request.
-        // Every other identifier is unmodelled and offered to the caller as
-        // `ChildRequest::OtherOsc`, so its payload neither becomes printable
-        // text nor is silently lost.
+        // requests the caller carries out; OSC 52 records a clipboard request;
+        // OSC 8 sets the pen's hyperlink. Every other identifier is unmodelled
+        // and offered to the caller as `ChildRequest::OtherOsc`, so its payload
+        // neither becomes printable text nor is silently lost.
         // xterm OSC catalogue: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-        // (OSC identifiers evolve; termnix reads title text, color state, and
-        // OSC 52 selection data, and passes the rest through.)
+        // (OSC identifiers evolve; termnix reads title text, color state,
+        // OSC 52 selection data, and OSC 8 hyperlinks, and passes the rest
+        // through.)
         let Some((&id, rest)) = params.split_first() else {
             return;
         };
@@ -73,6 +74,10 @@ impl Perform for Emulator<'_> {
             b"10" => self.osc_default_color(params, ColorSlot::DefaultForeground),
             b"11" => self.osc_default_color(params, ColorSlot::DefaultBackground),
             b"12" => self.osc_default_color(params, ColorSlot::DefaultCursor),
+            // OSC 8 sets the pen's hyperlink, not a request: it is an
+            // attribute a later paint copies into a cell, the same shape as
+            // SGR. See `osc_hyperlink`.
+            b"8" => self.osc_hyperlink(params),
             _ => self.other_osc(id, rest),
         }
     }
@@ -232,6 +237,46 @@ impl Emulator<'_> {
                 .push_request(ChildRequest::SetColor { slot, rgb });
         }
     }
+
+    /// Handles an OSC 8 hyperlink message (`ESC ] 8 ; <params> ; <URI> ST`).
+    ///
+    /// The sequence sets the pen's hyperlink, the way SGR sets the pen's
+    /// colors: every cell painted after it remembers the link. An empty (or
+    /// absent) URI clears the pen's hyperlink instead, which is how a child
+    /// closes a run. A non-empty URI is interned so the id a cell carries stays
+    /// small and equal runs compare equal.
+    ///
+    /// `<params>` is a `:`-separated list of `key=value` pairs. Only `id` is
+    /// read; the crate keeps `id` so two runs the child marks as one logical
+    /// link intern to one id. Any other pair is ignored - the sequence is
+    /// understood, only the vendor-specific parameter is not modelled - so the
+    /// URI is still stored. `vte` splits OSC parameters on `;`, so a URI
+    /// containing `;` cannot reach here intact; that is a property of the
+    /// protocol's framing rather than a check made below.
+    fn osc_hyperlink(&mut self, params: &[&[u8]]) {
+        let uri = params.get(2).copied().unwrap_or(b"");
+        if uri.is_empty() {
+            self.term.pen.hyperlink = None;
+            return;
+        }
+        let id = params.get(1).and_then(|spec| parse_hyperlink_id(spec));
+        let uri = String::from_utf8_lossy(uri).into_owned();
+        // A full id space is the one case that cannot intern; leaving the pen
+        // unlinked is the honest fallback rather than reusing an id.
+        self.term.pen.hyperlink = self.term.intern_hyperlink(uri, id);
+    }
+}
+
+/// Reads the `id` parameter out of an OSC 8 parameter list.
+///
+/// The list is `:`-separated `key=value` pairs; this returns the value of the
+/// `id` key, or `None` if there is no `id`. Parameters other than `id` are not
+/// read. An `id` with no `=` (a bare flag) is not an `id` pair and is skipped.
+fn parse_hyperlink_id(spec: &[u8]) -> Option<String> {
+    spec.split(|&byte| byte == b':').find_map(|pair| {
+        pair.strip_prefix(b"id=")
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+    })
 }
 
 impl TerminalState {
@@ -366,6 +411,10 @@ impl TerminalState {
         // holds is the host's to clear. The color coordinates RIS would once
         // have returned to defaults are the child's own, and the crate no
         // longer stores them.
+        // The link table is part of the terminal the reset restored, so RIS
+        // drops it; a cell that survives the reset keeps its id, but the id
+        // then resolves to `None` through `hyperlink()`.
+        self.links.clear();
         self.title.clear();
         // RIS restores the terminal, and a pending request belongs to the
         // session being reset; leaving it would let a caller act on an ask

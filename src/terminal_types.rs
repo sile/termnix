@@ -1,5 +1,7 @@
 //! Public value types for the terminal emulator.
 
+use std::num::NonZeroU32;
+
 /// One physical row saved into scrollback, oldest-first.
 ///
 /// Cells are owned in left-to-right order and are never reflowed by later
@@ -127,6 +129,50 @@ impl ColorSlot {
     }
 }
 
+/// Identifies a hyperlink the terminal has seen (OSC 8).
+///
+/// Opaque. Pass it to
+/// [`TerminalState::hyperlink()`](crate::TerminalState::hyperlink) to get the
+/// link's URI. A cell refers to its link by this id rather than storing the URI,
+/// which keeps [`Style`] and [`Cell`] small and `Copy` and stores each URI once
+/// per run instead of once per cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HyperlinkId(NonZeroU32);
+
+impl HyperlinkId {
+    /// Returns the zero-based index into the terminal's link table.
+    pub(crate) fn index(self) -> usize {
+        self.0.get() as usize - 1
+    }
+
+    /// Returns the id for the next interned link, given the current table
+    /// length.
+    ///
+    /// Ids start at 1 so `HyperlinkId` can wrap a `NonZeroU32` and
+    /// `Option<HyperlinkId>` stays the width of a `u32`. Returns `None` when
+    /// the id space is exhausted, which the caller treats by not interning.
+    pub(crate) fn for_index(index: usize) -> Option<Self> {
+        let raw = u32::try_from(index).ok()?.checked_add(1)?;
+        NonZeroU32::new(raw).map(Self)
+    }
+}
+
+/// A hyperlink the terminal has seen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hyperlink {
+    /// The URI the child attached to the run (`OSC 8 ; params ; URI`).
+    ///
+    /// Stored as framed, with the same lossy UTF-8 decoding the title and
+    /// clipboard paths use; the crate does not validate or interpret it.
+    pub uri: String,
+    /// The link's `id` parameter, if the child gave one.
+    ///
+    /// The child uses `id` to say that two separate runs are one logical
+    /// link, so a terminal that underlines links can avoid drawing a break
+    /// between them. `None` when the sequence carried no `id`.
+    pub id: Option<String>,
+}
+
 /// Graphic rendition applied to a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Style {
@@ -142,6 +188,11 @@ pub struct Style {
     pub underline: bool,
     /// Reverse video (SGR 7).
     pub reverse: bool,
+    /// The link this cell belongs to, if any (OSC 8).
+    ///
+    /// `None` for a cell outside any run. Resolve it with
+    /// [`TerminalState::hyperlink()`](crate::TerminalState::hyperlink).
+    pub hyperlink: Option<HyperlinkId>,
 }
 
 /// One cell on the active screen.
@@ -174,6 +225,7 @@ impl Cell {
             italic: false,
             underline: false,
             reverse: false,
+            hyperlink: None,
         },
     };
 
@@ -191,6 +243,7 @@ impl Cell {
             italic: false,
             underline: false,
             reverse: false,
+            hyperlink: None,
         },
     };
 

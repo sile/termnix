@@ -1222,6 +1222,7 @@ mod tests {
             italic: true,
             underline: true,
             reverse: true,
+            hyperlink: None,
         });
         assert!(style.bold);
         assert!(style.italic);
