@@ -47,6 +47,7 @@ pub use crate::terminal_types::{
 };
 
 use std::collections::VecDeque;
+use std::num::NonZeroU32;
 
 use crate::size::Size;
 use crate::terminal_buffer::Screen;
@@ -107,14 +108,13 @@ pub struct TerminalState {
     pub(crate) replies: ReplyBuf,
     pub(crate) scrollback: VecDeque<ScrollbackLine>,
     pub(crate) scrollback_cells: usize,
-    /// The raw counter handed to the last [`HyperlinkId`].
+    /// The [`HyperlinkId`] the next OSC 8 open will take.
     ///
-    /// Each OSC 8 open takes the next value (wrapping through zero, which
-    /// [`HyperlinkId::from_counter`] maps back to 1). RIS does not reset it:
-    /// ids are handed out and not reused, so an id a caller kept across a reset
-    /// still names the URL the caller stored for it. The terminal keeps no
-    /// table of issued ids, so this counter is its whole hyperlink state.
-    pub(crate) hyperlink_counter: u32,
+    /// RIS does not reset it: ids are handed out and not reused, so an id a
+    /// caller kept across a reset still names the URL the caller stored for it.
+    /// The terminal keeps no table of issued ids, so this counter is its whole
+    /// hyperlink state.
+    pub(crate) hyperlink_counter: NonZeroU32,
     /// Events that have happened since the caller last drained them.
     ///
     /// The merged state-change flags and the queue of unmerged payload events,
@@ -336,7 +336,7 @@ impl TerminalState {
             replies: ReplyBuf::new(),
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
-            hyperlink_counter: 0,
+            hyperlink_counter: NonZeroU32::MIN,
             events: Events::default(),
         }
     }
@@ -500,11 +500,13 @@ impl TerminalState {
     /// crate keeps no table, so the caller is the one that records the id this
     /// returns beside the URL it was paired with.
     pub(crate) fn next_hyperlink_id(&mut self) -> HyperlinkId {
-        // Wrapping is deliberate, not an overflow to avoid: `wrapping_add(1)`
-        // through `u32::MAX` lands on 0, which `HyperlinkId::from_counter`
-        // maps back to 1. The counter starts at 0, so the first id is 1.
-        self.hyperlink_counter = self.hyperlink_counter.wrapping_add(1);
-        HyperlinkId::from_counter(self.hyperlink_counter)
+        // The counter holds the id to hand out, so take it and step. Stepping
+        // past `MAX` lands on 1 (`NonZeroU32::MIN`) rather than 0, so the
+        // counter stays non-zero and a wrapped id is `1` after `MAX`, not a
+        // value just handed out.
+        let id = self.hyperlink_counter;
+        self.hyperlink_counter = id.checked_add(1).unwrap_or(NonZeroU32::MIN);
+        HyperlinkId::new(id)
     }
 
     /// Returns each visible row as a left-to-right cell slice, top to bottom.

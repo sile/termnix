@@ -140,21 +140,19 @@ impl ColorSlot {
 /// The crate hands out one id per opening and keeps no table, so an id is only
 /// meaningful to a caller that recorded its [`Event::HyperlinkAdded`]. The id
 /// space is a little over four billion values; a terminal that opens more links
-/// than that **wraps**, and a wrapped id can in principle name a URL a live
-/// cell already refers to. No session reaches that, and the crate does not keep
-/// a set of handed-out ids to rule it out.
+/// than that **wraps** back to the start, and a wrapped id can in principle
+/// name a URL a live cell already refers to. No session reaches that, and the
+/// crate does not keep a set of handed-out ids to rule it out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HyperlinkId(NonZeroU32);
 
 impl HyperlinkId {
-    /// Returns the id for the next opening, given the raw counter value.
-    ///
-    /// Ids start at 1 so `HyperlinkId` can wrap a `NonZeroU32` and
-    /// `Option<HyperlinkId>` stays the width of a `u32`; the counter is kept as
-    /// a `u32` that wraps back to zero (which `NonZeroU32::new` rejects, so
-    /// the next value is 1 again).
-    pub(crate) fn from_counter(counter: u32) -> Self {
-        Self(NonZeroU32::new(counter).unwrap_or(NonZeroU32::MIN))
+    // A `NonZeroU32` so `Option<HyperlinkId>` stays the width of a `u32`, and
+    // the id is the counter value itself: the counter is a `NonZeroU32` that
+    // starts at 1 and steps to `NonZeroU32::MIN` after `NonZeroU32::MAX`, so
+    // no value is ever handed out twice in a row and 0 is never an id.
+    pub(crate) const fn new(counter: NonZeroU32) -> Self {
+        Self(counter)
     }
 }
 
