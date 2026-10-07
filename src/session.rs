@@ -754,7 +754,7 @@ impl Session {
     /// Returns the next event from the session's terminal and consumes it, or
     /// `None` if none is pending.
     ///
-    /// Delegates to [`TerminalState::next_event()`]; see that method for what
+    /// Delegates to [`TerminalState::dequeue_event()`]; see that method for what
     /// the events are and why draining takes `&mut self`. The session owns its
     /// terminal, so this is the way a caller reaches the events through a
     /// [`Session`] without borrowing the state out from under it. Drain it by
@@ -762,7 +762,7 @@ impl Session {
     ///
     /// ```no_run
     /// # fn example(session: &mut termnix::Session) {
-    /// while let Some(event) = session.next_event() {
+    /// while let Some(event) = session.dequeue_event() {
     ///     match event {
     ///         termnix::Event::ScreenUpdated => {
     ///             // repaint from `session.terminal_state()`
@@ -781,8 +781,8 @@ impl Session {
     /// }
     /// # }
     /// ```
-    pub fn next_event(&mut self) -> Option<crate::Event> {
-        self.term.next_event()
+    pub fn dequeue_event(&mut self) -> Option<crate::Event> {
+        self.term.dequeue_event()
     }
 
     /// Returns the session's cumulative activity counters.

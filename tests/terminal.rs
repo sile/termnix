@@ -4,7 +4,7 @@
 //!
 //! - Deterministic example tests for the public emulator API (text,
 //!   controls, wide characters, resizing, private modes, query replies, and the
-//!   events reported through [`termnix::TerminalState::next_event`]).
+//!   events reported through [`termnix::TerminalState::dequeue_event`]).
 //! - Property tests for chunk-independent feeding and parser continuation
 //!   equivalence. The oracle is a metamorphic relation: the same logical byte
 //!   stream fed through different feed partitions must leave observationally
@@ -860,12 +860,12 @@ fn term(rows: u16, cols: u16) -> termnix::TerminalState {
 /// Drains every pending event, oldest-priority-first.
 ///
 /// The event channel is the crate's whole notification surface now, so a test
-/// reads it the way a host does: loop `next_event()` until it returns `None`.
+/// reads it the way a host does: loop `dequeue_event()` until it returns `None`.
 /// Draining is destructive, which is what lets a test assert "nothing more is
 /// pending" by draining again and finding the list empty.
 fn drain(t: &mut termnix::TerminalState) -> Vec<termnix::Event> {
     let mut events = Vec::new();
-    while let Some(event) = t.next_event() {
+    while let Some(event) = t.dequeue_event() {
         events.push(event);
     }
     events
@@ -890,7 +890,7 @@ fn screen_updated(t: &mut termnix::TerminalState) -> bool {
 /// Because requests are yielded last, in order, stopping at the first request
 /// cannot strand a state-change event (they all precede the queue).
 fn next_request(t: &mut termnix::TerminalState) -> Option<termnix::ChildRequest> {
-    while let Some(event) = t.next_event() {
+    while let Some(event) = t.dequeue_event() {
         if let termnix::Event::RequestReceived(request) = event {
             return Some(request);
         }

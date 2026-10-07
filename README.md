@@ -101,7 +101,7 @@ fn pump_once(session: &mut termnix::Session) -> std::io::Result<()> {
 
     // Drain the events the pump produced. The queue is unbounded and child-
     // driven, so drain it until it is empty every round.
-    while let Some(event) = session.next_event() {
+    while let Some(event) = session.dequeue_event() {
         // repaint, trim, carry out a request: whatever `event` calls for
     }
 
@@ -145,7 +145,7 @@ this round rather than wait for a poll.
 
 The round above shows the pump half only; a real loop drains each session's
 events too, because the queue is unbounded and the child drives it. Do that in
-the same visit as the pump - drain `next_event()` until `None` right after
+the same visit as the pump - drain `dequeue_event()` until `None` right after
 `pump_io` for each session - so every session is read every round and none is
 skipped.
 

@@ -220,7 +220,7 @@ sequence goes, and a `?` a number interprets goes to its own request variant
 (settled separately for the first such number, OSC 52).
 
 - **The request channel.** Deliver consumed-once requests on a single stream
-  the caller drains (`next_event()`), rather than through a separate accessor
+  the caller drains (`dequeue_event()`), rather than through a separate accessor
   per request kind. The umbrella fixes only that the rule above assigns each
   sequence a home, and that a family of consumed-once requests is what the
   rule's "event" row produces; the shape of the `ChildRequest` type and how it
