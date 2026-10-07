@@ -222,5 +222,3 @@ Call sites, doctests, and intra-doc links moved with the name across `src/`, `ex
 The settled RFCs under `backlog/done/` were left as they were: they record how an earlier decision was reached, and this change supersedes one of those choices without rewriting what was decided at the time. The one open proposal that still named the accessor had its mention updated so it points at the current name.
 
 The scope is unchanged from what is described above.
-
-The scope is unchanged from what is described above.
