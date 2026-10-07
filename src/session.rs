@@ -777,6 +777,9 @@ impl Session {
     ///         termnix::Event::RequestReceived(request) => {
     ///             // carry out `request`
     ///         }
+    ///         termnix::Event::HyperlinkAdded { id, url } => {
+    ///             // record `id` -> `url` for rendering linked cells
+    ///         }
     ///     }
     /// }
     /// # }

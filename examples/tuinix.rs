@@ -829,6 +829,11 @@ fn note_selection_events(app: &mut App) {
                 // tracks the host terminal's theme would answer from its own
                 // table with an OSC 4/10/11/12 written to the child.
                 termnix::Event::RequestReceived(_request) => {}
+                // A hyperlink opening carries an id-to-URL mapping the caller
+                // may keep; this example shows no clickable text, so it drops
+                // the mapping. A host that renders links would record it here
+                // and resolve `Style::hyperlink` through it while drawing.
+                termnix::Event::HyperlinkAdded { .. } => {}
             }
         }
     }

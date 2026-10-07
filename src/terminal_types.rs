@@ -129,48 +129,33 @@ impl ColorSlot {
     }
 }
 
-/// Identifies a hyperlink the terminal has seen (OSC 8).
+/// Identifies one opening of a hyperlink (OSC 8).
 ///
-/// Opaque. Pass it to
-/// [`TerminalState::hyperlink()`](crate::TerminalState::hyperlink) to get the
-/// link's URI. A cell refers to its link by this id rather than storing the URI,
-/// which keeps [`Style`] and [`Cell`] small and `Copy` and stores each URI once
-/// per run instead of once per cell.
+/// Opaque. Look it up in the map the caller builds from
+/// [`Event::HyperlinkAdded`] events to get the URL. A cell refers to its link
+/// by this id rather than storing the URL, which keeps [`Style`] and [`Cell`]
+/// small and `Copy` and stores each URL once per opening instead of once per
+/// cell.
+///
+/// The crate hands out one id per opening and keeps no table, so an id is only
+/// meaningful to a caller that recorded its [`Event::HyperlinkAdded`]. The id
+/// space is a little over four billion values; a terminal that opens more links
+/// than that **wraps**, and a wrapped id can in principle name a URL a live
+/// cell already refers to. No session reaches that, and the crate does not keep
+/// a set of handed-out ids to rule it out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HyperlinkId(NonZeroU32);
 
 impl HyperlinkId {
-    /// Returns the zero-based index into the terminal's link table.
-    pub(crate) fn index(self) -> usize {
-        self.0.get() as usize - 1
-    }
-
-    /// Returns the id for the next interned link, given the current table
-    /// length.
+    /// Returns the id for the next opening, given the raw counter value.
     ///
     /// Ids start at 1 so `HyperlinkId` can wrap a `NonZeroU32` and
-    /// `Option<HyperlinkId>` stays the width of a `u32`. Returns `None` when
-    /// the id space is exhausted, which the caller treats by not interning.
-    pub(crate) fn for_index(index: usize) -> Option<Self> {
-        let raw = u32::try_from(index).ok()?.checked_add(1)?;
-        NonZeroU32::new(raw).map(Self)
+    /// `Option<HyperlinkId>` stays the width of a `u32`; the counter is kept as
+    /// a `u32` that wraps back to zero (which `NonZeroU32::new` rejects, so
+    /// the next value is 1 again).
+    pub(crate) fn from_counter(counter: u32) -> Self {
+        Self(NonZeroU32::new(counter).unwrap_or(NonZeroU32::MIN))
     }
-}
-
-/// A hyperlink the terminal has seen.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Hyperlink {
-    /// The URI the child attached to the run (`OSC 8 ; params ; URI`).
-    ///
-    /// Stored as framed, with the same lossy UTF-8 decoding the title and
-    /// clipboard paths use; the crate does not validate or interpret it.
-    pub uri: String,
-    /// The link's `id` parameter, if the child gave one.
-    ///
-    /// The child uses `id` to say that two separate runs are one logical
-    /// link, so a terminal that underlines links can avoid drawing a break
-    /// between them. `None` when the sequence carried no `id`.
-    pub id: Option<String>,
 }
 
 /// Graphic rendition applied to a cell.
@@ -190,8 +175,9 @@ pub struct Style {
     pub reverse: bool,
     /// The link this cell belongs to, if any (OSC 8).
     ///
-    /// `None` for a cell outside any run. Resolve it with
-    /// [`TerminalState::hyperlink()`](crate::TerminalState::hyperlink).
+    /// `None` for a cell outside any run. An id resolves through the map the
+    /// caller built from [`Event::HyperlinkAdded`] events; the crate keeps no
+    /// table of its own.
     pub hyperlink: Option<HyperlinkId>,
 }
 
@@ -546,4 +532,24 @@ pub enum Event {
     /// drains until `None` sees every ask in the order the child sent them,
     /// including several that arrived in one `feed`.
     RequestReceived(ChildRequest),
+    /// The child opened a hyperlink (OSC 8); `id` maps to `url` in the
+    /// caller's own table.
+    ///
+    /// Emitted on every open of a non-empty URL, before the pen is set. The
+    /// crate does not intern, so two opens of the same URL are two events with
+    /// two different ids; a caller that wants them to share a map entry groups
+    /// them itself. Like a request, this is not merged: a feed that opens two
+    /// links yields two events, in the order the child wrote them.
+    ///
+    /// The URL is stored as framed, with the same lossy UTF-8 decoding the
+    /// title and clipboard paths use; the crate does not validate or interpret
+    /// it. A caller that discards this event (or the entry it makes for the id)
+    /// loses the ability to resolve that id on any cell; the crate keeps no
+    /// fallback copy.
+    HyperlinkAdded {
+        /// The id the crate assigned to this opening.
+        id: HyperlinkId,
+        /// The URL the child attached to the run (`OSC 8 ; params ; URL`).
+        url: String,
+    },
 }
