@@ -1,6 +1,6 @@
 # RFC: Rename `next_event()` to `dequeue_event()`
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -210,3 +210,17 @@ questions) and is out of scope here.
   buffer is the nearest thing, currently split into
   `pending_reply_bytes()`/`advance_reply_bytes()`), `dequeue`/`enqueue` gives
   the vocabulary to name it consistently.
+
+## Outcome
+
+Implemented in [#25](https://github.com/sile/termnix/pull/25) (merged as `3a64bbf`).
+
+The rename landed as proposed. `TerminalState::next_event()` and `Session::next_event()` are `dequeue_event()`, with the receiver, the returned `Option<Event>`, the values yielded, and their order all unchanged. The second is still a thin delegate to the first.
+
+Call sites, doctests, and intra-doc links moved with the name across `src/`, `examples/`, `tests/`, and `README.md`.
+
+The settled RFCs under `backlog/done/` were left as they were: they record how an earlier decision was reached, and this change supersedes one of those choices without rewriting what was decided at the time. The one open proposal that still named the accessor had its mention updated so it points at the current name.
+
+The scope is unchanged from what is described above.
+
+The scope is unchanged from what is described above.
