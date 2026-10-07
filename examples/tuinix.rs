@@ -803,7 +803,7 @@ fn note_selection_events(app: &mut App) {
             continue;
         };
         let selected = slot == app.selected;
-        while let Some(event) = session.next_event() {
+        while let Some(event) = session.dequeue_event() {
             match event {
                 // The visible grid this session projects changed; a reset also
                 // blanks it, so everything already drawn is stale too.

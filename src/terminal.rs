@@ -18,7 +18,7 @@
 //!   recognized but not answered
 //! - OSC 0/2: window title (stored); OSC 4: palette entry set/queried; OSC
 //!   10/11/12: default foreground/background/cursor set/queried; OSC 52:
-//!   clipboard request (reported through [`TerminalState::next_event()`]);
+//!   clipboard request (reported through [`TerminalState::dequeue_event()`]);
 //!   other OSC offered to the caller as [`ChildRequest::OtherOsc`] without
 //!   becoming text
 //! - Alternate screen: DECSET/DECRST 1049 (also 47 / 1047)
@@ -75,7 +75,7 @@ use crate::terminal_types::SavedCursor;
 ///   **OSC 10/11/12**: the default foreground, background, and cursor colors,
 ///   all handed to the caller as
 ///   [`ChildRequest::SetColor`] / [`ChildRequest::GetColor`] through
-///   [`next_event()`](TerminalState::next_event) (termnix keeps no palette);
+///   [`dequeue_event()`](TerminalState::dequeue_event) (termnix keeps no palette);
 ///   **OSC 52**: clipboard request, reported the same way; any other
 ///   identifier is offered uninterpreted as [`ChildRequest::OtherOsc`]
 /// - **Queries**: DSR, CPR, and primary DA, answered through
@@ -106,7 +106,7 @@ pub struct TerminalState {
     /// Events that have happened since the caller last drained them.
     ///
     /// The merged state-change flags and the queue of unmerged requests, held
-    /// together so one [`next_event()`](TerminalState::next_event) is the whole
+    /// together so one [`dequeue_event()`](TerminalState::dequeue_event) is the whole
     /// channel. Not part of `VisibleScalars`: an undrained event is not itself
     /// a visible change, and draining one is not either.
     pub(crate) events: Events,
@@ -115,7 +115,7 @@ pub struct TerminalState {
 /// The events the caller has not drained yet.
 ///
 /// This is the mechanism behind
-/// [`TerminalState::next_event()`](TerminalState::next_event); it is private,
+/// [`TerminalState::dequeue_event()`](TerminalState::dequeue_event); it is private,
 /// and the only way a caller reaches an [`Event`] is the public accessor. The
 /// state-change events are merged: each is a flag, so many changes of one kind
 /// collapse to a single event. Requests are not merged: they are held in a
@@ -331,7 +331,7 @@ impl TerminalState {
     ///
     /// ```
     /// # fn example(term: &mut termnix::TerminalState) {
-    /// while let Some(event) = term.next_event() {
+    /// while let Some(event) = term.dequeue_event() {
     ///     match event {
     ///         termnix::Event::ScreenUpdated => { /* repaint */ }
     ///         termnix::Event::TerminalReset => { /* drop derived state, repaint */ }
@@ -370,7 +370,7 @@ impl TerminalState {
     /// Nothing is lost while a caller does not look: requests wait in a queue,
     /// and a state-change flag stays set until it is yielded, so a change
     /// missed on one turn is still reported on the next.
-    pub fn next_event(&mut self) -> Option<Event> {
+    pub fn dequeue_event(&mut self) -> Option<Event> {
         self.events.next()
     }
 

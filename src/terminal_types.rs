@@ -433,7 +433,7 @@ pub enum ChildRequest {
 /// Something that happened in the terminal that a caller may want to react to.
 ///
 /// A session driver reacts to what the child does through one channel: it
-/// drains [`TerminalState::next_event()`], matching each event. The events are
+/// drains [`TerminalState::dequeue_event()`], matching each event. The events are
 /// of two kinds. Some report that state moved - the screen, the retained
 /// history, the window title - and are merged, so several changes of the same
 /// kind in one [`feed()`](crate::TerminalState::feed) arrive as one event; a
@@ -445,7 +445,7 @@ pub enum ChildRequest {
 /// and termnix cannot carry out itself, and the whole sequence is delivered in
 /// order.
 ///
-/// [`TerminalState::next_event()`]: crate::TerminalState::next_event
+/// [`TerminalState::dequeue_event()`]: crate::TerminalState::dequeue_event
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// The whole terminal was reset (RIS, `ESC c`).

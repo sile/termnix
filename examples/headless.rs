@@ -99,10 +99,10 @@ fn child_script() -> &'static str {
 }
 
 fn workflow(session: &mut termnix::Session) -> Result<(), AppError> {
-    // No `next_event` drain here, and that is deliberate rather than an
+    // No `dequeue_event` drain here, and that is deliberate rather than an
     // oversight. A session accumulates state changes and child requests in an
     // internal queue, and a caller is expected to drain it with
-    // `Session::next_event`. This example does not, because its child emits
+    // `Session::dequeue_event`. This example does not, because its child emits
     // none: the script asks for primary device attributes (a DA reply is
     // written straight to the PTY, not queued as an event), prints two text
     // markers, reads one line, and exits. It never sends an OSC 52, an OSC 7, a
