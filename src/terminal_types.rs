@@ -83,8 +83,8 @@ impl Rgb {
 /// A color is always concrete here; the "terminal default" a cell can carry
 /// is [`Style::foreground`] or [`Style::background`] being `None`, not a
 /// variant of this type. An [`Color::Indexed`] color names a palette slot the
-/// caller resolves against the palette it owns; termnix no longer resolves it
-/// itself.
+/// caller resolves against the palette it owns; termnix itself does not
+/// resolve it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Color {
     /// Palette or 256-color index (`0..=255`).
@@ -116,9 +116,9 @@ pub enum ColorSlot {
 impl ColorSlot {
     /// Returns the OSC identifier that names this slot.
     ///
-    /// `4` for a palette entry and `10` / `11` / `12` for the defaults. Used to
-    /// build a color report; the value is the same number the child's query
-    /// used.
+    /// `4` for a palette entry and `10` / `11` / `12` for the defaults. It is
+    /// the number written into a color report, and the same number the child's
+    /// query used.
     pub(crate) fn osc_id(self) -> u8 {
         match self {
             Self::Indexed(_) => 4,

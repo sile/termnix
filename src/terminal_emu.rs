@@ -397,9 +397,9 @@ impl TerminalState {
         self.pen = Style::default();
         self.modes = TerminalModes::default();
         // termnix keeps no color state, so RIS resets none: a palette the host
-        // holds is the host's to clear. The color coordinates RIS would once
-        // have returned to defaults are the child's own, and the crate no
-        // longer stores them.
+        // holds is the host's to clear. The default color coordinates the child
+        // set through OSC 4 / 10 / 11 / 12 live in the caller's own table, not
+        // here, so there is nothing to reset.
         // The hyperlink counter is deliberately not reset: ids are handed out
         // and not reused, so an id a caller kept across the reset still names
         // the URL the caller stored for it. There is no table to clear - the
@@ -509,10 +509,9 @@ impl TerminalState {
             'l' => self.set_mode(params, private, false),
             'n' => self.device_status(params, private),
             // DA1 answers only the primary forms (`CSI c` and `CSI ? c`). DA2
-            // (`>`) and DA3 (`=`) are recognized so they no longer reach
-            // `primary_da`, but are left unanswered rather than replied to with
-            // a DA1-shaped string; see the supported-query list on
-            // `TerminalState`.
+            // (`>`) and DA3 (`=`) are recognized and deliberately left
+            // unanswered rather than replied to with a DA1-shaped string; see
+            // the supported-query list on `TerminalState`.
             'c' if !private && marker.is_none() => self.primary_da(),
             's' if !private => self.save_cursor(),
             'u' if !private => self.restore_cursor(),
