@@ -1,4 +1,4 @@
-# RFC: Carry OSC 8 hyperlinks as a cell attribute
+# RFC: Carry OSC 8 hyperlinks as a pen attribute
 
 - Status: draft
 
