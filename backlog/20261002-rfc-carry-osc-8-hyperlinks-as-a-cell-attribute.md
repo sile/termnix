@@ -8,12 +8,13 @@ Model OSC 8 hyperlinks by giving the pen a hyperlink attribute, so every cell
 painted after an `OSC 8 ; params ; URI ST` remembers the link it belongs to.
 The sequence changes what the grid means without drawing a cell itself - the
 same shape as SGR, which sets the pen a later paint reads - so its home is the
-pen, not the event channel. A cell refers to a link by a small opaque id, which
+pen, not the request channel. A cell refers to a link by a small opaque id, which
 keeps `Style` and `Cell` `Copy` and leaves the hyperlink out of the per-cell
-value a caller clones. The crate keeps each link's URI in a table the id keys
-into, and drops a table entry once no cell refers to it, so the table does not
-grow without bound. The crate does not tell the caller when it prunes; the
-caller resolves a cell's link through [`hyperlink()`](crate::TerminalState::hyperlink).
+value a caller clones. Each time the child opens a link the crate emits a
+`HyperlinkAdded` event carrying the new id and its URI, and the caller keeps the
+id-to-URI mapping from there. The crate keeps no link state of its own beyond
+the id on a cell and the counter that hands ids out, so there is nothing to
+prune and nothing to keep exact.
 
 ## Motivation
 
@@ -37,18 +38,27 @@ reconstruct the association from the passthrough stream. That reconstruction is
 the exact bookkeeping the crate already does for the ordinary pen.
 
 This is the case the OSC handling policy places on the *state* side and not the
-event side: a hyperlink attribute changes what the grid means when a later
+request side: a hyperlink attribute changes what the grid means when a later
 paint reads it, so offering it to a caller as bytes leaves the cells painted
 with a missing attribute and no way for the host to put it back. The policy
 names OSC 8 as `state, once modelled`; this RFC is that modelling.
 
-There is a second half the passthrough stream cannot carry: a link the crate
-does not model is one the crate cannot expire. A table of URIs keyed by link
-would grow for the life of the terminal unless something drops the entries no
-cell needs - and the crate is the only party that sees a cell overwritten in
-place or a history line pushed out. So the crate keeps the table and prunes it:
-an entry lives only while some cell refers to it, and the crate can tell,
-because it sees every write that creates or destroys a referring cell.
+The URI itself is not cell state, though. A cell carries a link id, and the id
+names a URI the child wrote once for a whole run - the URI is not repeated per
+cell and is not something the grid needs to answer "what does this cell mean".
+The crate therefore keeps no URI table: it hands each URI to the caller, once,
+as a `HyperlinkAdded` event, and the caller keeps the id-to-URI mapping. The
+caller already has to hold a mapping of its own to render links (it is the
+side that draws them), so the crate building a second one internally - and
+spending a reference count on it to know when to drop it - would be bookkeeping
+neither side needs.
+
+This differs from the color sequences on purpose. A cell's color is a value on
+the cell; the crate settles colors by handing each set and query to the caller
+as a request. A hyperlink is not a value the crate can hand over in one go and
+forget, because the cells that carry it outlive the sequence, so the crate
+keeps the id on the cell and reports each opening as it happens. What it does
+not do is keep the URI: that lives with the caller.
 
 ## Guide-level explanation
 
@@ -59,13 +69,21 @@ Before, a hyperlink run reached the caller as if it were plain text:
 // Every cell in "click here" has `style.hyperlink` ... which does not exist.
 ```
 
-After, the cells in the run name the link, and the caller looks its URI up in the
-crate's table:
+After, the cells in the run name the link, and the caller keeps the URI it was
+handed when the link opened:
 
 ```rust
+let mut links: HashMap<HyperlinkId, Hyperlink> = HashMap::new();
+
+while let Some(event) = term.dequeue_event() {
+    if let Event::HyperlinkAdded { id, link } = event {
+        links.insert(id, link);
+    }
+}
+
 for row in term.rows() {
     for cell in row {
-        if let Some(link) = cell.style.hyperlink.and_then(|id| term.hyperlink(id)) {
+        if let Some(link) = cell.style.hyperlink.and_then(|id| links.get(&id)) {
             // cell is inside the run for `link.uri`; make it clickable,
             // underline it, or show the URI on hover
         }
@@ -78,19 +96,20 @@ a foreground color. Setting `OSC 8` changes the pen; painting a cell copies the
 pen into that cell. A cell does not carry the URI itself - it carries a small id
 - so a cell stays a couple of words wide and the URI is stored once per link
 rather than once per cell. A run of a thousand linked characters keeps one small
-id on each cell and one URI in the crate's table.
+id on each cell and one URI on the caller's side.
 
-The crate keeps the URI in a table the id keys into, and prunes that table: once
-no cell in the grid or the history refers to a link, its entry is gone, so a
-child that prints a link per line does not grow the table for the life of the
-terminal. Pruning is invisible to the caller: there is no add event and no drop
-event, and [`hyperlink(id)`](crate::TerminalState::hyperlink) simply returns
-`None` for an id that is no longer referred to. The caller treats it the same as
-`None` from the start - an id it was given from a cell whose link is since gone.
+When the child opens a link, the crate emits `HyperlinkAdded` carrying the id
+and the URI, and the caller stores it. That event is the whole of the crate's
+obligation: it says "this id means this URI" once, and from then on a cell's id
+resolves against the caller's own map. The crate never re-uses an id for a
+different URI, so the map only grows within a terminal's life unless the caller
+decides to drop entries it no longer needs - and the caller is the side that can
+know, because it is the side that renders the cells.
 
-A host that does not show hyperlinks ignores the field. Nothing about the cell
-layout, the text, or the style bits the crate already exposes changes; the field
-is new data the caller may use or ignore.
+A host that does not show hyperlinks ignores both the field and the event.
+Nothing about the cell layout, the text, or the style bits the crate already
+exposes changes; the field and the event are new data the caller may use or
+ignore.
 
 ## Reference-level explanation
 
@@ -121,10 +140,10 @@ working in a `const` context. A `String` field would end all three.
 
 ### The link value
 
-The table stores one value per link:
+Each open carries one value:
 
 ```rust
-/// A hyperlink the terminal has interned (OSC 8).
+/// A hyperlink the child opened (OSC 8).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hyperlink {
     /// The URI the child attached to the run (`OSC 8 ; params ; URI`).
@@ -136,24 +155,22 @@ pub struct Hyperlink {
     ///
     /// The child uses `id` to say that two separate runs are one logical link
     /// (so a terminal that underlines links can avoid drawing a break between
-    /// them). It participates in interning; `None` when the sequence carried
-    /// no `id`.
+    /// them). `None` when the sequence carried no `id`.
     pub id: Option<String>,
 }
 ```
 
-The caller reads this through
-[`TerminalState::hyperlink()`](crate::TerminalState::hyperlink). It owns the
-URI inside the crate, not on the caller's side; the id on a cell keys into it.
+The caller receives this in the `HyperlinkAdded` event (see below). The crate
+keeps no copy once the event is delivered; the caller holds it in a map keyed by
+the id the event also carries.
 
 ### The id
 
 ```rust
-/// Identifies a hyperlink the terminal has interned (OSC 8).
+/// Identifies a hyperlink the child opened (OSC 8).
 ///
-/// Opaque. Pass it to
-/// [`TerminalState::hyperlink()`](crate::TerminalState::hyperlink) to get the
-/// link's URI.
+/// Opaque. Look it up in the map the caller builds from `HyperlinkAdded`
+/// events to get the link's URI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct HyperlinkId(NonZeroU32);
 ```
@@ -164,12 +181,18 @@ common case and costs nothing. The id is assigned by the crate and is opaque to
 the caller; it is not the child's `id` parameter, which is a string the child
 controls and which two runs may share.
 
-The id is an **interned** handle: the crate keys its URI table by id, and two
-`OSC 8` sequences that name the same `(uri, id)` pair resolve to the same
-`HyperlinkId`. Interning is what keeps the table to one entry per distinct link
-rather than one per run, and it makes the id a target rather than an
-occurrence: the cells of two runs the child meant as one link compare equal,
+The id is **interned**: two `OSC 8` sequences that name the same `(uri, id)`
+pair resolve to the same `HyperlinkId`, and the crate emits `HyperlinkAdded` for
+the pair only the first time. Interning keeps the caller's map to one entry per
+distinct link rather than one per run, and it makes the id a target rather than
+an occurrence: the cells of two runs the child meant as one link compare equal,
 because they carry the same id.
+
+The crate holds the interned pairs only long enough to recognize a repeat - a
+set of `(uri, id)` it has already opened - and hands the caller each id and URI
+the first time. It does not track which cells still refer to an id, so nothing
+is dropped; the set only grows, bounded by the number of distinct links the
+child opens. The caller's map grows the same way and is the caller's to manage.
 
 The id is a `NonZeroU32`, so the id space is a little over four billion values.
 A terminal that hands out one id per distinct link is not expected to reach it,
@@ -179,79 +202,38 @@ cell already refers to, but that takes more than four billion distinct links in
 one terminal's life, which no session reaches; the wrap is named here so the
 bound is not left implied by the integer width.
 
-### The link table
+### The event
 
-`TerminalState` keeps the interned link for each id, with a count of how many
-live cells refer to it:
+`Event` gains one variant:
 
 ```rust
-// id -> the link and how many live cells refer to it
-links: HashMap<HyperlinkId, LinkEntry>,
-
-struct LinkEntry {
-    link: Hyperlink,
-    // number of live cells referring to the link
-    refs: usize,
+pub enum Event {
+    // ... existing variants ...
+    /// The child opened a hyperlink (OSC 8); `id` names `link`.
+    HyperlinkAdded { id: HyperlinkId, link: Hyperlink },
 }
 ```
 
-A link is interned into the table, with `refs: 0`, when the first `OSC 8` that
-names it arrives, and the pen is set to its id. The count then rises as cells
-are painted with the pen's hyperlink, falls as those cells are overwritten,
-erased, or discarded, and the entry is pruned when it reaches zero. The table
-holds one entry per distinct link, and pruning keeps it to the links some cell
-still needs, so it does not grow with the child's output the way a URI table
-with no prune would.
+It is emitted once per distinct interning key: the first time the crate sees an
+`OSC 8` naming a `(uri, id)` pair, it assigns an id, stores the pair so a repeat
+resolves to the same id, and emits `HyperlinkAdded` before the pen is set. A
+second sequence naming the same pair emits nothing - the caller already has the
+mapping.
 
-Retrieving a URI is a lookup:
+Unlike the state flags, this event carries a payload that must not be lost:
+every open in a `feed` has to be delivered, so a feed that opens two links
+yields two `HyperlinkAdded` events from `dequeue_event`, in order, and neither
+collapses into the other. It is not a request (see Rationale) and not per-cell
+state; it is a one-time announcement of an id-to-URI mapping the caller is
+expected to keep. How this payload rides the existing channel (which so far
+carries merged state flags and an unmerged request queue) is an implementation
+detail left to Unresolved questions.
 
-```rust
-pub fn hyperlink(&self, id: HyperlinkId) -> Option<&Hyperlink>;
-```
-
-It returns `None` for an id whose entry has been pruned, which is what a caller
-sees when it asks about a cell whose link is gone. There is no event for the
-prune: a caller holds no id it did not get from a live cell, and a cell whose
-link is pruned is a cell that no longer exists, so the `None` is the whole
-story.
-
-A cell moving from the grid into the history does not change the count: the
-cells are copied into a `ScrollbackLine` and the ones in the grid are gone, so
-the number of live cells referring to the link is the same before and after.
-The count changes only when a referring cell is created or destroyed:
-
-- **+1** when a cell is painted with the pen's hyperlink set, or copied
-  (scrolled, reflowed, moved to the alternate screen) into a position that did
-  not already hold a cell referring to that link;
-- **-1** when a cell that referred to a link is overwritten by a cell that does
-  not, is erased (ED / EL / ECH), or is dropped from the history by
-  [`trim_scrollback()`](crate::TerminalState::trim_scrollback);
-- **pruned** when the count reaches zero.
-
-RIS (`ESC c`) does **not** reset the table. Every other piece of child state is
-restored by RIS, but the link table is not child-visible state the crate
-restores - it is a cache keyed by an id a caller may still hold. Resetting it
-would make an id a caller kept across a reset resolve as if it had never
-referred to a link, which is worse than a stale entry: a stale entry is pruned
-as soon as the cells that referred to it are gone (which RIS does clear), so the
-table empties itself without the reset having to force it. Keeping the table
-across RIS is what lets an id stay meaningful for the life of the terminal.
-
-The count is the load-bearing part. `Cell` is `Copy`, so there is no destructor
-to hook: every path that writes or clears a cell has to adjust the count by
-hand, and the paths are many (the screen's set, scroll, reflow, the edit and
-erase sequences, the alternate-screen switch, RIS). A path that forgets to
-decrement leaks the entry (the table keeps a link no cell needs); a path that
-decrements twice can prune an entry a cell still refers to, which makes a live
-cell's id resolve to `None`. The increments and decrements are therefore the
-load-bearing part of this change, and the tests must exercise each path.
-
-The history holds a copy, so a link referred to only by a history line stays in
-the table until that line is trimmed, which is the correct lifetime but means
-"the grid no longer shows it" is not "it is pruned". Because the caller cannot
-see a cell overwritten in place, nor a history line pushed out, nor a reset
-blanking the grid, it cannot maintain this count itself; the crate sees every
-write by construction, so the count is the crate's to keep.
+The crate keeps no URI table and exposes no `hyperlink()` lookup: the only path
+from a cell's id to a URI is the caller's map, which the caller fills from these
+events. If the caller drops its map, or drops an entry, a cell's id resolves to
+nothing - which is the caller's choice, and correct: the crate handed it the
+URI once and does not hold it back.
 
 ### Parsing the sequence
 
@@ -268,26 +250,22 @@ list of `key=value` pairs and `URI` is the target. In `osc_dispatch`:
 - An **empty URI** (or no `params[2]`) ends the current link: the pen's
   `hyperlink` becomes `None`, and the next cell paints with no link. The close
   is not a change to any cell - the cells painted before it keep their id - and
-  it does not touch the table; a caller that wants to know whether a link is
-  current reads [`style()`](crate::TerminalState::style).
+  it emits no event; a caller that wants to know whether a link is current
+  reads [`style()`](crate::TerminalState::style).
 - A **non-empty URI** is interned: if the crate has already seen the same
-  `(uri, id)` pair, it reuses that id; otherwise it takes the next id and adds
-  an entry to the table with the URI as framed and `refs: 0`. Either way the
-  pen's `hyperlink` is set to the id.
-
-The id that the close drops from the pen is not dropped from the table: the
-cells painted while it was current still refer to it, and the entry is pruned
-only when the last such cell is gone.
+  `(uri, id)` pair, it reuses that id and emits nothing; otherwise it takes the
+  next id, records the pair, and emits `HyperlinkAdded { id, link }`. Either way
+  the pen's `hyperlink` is set to the id.
 
 The `id` parameter is the only parameter the crate reads; it is the one xterm
-and the common clients agree on, and it participates in interning (two runs with
-the same `(uri, id)` are one link). Any other `key=value` pair is ignored (not
-dropped as a sequence - the sequence is handled, the unknown parameter is not
-modelled). The raw `params` string is not kept and not forwarded: the keys that
-appear beside `id` are vendor-specific, so a caller that needs them is a caller
-that knows the number. Forwarding the raw string is a later, additive change
-(see Future possibilities), because `Hyperlink` is the crate's own type and
-adding a field breaks no caller.
+and the common clients agree on, and it is part of the interning key (two runs
+with the same `(uri, id)` are one link). Any other `key=value` pair is ignored
+(not dropped as a sequence - the sequence is handled, the unknown parameter is
+not modelled). The raw `params` string is not kept and not forwarded: the keys
+that appear beside `id` are vendor-specific, so a caller that needs them is a
+caller that knows the number. Forwarding the raw string is a later, additive
+change (see Future possibilities), because `Hyperlink` is the crate's own type
+and adding a field breaks no caller.
 
 The crate does **not** validate the URI, decode it, or split it into scheme and
 path. It stores the bytes as the `String` the tokenizer produced, keeping the
@@ -311,50 +289,32 @@ it was. A feed that sets a link but paints no cell still reports a change,
 because the pen moved; a feed that sets a link, paints a cell, and clears the
 link reports one `ScreenUpdated` in total, the flag being merged.
 
-The prune is independent of this flag and invisible to the caller: it raises no
-event. A feed that opens a link and paints no cell still reports `ScreenUpdated`
-because the pen moved; a feed that overwrites the last cell of a link reports
-`ScreenUpdated` because a cell changed, and the table entry is pruned as part of
-that write. The flag says "repaint", and the table is read through
-[`hyperlink()`](crate::TerminalState::hyperlink) when the caller resolves an id,
-not through an event.
+`HyperlinkAdded` is a separate event on the same channel and is not merged away
+by `ScreenUpdated`: a feed that opens a link reports both. It fires whether or
+not the crate paints any cell with the link, because it reports the *opening*,
+not a change to the grid.
 
 ### Effect on RIS
 
 RIS (`reset_child_state`) restores the terminal, so it clears the pen
 (`self.pen = Style::default()`, which now also clears the hyperlink) and clears
-the grid and the retained history. It does **not** clear the link table. RIS
-clears every cell that referred to a link, so those links drop to zero
-references and are pruned as part of the clear; but an id a caller kept across a
-reset still resolves if a cell still needs it. RIS does not reset the id counter
-either: ids are handed out and not reused, so an id a caller kept can never be
-mistaken for the id of a link added after it.
+the grid and the retained history. RIS does **not** clear the interning set or
+reset the id counter. Ids are handed out and not reused, and the interning set
+only exists to recognize a `(uri, id)` pair the crate has already opened; an id
+a caller kept across a reset still names the URI the caller stored for it, and
+RIS does not take that back. Clearing the set would only let a post-reset open
+of the same pair take a fresh id, breaking the interning the caller's map relies
+on.
 
-Both halves matter for the same reason: RIS restores *child-visible* state, and
-the link table is not that. It is a cache the crate keeps to answer
-[`hyperlink()`](crate::TerminalState::hyperlink), keyed by an id a caller may
-still hold; wiping it on reset would not restore anything the child sees, it
-would only make a caller's held id stop resolving while the cell that gave it
-the id is gone anyway. The table prunes itself as the reset's cleared cells are
-processed, so leaving it alone and letting the count fall is both correct and
-simpler than forcing a wipe.
+There is no link table to wipe, so RIS has nothing else to do here beyond the
+pen it already clears.
 
 ### The event channel
 
-No event is added. The area the crate reports through is unchanged: merged state
-flags (`ScreenUpdated`, `ScrollbackLineAppended`, `TitleUpdated`,
-`TerminalReset`) and the unmerged request queue (`RequestReceived`). A hyperlink
-is read from the grid and resolved through
-[`hyperlink()`](crate::TerminalState::hyperlink), the same way a cell's color is
-read from the cell.
-
-Earlier drafts of this RFC carried the URI to the caller as an
-`HyperlinkAdded` event and reported the last reference going away as
-`HyperlinkDropped`. Both are dropped here. The crate keeping the table makes the
-add event unnecessary (the URI is available for the life of the link), and the
-prune makes the drop event unnecessary (a caller holds no id it did not get from
-a live cell). Removing both keeps the event channel as it is, at the cost of the
-crate owning the URI table - which it can, because it can prune it.
+As above, this adds one event, `HyperlinkAdded`, to the merge-into-a-flag event
+channel. It is the only new reporting surface; the request channel is untouched.
+It is not a request: it says an id now means a URI, not that the caller must do
+something, and the caller may ignore every one of them.
 
 ### What is still not modelled
 
@@ -363,7 +323,7 @@ keys), and the crate reads only `id`. A URI containing `;` or `:` is split by
 the frame's rules before the crate sees it, which is a property of OSC framing,
 not a choice here. The child's `id` parameter takes part in interning (two runs
 with the same `(uri, id)` are one link) and is kept on the `Hyperlink` as
-written; `hyperlink()` gives it back to a caller that wants the grouping. The
+written; the caller has it in its map for a caller that wants the grouping. The
 parameter is not consulted beyond the interning key. Neither changes the shape
 of this RFC.
 
@@ -375,28 +335,25 @@ of this RFC.
   `Cell::CONTINUATION` literals in the crate gain a field. This is the cost of
   putting the attribute on the pen, and it is real for callers that build
   styles by hand.
-- **The crate keeps the URI table and must keep its count exact.** `Cell` is
-  `Copy`, so the count is maintained by hand on every path that writes or
-  clears a cell, and a path that misses an increment or decrement either leaks
-  an entry (the table keeps a URI no cell needs) or prunes one early (a live
-  cell's id stops resolving). This is the largest correctness burden in the
-  change. A link with no cells yet - interned, pen set, no paint - sits in the
-  table at zero until a cell refers to it or a reset clears it; a link whose
-  only cell is overwritten by an equal value that carries the same id must not
-  be counted as a prune.
+- **The caller owns the id-to-URI map and its lifetime.** The crate hands each
+  URI over once, in a `HyperlinkAdded` event, and never repeats it. A caller
+  that discards its events, or drops the map, loses the ability to resolve ids
+  it still sees on cells - there is no `hyperlink()` fallback. This is the
+  expected cost of not keeping the URI in the crate, but it is a contract the
+  caller has to honour: events must be drained and the map kept for as long as
+  the caller renders the cells.
+- **The crate's interning set only grows.** To recognize a repeat it keeps the
+  `(uri, id)` pairs it has opened, and nothing drops them, because nothing
+  tracks which cells still refer to a link. It is bounded by the number of
+  distinct links the child opens, not by the child's output (interning collapses
+  repeats), but a session that opens an unbounded number of distinct links grows
+  it without bound. The caller's map grows the same way.
 - **The caller does a lookup per cell to get a URI.** Rendering a linked run
-  means one id-to-URI lookup per cell against the crate's table (or spotting
+  means one id-to-URI lookup per cell against the caller's own map (or spotting
   the run boundaries first), where a cell that carried the URI would need none.
   The trade is the cell size: a `String` per cell would make `Cell` non-`Copy`
   and every cell carry a URI, and removing the id indirection would make `Style`
   larger and every cell wider. The indirection is the cheaper mistake.
-- **A URI stays in the table until the last referring cell is gone, which may
-  be long after the child closed the link.** A link whose cells are never
-  overwritten, erased, or trimmed keeps its URI for the life of the terminal.
-  That is the correct lifetime for a cell-keyed table, but it is not the same
-  as "the child closed the link"; a caller that wants the close reads
-  [`style()`](crate::TerminalState::style), and the table's growth is bounded by
-  the number of links some live cell needs, not by the child's output.
 - **OSC 8 has no read form.** Unlike OSC 4 and the color sequences, there is
   no `?` query for a hyperlink, so this RFC does not exercise the policy's
   "answer a query from state" path. That path went unbuilt: the color
@@ -408,54 +365,57 @@ of this RFC.
 - **Put the URI (a `String`) directly in `Style`.** Rejected: `Style` would
   lose `Copy`, `Cell` would lose `Copy`, `Cell::EMPTY` could no longer be a
   `const`, and every cell in a linked run would carry its own copy of the URI.
-  The id indirection keeps all four things and stores the URI once per link in
-  the crate's table.
-- **Keep the URI in the crate, looked up by id, but never drop an entry.**
-  Rejected: this is the shape that made a link table grow without bound. The
-  crate is the only party that sees every cell write, so it is the only party
-  that can tell when a URI is unused - and once it can tell, it can prune the
-  entry. Keeping the table **and** the count is what this RFC does; keeping
-  only the table is the unbounded shape that was rejected.
-- **Hand the URI to the caller instead of keeping it, with add / drop events.**
-  Rejected: this is the earlier shape of this RFC. It reached the same
-  lifetime answer but by moving the URI to the caller and reporting the two
-  ends of its life as events. Since the crate has to keep a per-link count
-  anyway to know when it can prune, keeping the URI beside that count is
-  strictly less machinery than emitting two events and holding the count to
-  drive them. The caller's cost is a lookup per cell instead of a table of its
-  own.
+  The id indirection keeps all four things and stores the URI once per link on
+  the caller's side.
+- **Keep the URI in the crate and prune it by hand-maintained reference
+  counts.** Rejected: `Cell` is `Copy`, so the count would have to be adjusted
+  by hand on every path that writes or clears a cell - set, scroll, reflow, the
+  edit and erase sequences, the alternate-screen switch, RIS - and a single
+  missed decrement leaks an entry while a double decrement makes a live cell's
+  id stop resolving. That is the largest correctness burden in the change, for
+  a table the caller has to keep a parallel copy of anyway to render. Dropping
+  the table drops the count and the burden with it.
+- **Keep the URI in the crate and drop it only on RIS / when the grid is
+  cleared.** Rejected: a cell can be overwritten in place without any of those
+  events, and a history line can be trimmed, so neither hook is a correct
+  lifetime boundary; the table would still leak. Correct expiry needs the
+  count, which the previous alternative rejects.
+- **Hand the URI to the caller with an add event, but report the last
+  reference going away as a drop event too.** Rejected: a drop event would
+  require the same hand-maintained count as keeping the table, so it buys the
+  caller nothing over just keeping the map it already has. The crate hands over
+  each URI once and is done; there is nothing to report on the way out.
 - **Make the whole hyperlink a consumed-once request instead of a cell
   attribute.** Rejected by the policy and on its own merits: a hyperlink is an
   attribute of cells that outlive the sequence, not a message the caller takes
-  once. The attribute stays on the cells and the URI stays in the crate's
-  table. This is the state row of the policy's table.
-- **Carry the link on `ChildRequest`.** Rejected: a
-  [`ChildRequest`](crate::ChildRequest) is defined as something the caller is
-  *expected to do*; a link appearing is something the caller may or may not act
-  on, and a link being pruned is not an action at all - the cells that carried
-  it are simply gone. Neither belongs on the request channel.
+  once. The attribute stays on the cells, keyed by an id; the one-shot
+  `HyperlinkAdded` event only sets up the id-to-URI mapping. This is the state
+  row of the policy's table.
+- **Carry the id-to-URI mapping on `ChildRequest` instead of an event.**
+  Rejected: a [`ChildRequest`](crate::ChildRequest) is defined as something the
+  caller is *expected to do*; a link opening is something the caller may or may
+  not act on, and `HyperlinkAdded` fits the event channel the crate already uses
+  for "here is something you may want to know". The request channel is for
+  actions, and there is no action here.
 - **Report a `Closed` (or `Removed`) event when the pen's link is cleared.**
   Rejected: the pen closing is not a change to any cell, and a caller that
   wants the current link reads [`style()`](crate::TerminalState::style). The
   cells painted before the close keep their id, so the close is not a lifetime
   boundary for the link.
-- **Report a `Dropped` event when an entry is pruned.** Rejected: the caller
-  holds no id it did not get from a live cell, so an id it holds is either
-  still resolvable or belongs to a cell that no longer exists. A prune event
-  would say "forget this URI you may never have had", which a caller that reads
-  URIs from the table does not need.
-- **Do not intern; give each run a fresh id.** Rejected: interning is what
-  keeps the table to one entry per distinct link instead of one per run and
-  makes two runs the child meant as one link compare equal as cells. It costs
-  a URI comparison on each open, which the crate can afford because it owns the
-  URIs anyway to prune them.
-- **Use a per-link `Arc`/`Rc` so the count is maintained by the type system.**
+- **Do not intern; give each open a fresh id (and a fresh event).** Rejected:
+  two runs the child meant as one link would then compare unequal as cells, and
+  a caller's map would grow one entry per run instead of one per link. Interning
+  collapses repeats, which is what keeps both the crate's set and the caller's
+  map proportional to distinct links rather than to runs. It costs a key
+  comparison on each open, which is cheap next to carrying the event for a
+  repeat the caller already has.
+- **Use a per-link `Arc`/`Rc` so cells share the URI by reference count.**
   Rejected: a cell would have to hold a reference-counted handle instead of a
   `Copy` id, which takes `Cell` out of `Copy`, makes `Cell::EMPTY` no longer a
   `const`, and puts a refcount increment on every cell write and copy -
   including the bulk `vec![Cell::EMPTY; n]` fills the screen does on every
-  resize and clear. The manual count keeps `Cell` `Copy` and small; the cost is
-  the bookkeeping the next section is about.
+  resize and clear. This RFC avoids that entirely by keeping no count at all: a
+  cell holds a plain id and the URI lives only in the caller's map.
 - **Store the child's `id` parameter as the cell's reference, without an
   opaque crate id.** Rejected: the child's `id` is a string, so it reintroduces
   the `String`-in-`Style` problem.
@@ -464,12 +424,12 @@ of this RFC.
   be a `u32` wearing a character's name - and a worse one, since `Option<char>`
   has no niche and would make `Style` larger than `Option<NonZeroU32>` does,
   while the surrogate range wastes codepoints that could otherwise be ids.
-- **Prune by sweeping the grid and history for unreferenced ids, instead of
-  counting.** Rejected: a sweep is `O(cells)` and would have to run often enough
-  to be timely, while the count is maintained at the writes that already cost
-  the most. The count can drift if a path forgets; a debug-only sweep that
-  cross-checks the count is a cheaper safety net than a production sweep (see
-  Unresolved questions).
+- **Keep the crate's interning set bounded by sweeping the grid and history
+  for still-referenced ids.** Rejected: a sweep is `O(cells)`, and it needs a
+  reason to run - either every feed (too expensive) or on a timer (too coarse
+  to bound anything usefully). Interning already collapses repeats, so the set
+  is proportional to distinct links rather than to cell writes; the sweep would
+  trade that for a per-feed cost to reclaim entries the child may yet reuse.
 - **Ignore unknown `params` by dropping the sequence.** Rejected: the sequence
   is understood (it is a hyperlink); only an unmodelled parameter is ignored,
   which is the same relationship the crate has to SGR values it does not
@@ -485,57 +445,38 @@ of this RFC.
 
 ## Unresolved questions
 
-- **How do we keep the reference count exact?** Open. The count is maintained
-  by hand on every path that writes or clears a cell, and the paths are many.
-  The plan is exhaustive tests per path plus a debug-only sweep that recomputes
-  the count from the grid and history and asserts it matches - but whether that
-  sweep is worth its complexity, and whether the count should instead be
-  derived lazily, is not settled.
-- **Does a cell overwritten by an equal value that carries the same id count
-  as a prune and re-add, or not at all?** Open, but it must not prune: the
-  value still refers to the link. The count is a set of references, not a
-  sequence of writes, so equal-to-equal is a no-op. How that is implemented
-  (compare before decrementing, or decrement the old and increment the new) is
-  a detail for the implementation.
-- **Where does the reference count live, and who maintains it?** Open. The
-  grid is held by `Screen` (one per screen, plus the history), while the table
-  has to be shared across the whole terminal - both screens and the history -
-  because an id is meaningful wherever a referring cell is. So the table
-  cannot live inside `Screen`. Two shapes:
-  - **(X) Pass the table down into `Screen`.** Every method that writes or
-    clears a cell takes `&mut LinkTable` and adjusts the count itself, through
-    a small set of store/clear helpers so no assignment touches the table
-    directly. `Screen` stays unaware of what a link is beyond the helpers, but
-    every signature grows a parameter, and the rotate/fill/reflow paths have
-    to know which cells are leaving and which are being overwritten.
-  - **(Y) Keep the table on `TerminalState` and adjust it around screen
-    operations.** The screen operations that move or fill cells return the
-    cells they displaced or overwrote (or enough to reconstruct them), and
-    `TerminalState` adjusts the count once per operation. Fewer signatures
-    change, but the screen has to report back cells it would otherwise drop,
-    and the rotate/fill paths still have to say which cells left.
-  Neither is obviously cheaper: (X) localises the bookkeeping next to the
-  assignments but widens every call; (Y) keeps `Screen` narrow but moves the
-  bookkeeping away from the code that knows which cells moved. Not settled.
+- **How does `HyperlinkAdded` ride the event channel?** Open, but low risk.
+  The channel already has two kinds: merged state flags, and unmerged
+  payload-carrying events (`RequestReceived` carries a `ChildRequest` and is
+  delivered in order). `HyperlinkAdded` is the second kind, so it belongs on
+  the unmerged path, not the flag path. Whether that path is reused as-is or
+  named more generally (an "event" queue rather than a "request" queue) is a
+  detail to settle when the channel's shape is next looked at; it does not
+  change this RFC.
+- **Should the crate keep its interning set at all, or emit on every open?**
+  Open. Interning is what collapses repeats and keeps the caller's map
+  proportional to distinct links, and it is cheap (a key compare per open). The
+  alternative - emit `HyperlinkAdded` on every open and let the caller dedup -
+  would grow the event stream with the child's output and leave the caller to
+  intern anyway. Leaning interning, but not settled.
 
 ## Future possibilities
 
 - A host that wants clickable links reads the pen field and resolves the id
-  through [`hyperlink()`](crate::TerminalState::hyperlink), and a host that
-  wants to underline them uses the same field - the crate does not decide the
-  presentation, it exposes the association.
+  through the event-fed map it keeps, and a host that wants to underline them
+  uses the same field - the crate does not decide the presentation, it exposes
+  the association.
 - A raw `params` string on `Hyperlink`, if a caller ever needs the keys beside
   `id`, is additive: `Hyperlink` is the crate's own type, so a new field breaks
   no caller the way a new `Style` field does.
 - The color sequences (OSC 4 and 10-12) are the sibling case, and the crate
-  has since settled the opposite way: rather than keep the state and resolve
-  cells against it, termnix holds no color state and hands each set and query
-  to the caller as a request. A hyperlink is different only because a cell has
-  to remember which run it belongs to, so the crate has to keep a table and a
-  count to answer *which run* - the color a cell carries is already a value on
-  the cell and needs no table.
+  settled the opposite way: rather than keep the state and resolve cells
+  against it, termnix holds no color state and hands each set and query to the
+  caller as a request. A hyperlink is different because a cell has to remember
+  which run it belongs to, so the crate keeps the id on the cell and reports
+  each open once; the URI itself stays on the caller's side, like the colors.
 - A future hyperlink extension (a title, a hover text) is a field on the
-  `Hyperlink` in the table; it does not change `Style` or `Cell`.
-- A bound on the number of live links, if the table ever proves too large, would
-  be a policy on top of the count (prune the least-recently-used link early)
-  rather than a different data structure.
+  `Hyperlink` the event carries; it does not change `Style` or `Cell`.
+- A drop event, if a caller ever wants to know when a link is no longer on any
+  cell, would need the crate to track which cells refer to a link, i.e. the
+  reference count this RFC rejects. It would be its own, larger change.
