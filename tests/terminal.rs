@@ -857,6 +857,11 @@ fn term(rows: u16, cols: u16) -> termnix::TerminalState {
     termnix::TerminalState::new(size(rows, cols))
 }
 
+/// A position, for reading a cell out of a state.
+fn at(row: u16, col: u16) -> termnix::Position {
+    termnix::Position { row, col }
+}
+
 /// Drains every pending event, oldest-priority-first.
 ///
 /// The event channel is the crate's whole notification surface now, so a test
@@ -949,6 +954,22 @@ fn other_osc(t: &mut termnix::TerminalState) -> Option<OtherOsc> {
         termnix::ChildRequest::OtherOsc { id, params } => Some(OtherOsc { id, params }),
         other => panic!("expected an OtherOsc request, got {other:?}"),
     }
+}
+
+/// Returns the next pending `HyperlinkAdded`, leaving the rest queued, and
+/// drops the state-change and request events it walks past.
+///
+/// The crate hands the id and URL over once, so a test reads the opening the
+/// way a host does: it looks for the event and records the mapping. Payload
+/// events are yielded in child order, so stopping at the first link cannot
+/// reorder the ones after it.
+fn hyperlink_added(t: &mut termnix::TerminalState) -> Option<(termnix::HyperlinkId, String)> {
+    while let Some(event) = t.dequeue_event() {
+        if let termnix::Event::HyperlinkAdded { id, url } = event {
+            return Some((id, url));
+        }
+    }
+    None
 }
 
 /// The fields of a [`ChildRequest::OtherOsc`](termnix::ChildRequest::OtherOsc)
@@ -1893,6 +1914,164 @@ fn ris_does_not_emit_a_color_request() {
     t.feed(b"\x1bc");
     assert!(next_request(&mut t).is_none());
     assert!(t.pending_reply_bytes().is_empty());
+}
+
+#[test]
+fn osc_8_sets_the_pen_and_painted_cells_carry_the_link() {
+    // The link is a pen attribute: cells painted after the OSC 8 remember it,
+    // the way cells painted after an SGR remember its colors.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07ab");
+    let (id, url) = hyperlink_added(&mut t).expect("an opening is reported");
+    assert_eq!(url, "https://example.com");
+    // Every cell in the run points at the same link.
+    assert_eq!(t.cell(at(0, 0)).expect("cell").style.hyperlink, Some(id));
+    assert_eq!(
+        t.cell(at(0, 0)).expect("cell").style.hyperlink,
+        t.cell(at(0, 1)).expect("cell").style.hyperlink
+    );
+}
+
+#[test]
+fn osc_8_empty_url_clears_the_pen() {
+    // A second OSC 8 with an empty URL closes the run; a cell painted after it
+    // has no link. The close changes no cell and emits no event.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a");
+    let (id, _) = hyperlink_added(&mut t).expect("an opening is reported");
+    assert_eq!(t.cell(at(0, 0)).expect("cell").style.hyperlink, Some(id));
+    t.feed(b"\x1b]8;;\x07b");
+    assert_eq!(t.cell(at(0, 1)).expect("cell").style.hyperlink, None);
+    assert_eq!(t.style().hyperlink, None, "the pen is cleared too");
+    assert!(
+        hyperlink_added(&mut t).is_none(),
+        "closing a link is not an opening"
+    );
+}
+
+#[test]
+fn osc_8_each_open_gets_a_fresh_id_even_for_the_same_url() {
+    // The crate does not intern: two opens of one URL are two events with two
+    // ids, and a caller that wants them to share a map entry groups them.
+    let mut t = term(2, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a\r\n");
+    t.feed(b"\x1b]8;;\x07\x1b]8;;https://example.com\x07b");
+    let (first, url_a) = hyperlink_added(&mut t).expect("first opening");
+    let (second, url_b) = hyperlink_added(&mut t).expect("second opening");
+    assert_eq!(url_a, "https://example.com");
+    assert_eq!(url_b, "https://example.com");
+    assert_ne!(first, second, "a repeat URL still takes a fresh id");
+    assert_eq!(t.cell(at(0, 0)).expect("cell").style.hyperlink, Some(first));
+    assert_eq!(
+        t.cell(at(1, 0)).expect("cell").style.hyperlink,
+        Some(second)
+    );
+}
+
+#[test]
+fn osc_8_ignores_the_params_field_entirely() {
+    // The `<params>` list is not read; the child's `id` and any other pair are
+    // ignored, and only the URL is reported.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;foo=bar:id=7;https://example.com\x07a");
+    let (id, url) = hyperlink_added(&mut t).expect("an opening is reported");
+    assert_eq!(url, "https://example.com");
+    assert_eq!(t.cell(at(0, 0)).expect("cell").style.hyperlink, Some(id));
+}
+
+#[test]
+fn osc_8_missing_url_clears_the_pen() {
+    // `ESC ] 8 ; params ST` with no third field is an empty URL, which closes
+    // the run like `ESC ] 8 ; ; ST`.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a\x1b]8;id=1\x07b");
+    assert_eq!(t.cell(at(0, 1)).expect("cell").style.hyperlink, None);
+}
+
+#[test]
+fn osc_8_is_a_screen_change() {
+    // The pen is part of visible state, so setting a link moves it even when
+    // no cell is painted; the change is reported like an SGR color.
+    let mut t = term(1, 8);
+    assert!(!screen_updated(&mut t));
+    t.feed(b"\x1b]8;;https://example.com\x07");
+    assert!(screen_updated(&mut t), "the pen moved");
+}
+
+#[test]
+fn osc_8_is_not_a_request() {
+    // A hyperlink opening is not a request: it is something the caller may act
+    // on, not something it must carry out. Nothing goes on the request channel.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a");
+    assert!(next_request(&mut t).is_none());
+    assert!(t.pending_reply_bytes().is_empty());
+}
+
+#[test]
+fn osc_8_openings_keep_the_childs_order() {
+    // Two opens in one feed are two events, in the order the child wrote them.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://one.example\x07\x1b]8;;https://two.example\x07");
+    let (first, first_url) = hyperlink_added(&mut t).expect("first");
+    let (second, second_url) = hyperlink_added(&mut t).expect("second");
+    assert_eq!(first_url, "https://one.example");
+    assert_eq!(second_url, "https://two.example");
+    assert_ne!(first, second);
+    assert!(hyperlink_added(&mut t).is_none());
+}
+
+#[test]
+fn osc_8_openings_and_requests_keep_their_relative_order() {
+    // Link openings and requests share one ordered payload channel, so a link
+    // between two clipboard asks stays between them for a host that cares.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]52;c;aGVsbG8=\x07\x1b]8;;https://example.com\x07\x1b]52;p;d29ybGQ=\x07");
+    let mut seen = Vec::new();
+    while let Some(event) = t.dequeue_event() {
+        match event {
+            termnix::Event::RequestReceived(_) => seen.push("request"),
+            termnix::Event::HyperlinkAdded { .. } => seen.push("link"),
+            _ => {}
+        }
+    }
+    assert_eq!(seen, ["request", "link", "request"]);
+}
+
+#[test]
+fn ris_does_not_reset_the_hyperlink_counter() {
+    // RIS restores the terminal but does not reuse ids: an id the caller kept
+    // across the reset still names the URL the caller stored for it, so a
+    // post-reset open takes a fresh id beyond where the counter had reached.
+    let mut t = term(2, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a");
+    let (before, _) = hyperlink_added(&mut t).expect("opening before RIS");
+    t.feed(b"\x1bc");
+    assert_eq!(t.style().hyperlink, None, "RIS clears the pen");
+    t.feed(b"\x1b]8;;https://example.org\x07b");
+    let (after, url) = hyperlink_added(&mut t).expect("opening after RIS");
+    assert_eq!(url, "https://example.org");
+    assert_ne!(after, before, "the counter is not reset by RIS");
+}
+
+#[test]
+fn osc_8_opening_is_not_replayed_on_a_later_feed() {
+    // The event is a take, like a request: an opening is delivered once and
+    // not re-reported on a later feed or repaint.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07a");
+    assert!(hyperlink_added(&mut t).is_some());
+    t.feed(b"");
+    assert!(hyperlink_added(&mut t).is_none());
+}
+
+#[test]
+fn ris_drops_a_pending_hyperlink_opening() {
+    // A pending opening belongs to the session being reset, like other payload
+    // events, so RIS drops it before the caller drains it.
+    let mut t = term(1, 8);
+    t.feed(b"\x1b]8;;https://example.com\x07\x1bc");
+    assert!(hyperlink_added(&mut t).is_none());
 }
 
 #[test]

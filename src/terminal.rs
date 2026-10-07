@@ -19,8 +19,9 @@
 //! - OSC 0/2: window title (stored); OSC 4: palette entry set/queried; OSC
 //!   10/11/12: default foreground/background/cursor set/queried; OSC 52:
 //!   clipboard request (reported through [`TerminalState::dequeue_event()`]);
-//!   other OSC offered to the caller as [`ChildRequest::OtherOsc`] without
-//!   becoming text
+//!   OSC 8: hyperlink, carried as a pen attribute ([`Style::hyperlink`]) with
+//!   each opening reported as [`Event::HyperlinkAdded`]; other OSC offered to
+//!   the caller as [`ChildRequest::OtherOsc`] without becoming text
 //! - Alternate screen: DECSET/DECRST 1049 (also 47 / 1047)
 //!
 //! # Explicitly out of scope
@@ -41,11 +42,12 @@
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
 pub use crate::terminal_types::{
-    Cell, ChildRequest, ClipboardSelection, Color, ColorSlot, Event, MouseReporting, Position, Rgb,
-    ScrollbackLine, Style, TerminalModes,
+    Cell, ChildRequest, ClipboardSelection, Color, ColorSlot, Event, HyperlinkId, MouseReporting,
+    Position, Rgb, ScrollbackLine, Style, TerminalModes,
 };
 
 use std::collections::VecDeque;
+use std::num::NonZeroU32;
 
 use crate::size::Size;
 use crate::terminal_buffer::Screen;
@@ -76,8 +78,11 @@ use crate::terminal_types::SavedCursor;
 ///   all handed to the caller as
 ///   [`ChildRequest::SetColor`] / [`ChildRequest::GetColor`] through
 ///   [`dequeue_event()`](TerminalState::dequeue_event) (termnix keeps no palette);
-///   **OSC 52**: clipboard request, reported the same way; any other
-///   identifier is offered uninterpreted as [`ChildRequest::OtherOsc`]
+///   **OSC 52**: clipboard request, reported the same way; **OSC 8**: a
+///   hyperlink, set on the pen and copied into each painted cell
+///   ([`Style::hyperlink`]), with each opening handed to the caller as
+///   [`Event::HyperlinkAdded`]; any other identifier is offered uninterpreted
+///   as [`ChildRequest::OtherOsc`]
 /// - **Queries**: DSR, CPR, and primary DA, answered through
 ///   [`pending_reply_bytes()`](TerminalState::pending_reply_bytes). DA2
 ///   (`CSI > c`) and DA3 (`CSI = c`) are recognized but deliberately not
@@ -103,12 +108,19 @@ pub struct TerminalState {
     pub(crate) replies: ReplyBuf,
     pub(crate) scrollback: VecDeque<ScrollbackLine>,
     pub(crate) scrollback_cells: usize,
+    /// The [`HyperlinkId`] the next OSC 8 open will take.
+    ///
+    /// RIS does not reset it: ids are handed out and not reused, so an id a
+    /// caller kept across a reset still names the URL the caller stored for it.
+    /// The terminal keeps no table of issued ids, so this counter is its whole
+    /// hyperlink state.
+    pub(crate) hyperlink_counter: NonZeroU32,
     /// Events that have happened since the caller last drained them.
     ///
-    /// The merged state-change flags and the queue of unmerged requests, held
-    /// together so one [`dequeue_event()`](TerminalState::dequeue_event) is the whole
-    /// channel. Not part of `VisibleScalars`: an undrained event is not itself
-    /// a visible change, and draining one is not either.
+    /// The merged state-change flags and the queue of unmerged payload events,
+    /// held together so one [`dequeue_event()`](TerminalState::dequeue_event)
+    /// is the whole channel. Not part of `VisibleScalars`: an undrained event
+    /// is not itself a visible change, and draining one is not either.
     pub(crate) events: Events,
 }
 
@@ -118,16 +130,17 @@ pub struct TerminalState {
 /// [`TerminalState::dequeue_event()`](TerminalState::dequeue_event); it is private,
 /// and the only way a caller reaches an [`Event`] is the public accessor. The
 /// state-change events are merged: each is a flag, so many changes of one kind
-/// collapse to a single event. Requests are not merged: they are held in a
-/// queue, oldest-first, so every ask survives and the order the child sent them
-/// is preserved.
+/// collapse to a single event. The payload events (a request the caller must
+/// carry out, a hyperlink opening it may map) are not merged: they are held in
+/// one queue, oldest-first, so every one survives and the order the child sent
+/// them - including a request and a link in the same feed - is preserved.
 #[derive(Debug, Default)]
 pub(crate) struct Events {
     terminal_reset: bool,
     screen_updated: bool,
     scrollback_line_added: bool,
     title_updated: bool,
-    requests: VecDeque<ChildRequest>,
+    payload: VecDeque<Event>,
 }
 
 impl Events {
@@ -153,15 +166,20 @@ impl Events {
 
     /// Queues a request from the child.
     pub(crate) fn push_request(&mut self, request: ChildRequest) {
-        self.requests.push_back(request);
+        self.payload.push_back(Event::RequestReceived(request));
     }
 
-    /// Drops every queued request.
+    /// Queues a hyperlink opening from the child.
+    pub(crate) fn push_hyperlink_added(&mut self, id: HyperlinkId, url: String) {
+        self.payload.push_back(Event::HyperlinkAdded { id, url });
+    }
+
+    /// Drops every queued payload event.
     ///
     /// A reset restores the terminal to its defaults and leaves no pending ask
-    /// behind, so requests from before it must not outlive it.
+    /// or link opening behind, so payloads from before it must not outlive it.
     pub(crate) fn clear_requests(&mut self) {
-        self.requests.clear();
+        self.payload.clear();
     }
 }
 
@@ -170,9 +188,9 @@ impl Iterator for Events {
 
     /// Yields the next pending event, in the crate's fixed order: a reset
     /// first (it invalidates everything read before it), then the merged
-    /// state updates, then the unmerged requests last (where coming last
+    /// state updates, then the unmerged payload events last (where coming last
     /// cannot lose them). Each flag is cleared as its event is yielded, so it
-    /// is reported once; a request is popped as it is yielded.
+    /// is reported once; a payload event is popped as it is yielded.
     fn next(&mut self) -> Option<Event> {
         if std::mem::take(&mut self.terminal_reset) {
             return Some(Event::TerminalReset);
@@ -186,7 +204,7 @@ impl Iterator for Events {
         if std::mem::take(&mut self.title_updated) {
             return Some(Event::TitleUpdated);
         }
-        self.requests.pop_front().map(Event::RequestReceived)
+        self.payload.pop_front()
     }
 }
 
@@ -291,6 +309,7 @@ impl std::fmt::Debug for TerminalState {
             .field("replies", &self.replies)
             .field("scrollback", &self.scrollback)
             .field("scrollback_cells", &self.scrollback_cells)
+            .field("hyperlink_counter", &self.hyperlink_counter)
             .finish_non_exhaustive()
     }
 }
@@ -317,6 +336,7 @@ impl TerminalState {
             replies: ReplyBuf::new(),
             scrollback: VecDeque::new(),
             scrollback_cells: 0,
+            hyperlink_counter: NonZeroU32::MIN,
             events: Events::default(),
         }
     }
@@ -339,6 +359,7 @@ impl TerminalState {
     ///         termnix::Event::ScrollbackLineAppended => term.trim_scrollback(1000, 100_000),
     ///         termnix::Event::TitleUpdated => { /* read term.title() */ }
     ///         termnix::Event::RequestReceived(request) => { /* act on `request` */ }
+    ///         termnix::Event::HyperlinkAdded { id, url } => { /* map id to url */ }
     ///     }
     /// }
     /// # }
@@ -346,13 +367,13 @@ impl TerminalState {
     ///
     /// The events arrive in a fixed order when more than one is pending: a
     /// [`TerminalReset`](Event::TerminalReset) first, then the merged state
-    /// updates, then the requests last. The state updates are merged, so
-    /// several changes of the same kind since the last drain arrive as one
-    /// event and each is reported once; read the current state itself through
-    /// [`rows()`](TerminalState::rows),
+    /// updates, then the payload events (requests and hyperlink openings) last.
+    /// The state updates are merged, so several changes of the same kind since
+    /// the last drain arrive as one event and each is reported once; read the
+    /// current state itself through [`rows()`](TerminalState::rows),
     /// [`scrollback_lines()`](TerminalState::scrollback_lines), and
-    /// [`title()`](TerminalState::title). A request is not merged: every ask is
-    /// yielded, in the order the child sent them.
+    /// [`title()`](TerminalState::title). Payload events are not merged: every
+    /// one is yielded, in the order the child sent it.
     ///
     /// # Why this takes `&mut self`
     ///
@@ -367,9 +388,9 @@ impl TerminalState {
     /// is a byte stream the caller may write only partially, while an event is
     /// discrete and has no partial form.
     ///
-    /// Nothing is lost while a caller does not look: requests wait in a queue,
-    /// and a state-change flag stays set until it is yielded, so a change
-    /// missed on one turn is still reported on the next.
+    /// Nothing is lost while a caller does not look: payload events wait in a
+    /// queue, and a state-change flag stays set until it is yielded, so a
+    /// change missed on one turn is still reported on the next.
     pub fn dequeue_event(&mut self) -> Option<Event> {
         self.events.next()
     }
@@ -469,6 +490,23 @@ impl TerminalState {
     /// Returns the cell at `at` on the active screen, if in range.
     pub fn cell(&self, at: Position) -> Option<Cell> {
         self.active().get(at)
+    }
+
+    /// Hands out the id for the next hyperlink opening (OSC 8).
+    ///
+    /// The counter advances by one per open and wraps at the top of its `u32`
+    /// range, so nothing stops; the wrap is documented on [`HyperlinkId`] and
+    /// left unreachable rather than paid for with a set of handed-out ids. The
+    /// crate keeps no table, so the caller is the one that records the id this
+    /// returns beside the URL it was paired with.
+    pub(crate) fn next_hyperlink_id(&mut self) -> HyperlinkId {
+        // The counter holds the id to hand out, so take it and step. Stepping
+        // past `MAX` lands on 1 (`NonZeroU32::MIN`) rather than 0, so the
+        // counter stays non-zero and a wrapped id is `1` after `MAX`, not a
+        // value just handed out.
+        let id = self.hyperlink_counter;
+        self.hyperlink_counter = id.checked_add(1).unwrap_or(NonZeroU32::MIN);
+        HyperlinkId::new(id)
     }
 
     /// Returns each visible row as a left-to-right cell slice, top to bottom.

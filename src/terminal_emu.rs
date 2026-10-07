@@ -39,13 +39,15 @@ impl Perform for Emulator<'_> {
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         // OSC 0 / 2 store the window title; OSC 4 and 10-12 become color
-        // requests the caller carries out; OSC 52 records a clipboard request.
+        // requests the caller carries out; OSC 52 records a clipboard request;
+        // OSC 8 sets the pen's hyperlink and reports the opening as an event.
         // Every other identifier is unmodelled and offered to the caller as
         // `ChildRequest::OtherOsc`, so its payload neither becomes printable
         // text nor is silently lost.
         // xterm OSC catalogue: https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
-        // (OSC identifiers evolve; termnix reads title text, color state, and
-        // OSC 52 selection data, and passes the rest through.)
+        // (OSC identifiers evolve; termnix reads title text, color state,
+        // OSC 52 selection data, and OSC 8 hyperlinks, and passes the rest
+        // through.)
         let Some((&id, rest)) = params.split_first() else {
             return;
         };
@@ -73,6 +75,10 @@ impl Perform for Emulator<'_> {
             b"10" => self.osc_default_color(params, ColorSlot::DefaultForeground),
             b"11" => self.osc_default_color(params, ColorSlot::DefaultBackground),
             b"12" => self.osc_default_color(params, ColorSlot::DefaultCursor),
+            // OSC 8 sets the pen's hyperlink, not a request: it is an
+            // attribute a later paint copies into a cell, the same shape as
+            // SGR. See `osc_hyperlink`.
+            b"8" => self.osc_hyperlink(params),
             _ => self.other_osc(id, rest),
         }
     }
@@ -232,6 +238,34 @@ impl Emulator<'_> {
                 .push_request(ChildRequest::SetColor { slot, rgb });
         }
     }
+
+    /// Handles an OSC 8 hyperlink message (`ESC ] 8 ; <params> ; <URL> ST`).
+    ///
+    /// The sequence sets the pen's hyperlink, the way SGR sets the pen's
+    /// colors: every cell painted after it remembers the link. An empty (or
+    /// absent) URL clears the pen's hyperlink instead, which is how a child
+    /// closes a run; the close changes no cell and emits no event.
+    ///
+    /// A non-empty URL takes the next id and emits
+    /// [`Event::HyperlinkAdded`](crate::Event::HyperlinkAdded) carrying the id
+    /// and the URL, then sets the pen to that id. The crate does not intern:
+    /// every open gets a fresh id, and the caller keeps the id-to-URL map. The
+    /// `<params>` list is not read at all - the child's `id` parameter and any
+    /// other pair are ignored - so a caller that wants them reads the
+    /// passthrough bytes. `vte` splits OSC parameters on `;`, so a URL
+    /// containing `;` cannot reach here intact; that is a property of the
+    /// protocol's framing rather than a check made below.
+    fn osc_hyperlink(&mut self, params: &[&[u8]]) {
+        let url = params.get(2).copied().unwrap_or(b"");
+        if url.is_empty() {
+            self.term.pen.hyperlink = None;
+            return;
+        }
+        let id = self.term.next_hyperlink_id();
+        let url = String::from_utf8_lossy(url).into_owned();
+        self.term.events.push_hyperlink_added(id, url);
+        self.term.pen.hyperlink = Some(id);
+    }
 }
 
 impl TerminalState {
@@ -366,6 +400,10 @@ impl TerminalState {
         // holds is the host's to clear. The color coordinates RIS would once
         // have returned to defaults are the child's own, and the crate no
         // longer stores them.
+        // The hyperlink counter is deliberately not reset: ids are handed out
+        // and not reused, so an id a caller kept across the reset still names
+        // the URL the caller stored for it. There is no table to clear - the
+        // crate keeps no hyperlink state but the counter.
         self.title.clear();
         // RIS restores the terminal, and a pending request belongs to the
         // session being reset; leaving it would let a caller act on an ask
