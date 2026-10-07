@@ -471,9 +471,10 @@ once as `Event::HyperlinkAdded { id, url }`. The crate keeps no URL table and
 no reference count: the caller owns the id-to-URL mapping, and the id on a cell
 plus the counter that hands ids out is the crate's whole hyperlink state.
 
-The id counter was made its own space rather than a raw `u32` mapped through
-`from_counter`, which had aliased the values 0 and 1 onto id 1 and so handed
-out id 1 twice in a row at the wrap. The counter is now a `NonZeroU32` that
-steps `MAX -> 1`, so no id is handed out twice in a row.
+The id counter was made its own space rather than a raw `u32` whose next value
+was mapped onto an id by a helper in the crate: that helper aliased the counter
+values 0 and 1 onto id 1, so stepping the counter past its maximum handed out id
+1 twice in a row. The counter is now a `NonZeroU32` that steps `MAX -> 1`, so no
+id is handed out twice in a row and 0 is never an id.
 
 The scope is unchanged from what is described above.
