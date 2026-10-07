@@ -1,6 +1,6 @@
 # RFC: Carry OSC 8 hyperlinks as a pen attribute
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -459,3 +459,21 @@ OSC framing, not a choice here. Neither changes the shape of this RFC.
 - A drop event, if a caller ever wants to know when a link is no longer on any
   cell, would need the crate to track which cells refer to a link, i.e. the
   reference count this RFC rejects. It would be its own, larger change.
+
+## Outcome
+
+Implemented in [#26](https://github.com/sile/termnix/pull/26) (merged as `4617aa3`).
+
+OSC 8 hyperlinks are now carried as a pen attribute. `Style` gained a
+`hyperlink` field holding an `Option<HyperlinkId>`, an opaque id standing in
+for the URL so `Style` and `Cell` stay `Copy`, and each opening is reported
+once as `Event::HyperlinkAdded { id, url }`. The crate keeps no URL table and
+no reference count: the caller owns the id-to-URL mapping, and the id on a cell
+plus the counter that hands ids out is the crate's whole hyperlink state.
+
+The id counter was made its own space rather than a raw `u32` mapped through
+`from_counter`, which had aliased the values 0 and 1 onto id 1 and so handed
+out id 1 twice in a row at the wrap. The counter is now a `NonZeroU32` that
+steps `MAX -> 1`, so no id is handed out twice in a row.
+
+The scope is unchanged from what is described above.
