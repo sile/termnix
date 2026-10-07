@@ -28,7 +28,7 @@ checksum = "4b59efba88ff29e9fb1fea914a60aa69aea73f02f2bcbd76b369f7a07cdda95a"
 
 [[package]]
 name = "termnix"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "libc",
  "noprop",
