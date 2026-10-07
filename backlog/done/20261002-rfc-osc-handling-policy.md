@@ -1,6 +1,6 @@
 # RFC: A policy for OSC handling (umbrella)
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -372,3 +372,21 @@ decisions in other documents. If the follow-ons are never written, it is a
   (colors, hyperlinks, and whatever a prompt-mark protocol needs). The policy
   gives each such proposal a place to argue from, which is the most this
   umbrella can offer them.
+
+## Outcome
+
+Settled by the follow-on proposals the policy named, each landed on its own:
+the unified event channel and the request variants (the request channel row),
+the passthrough of unmodelled OSC, the title kept as state with
+`Event::TitleUpdated`, the color sequences handed to the caller, and OSC 8 as a
+pen attribute. Every row of the policy table has an implementation, so the
+umbrella is settled with them.
+
+The one row whose answer changed while the follow-ons landed is `?`. The policy
+first left the routing of an interpreted query open; it is now settled as
+"route it": a query whose answer the crate holds from its own state is answered
+from state, and a query whose answer lives above the crate (an OSC 52 read) is
+delivered to the caller as a request, with the caller writing the reply back to
+the child. The reply buffer keeps only answers the crate can build itself.
+
+The scope is unchanged from what is described above.
