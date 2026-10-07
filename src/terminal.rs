@@ -41,9 +41,8 @@
 //! - Combining characters, emoji ZWJ sequences, and full East Asian Width
 //!   edge cases beyond single-codepoint width are not modeled yet.
 
-pub use crate::terminal_types::{
-    Cell, ChildRequest, ClipboardSelection, Color, ColorSlot, Event, HyperlinkId, MouseReporting,
-    Position, Rgb, ScrollbackLine, Style, TerminalModes,
+use crate::terminal_types::{
+    Cell, ChildRequest, Event, HyperlinkId, Position, ScrollbackLine, Style, TerminalModes,
 };
 
 use std::collections::VecDeque;
@@ -511,8 +510,8 @@ impl TerminalState {
 
     /// Returns each visible row as a left-to-right cell slice, top to bottom.
     ///
-    /// The number of rows equals [`Size::rows`](crate::size::Size::rows) and
-    /// every slice has exactly [`Size::cols`](crate::size::Size::cols) cells for
+    /// The number of rows equals [`Size::rows`](crate::Size::rows) and every
+    /// slice has exactly [`Size::cols`](crate::Size::cols) cells for
     /// the current size. Unlike the cells saved into scrollback, the visible
     /// rows are re-laid out by [`TerminalState::resize()`], so slices obtained
     /// before a resize may differ in length from slices obtained after it. The
@@ -525,8 +524,8 @@ impl TerminalState {
 
     /// Returns the visible row at `row` as a cell slice, if in range.
     ///
-    /// Rows outside the range `0..`[`Size::rows`](crate::size::Size::rows)
-    /// return `None`.
+    /// Rows outside the range `0..`[`Size::rows`](crate::Size::rows) return
+    /// `None`.
     pub fn row(&self, row: u16) -> Option<&[Cell]> {
         if row >= self.size.rows.get() {
             return None;

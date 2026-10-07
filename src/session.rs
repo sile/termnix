@@ -219,13 +219,13 @@ pub struct SessionCounters {
     pub input_bytes_enqueued: u64,
     /// Cumulative application input bytes written to the PTY.
     ///
-    /// Together with [`Self::reply_bytes_written`], this accounts for every
-    /// byte written to the PTY.
+    /// Together with [`SessionCounters::reply_bytes_written`], this accounts
+    /// for every byte written to the PTY.
     pub input_bytes_written: u64,
     /// Cumulative reply bytes written to the PTY.
     ///
-    /// Together with [`Self::input_bytes_written`], this accounts for every
-    /// byte written to the PTY.
+    /// Together with [`SessionCounters::input_bytes_written`], this accounts
+    /// for every byte written to the PTY.
     pub reply_bytes_written: u64,
     /// Cumulative `read` syscalls attempted.
     pub read_syscalls: u64,
@@ -326,8 +326,8 @@ pub struct Session {
     phase: Phase,
     /// Cached status once the direct child has been reaped.
     ///
-    /// Independent of [`Self::phase`]: I/O may continue until PTY EOF after
-    /// the child exits.
+    /// Independent of the lifecycle phase: I/O may continue until PTY EOF
+    /// after the child exits.
     exit_status: Option<ExitStatus>,
     /// Raw bytes read from the PTY but not yet decoded.
     read_buffer: Vec<u8>,
@@ -448,7 +448,7 @@ impl Session {
     /// The fd is non-blocking, so no readiness flags are taken; `WouldBlock`
     /// results decide how far a single call goes. A call stops early when
     /// `budget` is exhausted, which [`SessionCounters::pump_budget_exhaustions`]
-    /// counts; [`needs_pump`](Self::needs_pump()) then stays true so the caller
+    /// counts; [`needs_pump()`](Self::needs_pump) then stays true so the caller
     /// can return to this session on a later rotation. After a logical close
     /// this is a successful no-op.
     ///

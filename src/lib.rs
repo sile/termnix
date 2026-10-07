@@ -25,9 +25,10 @@ pub use input::{Input, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, Mo
 pub use pty::SignalOutcome;
 pub use session::{Interests, PumpBudget, Session, SessionCounters, SessionStatus};
 pub use size::Size;
-pub use terminal::{
+pub use terminal::TerminalState;
+pub use terminal_types::{
     Cell, ChildRequest, ClipboardSelection, Color, ColorSlot, Event, HyperlinkId, MouseReporting,
-    Position, Rgb, ScrollbackLine, Style, TerminalModes, TerminalState,
+    Position, Rgb, ScrollbackLine, Style, TerminalModes,
 };
 
 /// Compiles the code example in `README.md` as a doctest so it cannot drift
