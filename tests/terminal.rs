@@ -1165,13 +1165,14 @@ fn wide_character_wraps_when_one_column_remains() {
 }
 
 #[test]
-fn resize_preserves_overlap_and_clamps_cursor() {
+fn resize_keeps_the_bottom_row_and_clamps_cursor() {
     let mut t = term(2, 4);
     t.feed(b"abcd");
     t.feed(b"xy");
     t.resize(size(1, 2));
     assert_eq!(t.size(), size(1, 2));
-    assert_eq!(text_at(&t, 0), "ab");
+    // The newest row stays visible; the cursor on it clamps into the new bounds.
+    assert_eq!(text_at(&t, 0), "xy");
     assert_eq!(t.cursor(), termnix::Position { row: 0, col: 1 });
 }
 
