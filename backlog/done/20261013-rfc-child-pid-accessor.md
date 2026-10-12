@@ -1,6 +1,6 @@
 # RFC: Expose the child's process id on a session
 
-- Status: draft
+- Status: accepted
 
 ## Summary
 
@@ -127,3 +127,18 @@ surface that serves all of them and keeps OS policy out of a terminal emulator.
   termnix changing again.
 - If several such helpers turn out to be wanted by most callers, a small
   opt-in `SessionInfo` could be layered on later without disturbing this method.
+
+## Outcome
+
+Implemented in [#28](https://github.com/sile/termnix/pull/28) (merged as `4162a89`).
+
+`Session::child_pid() -> Option<u32>` was added, backed by `PtyProcess::pid()`
+and a `Pty::pid()` helper, mirroring `Session::fd()`: the pid is reported while
+the session owns a live PTY (including after EOF) and becomes `None` once the
+session is closing or reaped. Both open questions were resolved while writing
+the item — the return type is `u32`, and `Eof` still reports the pid — and the
+implementation follows those decisions.
+
+The scope is unchanged from what is described above.
+
+The scope is unchanged from what is described above.
