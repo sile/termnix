@@ -1,6 +1,6 @@
 # Bug: shrinking a terminal drops visible rows instead of keeping them
 
-- Status: open
+- Status: fixed
 
 ## Summary
 
@@ -123,3 +123,13 @@ carry the pre-shrink width -- so the fix removes no existing guarantee.
 This report is only about *not losing* the rows. Reflowing retained history to
 the new width when the terminal grows is a separate question about what the API
 should offer and is not implied here.
+
+## Outcome
+
+Fixed in [#27](https://github.com/sile/termnix/pull/27) (merged as `404e1fd`).
+
+A vertical shrink now keeps the newest rows visible and appends the rows it pushes off the top to the scrollback, at their pre-shrink width and in top-to-bottom order, the same end and order a full-screen scroll uses. So after shrinking a full 4x8 grid holding `AAAA`..`DDDD` to 2x8, the scrollback ends with `AAAA`, `BBBB` and the visible grid holds `CCCC`, `DDDD`, and the union of history and the visible grid only grows on a shrink. The alternate screen has no scrollback, so its displaced rows are discarded; a vertical grow displaces no row.
+
+Note on reflow: this fix preserves rows, it does not re-wrap them. A horizontal shrink still clips each physical row at the new width and never re-wraps text onto the following rows -- termnix re-lays out cells but never re-derives logical lines, so it has no way to grow the height of a clipped line. Reflowing the live screen belongs to the child, which repaints itself at the new size on `SIGWINCH`. Reflowing settled output and the scrollback cannot be done from the child side, because the child cannot see the emulator's history, so if anyone ever did it, it would have to be termnix -- but that would impose a policy the crate's "mechanism only" stance leaves to the caller, and a retained `ScrollbackLine` deliberately keeps the width it was saved at. Reflow is therefore out of scope here and is not implied by keeping the rows.
+
+The scope is unchanged from what is described above.
