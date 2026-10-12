@@ -1,6 +1,6 @@
 # Bug: A vertical shrink moves the rows but leaves the cursor behind
 
-- Status: open
+- Status: fixed
 
 ## Summary
 
@@ -135,3 +135,22 @@ against the new `size`, and a stale region would be the row-shift bug's
 sibling. Only the cursor move is missing.
 - `repair_cursor_cell()` runs after the clamp and only walks back off a
 zero-width cell; it cannot be relied on to find the shifted row.
+
+## Outcome
+
+Fixed in [#29](https://github.com/sile/termnix/pull/29) (merged as `fde703a`).
+
+`Screen::resize()` now returns a `Displaced` value carrying both the rows it
+pushed off the top and how far the surviving rows moved up (`old_rows -
+copy_rows`, zero on a grow). `TerminalState::resize()` subtracts that shift
+from `cursor.row` before clamping, so the cursor moves with the content and
+`cursor()` and `rows()` agree again. One shift covers both screens, since the
+primary and the alternate are always the same size and shift together.
+
+The reproduction from the report is now a test that fails before the fix:
+text written at row 5 lands on row 3 after a shrink from 24 to 22 rows, and
+the cursor reports row 3 rather than the old row 5. Three more tests cover
+the alternate screen, a grow (zero shift), and a shrink that moves the cursor
+past the new top and clamps it.
+
+The scope is unchanged from what is described above.
