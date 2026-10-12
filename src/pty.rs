@@ -99,6 +99,14 @@ impl PtyProcess {
         set_winsize(self.master.as_raw_fd(), size)
     }
 
+    /// Returns the direct child's process id.
+    ///
+    /// The child is a session leader, so this is also its process group id.
+    /// The value is available from spawn until the child is reaped.
+    pub(crate) fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Checks whether the child has exited without blocking.
     ///
     /// A successful status is cached on this wrapper. Later calls return the

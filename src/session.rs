@@ -301,6 +301,13 @@ impl Pty {
             Self::Closing(_) => None,
         }
     }
+
+    fn pid(&self) -> Option<u32> {
+        match self {
+            Self::Live(pty) => Some(pty.pid()),
+            Self::Closing(_) => None,
+        }
+    }
 }
 
 /// A single PTY-backed terminal session.
@@ -395,6 +402,42 @@ impl Session {
             return None;
         }
         self.pty.as_ref().and_then(Pty::fd)
+    }
+
+    /// Returns the direct child's process id, or `None` once it is gone.
+    ///
+    /// The value is the pid of the direct child, which equals its process
+    /// group id because the child is a session leader (`setsid` runs before
+    /// `exec`). It is available from the moment the session is spawned and
+    /// needs no I/O to read.
+    ///
+    /// `None` is returned once the session no longer owns a live PTY: while the
+    /// session is closing, and after the session is reaped. A session that has
+    /// seen EOF but not yet been reaped still reports the pid, exactly as
+    /// [`Session::fd()`] still reports the fd.
+    ///
+    /// A pid is meaningful only while the process exists. A child that has
+    /// exited but not been reaped still has a pid; pair this with
+    /// [`Session::exit_status()`] or [`Session::try_wait()`] to ask whether the
+    /// child is still running, as for the fd. The pid is not cached past
+    /// reaping, so a recycled pid is never reported.
+    ///
+    /// This is a bare pid on purpose. Reading, for example, `/proc/<pid>/cwd`
+    /// is operating-system specific, can fail or race, and every caller wants a
+    /// different slice of a process; naming the child lets the caller ask.
+    ///
+    /// ```no_run
+    /// # let session: termnix::Session = unimplemented!();
+    /// if let Some(pid) = session.child_pid() {
+    ///     let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"));
+    ///     # let _ = cwd;
+    /// }
+    /// ```
+    pub fn child_pid(&self) -> Option<u32> {
+        if self.phase == Phase::Closing || self.phase == Phase::Reaped {
+            return None;
+        }
+        self.pty.as_ref().and_then(Pty::pid)
     }
 
     /// Returns the poll interests the fd should currently be registered with.

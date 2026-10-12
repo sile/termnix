@@ -720,3 +720,54 @@ fn trim_scrollback_via_session_matches_terminal_state() {
     assert_eq!(session.terminal_state().scrollback_lines().len(), 0);
     assert_eq!(session.terminal_state().scrollback_cells(), 0);
 }
+
+#[test]
+fn child_pid_stays_available_until_reap() {
+    let mut session = spawn_session("printf 'bye\\n'; exit 0");
+
+    // The pid is known as soon as the session exists and does not change.
+    let pid = session.child_pid().expect("pid while live");
+    assert!(pid > 0, "pid={pid}");
+
+    pump_until(std::slice::from_mut(&mut session), |sessions| {
+        sessions[0].status() == termnix::SessionStatus::Eof
+    });
+
+    // EOF is a PTY fact; the child may not be reaped yet, and the pid stays
+    // reported exactly as the fd does at EOF.
+    assert_eq!(session.child_pid(), Some(pid), "pid must survive EOF");
+
+    let status = wait_exit(&mut session);
+    assert!(status.success(), "status={status:?}");
+    assert_eq!(session.status(), termnix::SessionStatus::Reaped);
+    assert!(
+        session.child_pid().is_none(),
+        "pid should be gone after reap"
+    );
+}
+
+#[test]
+fn child_pid_is_the_child_process_group() {
+    // The child runs `setsid`, so its pid doubles as its process group id; this
+    // is the fact a caller relies on to signal or inspect the whole group.
+    let session = spawn_session("sleep 30");
+    let pid = session.child_pid().expect("pid while live");
+
+    let pgid = unsafe { libc::getpgid(pid as libc::pid_t) };
+    assert!(pgid >= 0, "getpgid failed: {}", io::Error::last_os_error());
+    assert_eq!(pgid as u32, pid, "the child is not its own process group");
+}
+
+#[test]
+fn child_pid_is_gone_after_close() {
+    let mut session = spawn_session("while :; do sleep 30; done");
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(session.child_pid().is_some(), "pid while live");
+
+    session.close();
+    assert_eq!(session.status(), termnix::SessionStatus::Closing);
+    assert!(
+        session.child_pid().is_none(),
+        "pid should be gone after close"
+    );
+}
