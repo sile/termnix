@@ -140,5 +140,3 @@ the item — the return type is `u32`, and `Eof` still reports the pid — and t
 implementation follows those decisions.
 
 The scope is unchanged from what is described above.
-
-The scope is unchanged from what is described above.
