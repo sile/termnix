@@ -1177,6 +1177,51 @@ fn resize_keeps_the_bottom_row_and_clamps_cursor() {
 }
 
 #[test]
+fn resize_moves_the_cursor_up_with_the_rows_it_keeps() {
+    let mut t = term(24, 80);
+    t.feed(b"\x1b[6;1H");
+    t.feed(b"here");
+    t.resize(size(22, 80));
+    // The surviving rows move up by two, so the text the child wrote is now on
+    // row 3, and the cursor has to move with it.
+    assert_eq!(text_at(&t, 3), "here");
+    assert_eq!(t.cursor(), at(3, 4));
+}
+
+#[test]
+fn resize_moves_the_cursor_on_the_alternate_screen_too() {
+    let mut t = term(24, 80);
+    t.feed(b"\x1b[?1049h");
+    t.feed(b"\x1b[6;1H");
+    t.feed(b"here");
+    t.resize(size(22, 80));
+    assert!(t.is_on_alternate_screen());
+    assert_eq!(text_at(&t, 3), "here");
+    assert_eq!(t.cursor(), at(3, 4));
+}
+
+#[test]
+fn resize_grow_keeps_the_cursor_row() {
+    let mut t = term(22, 80);
+    t.feed(b"\x1b[6;1H");
+    t.feed(b"here");
+    t.resize(size(24, 80));
+    // A grow shifts no row, so the cursor stays where it was.
+    assert_eq!(text_at(&t, 5), "here");
+    assert_eq!(t.cursor(), at(5, 4));
+}
+
+#[test]
+fn resize_shrink_past_the_cursor_clamps_it_to_the_new_top() {
+    let mut t = term(24, 80);
+    t.feed(b"\x1b[2;1H");
+    t.feed(b"here");
+    t.resize(size(22, 80));
+    // The cursor's row (1) moves up by two past the new top and clamps to 0.
+    assert_eq!(t.cursor(), at(0, 4));
+}
+
+#[test]
 fn resize_clears_clipped_wide_character() {
     let mut t = term(1, 4);
     t.feed("あ".as_bytes());

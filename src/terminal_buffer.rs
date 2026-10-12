@@ -3,6 +3,17 @@
 use crate::size::Size;
 use crate::terminal_types::{Cell, Position, Style};
 
+/// What a [`Screen::resize`] displaced: the rows it pushed off the top, each a
+/// full left-to-right row of cells at the pre-shrink width in top-to-bottom
+/// order, plus how far every surviving row moved up.
+///
+/// The shift is zero on a grow, so a caller that owns a cursor can subtract it
+/// unconditionally and then clamp.
+pub(crate) struct Displaced {
+    pub(crate) rows: Vec<Vec<Cell>>,
+    pub(crate) row_shift: u16,
+}
+
 #[derive(Clone)]
 pub(crate) struct Screen {
     size: Size,
@@ -66,13 +77,18 @@ impl Screen {
     ///
     /// A vertical shrink keeps the rows at the new bottom edge and returns the
     /// rows it pushes off the top in top-to-bottom order, each as a full
-    /// left-to-right row of cells at the pre-shrink width. Keeping the newest
-    /// rows visible and handing the oldest to the caller matches a full-screen
-    /// scroll, so the caller can append them to the same history. A vertical
-    /// grow and a no-op resize return nothing.
-    pub(crate) fn resize(&mut self, size: Size) -> Vec<Vec<Cell>> {
+    /// left-to-right row of cells at the pre-shrink width, along with the
+    /// distance every surviving row moved up ([`Displaced::row_shift`], zero on
+    /// a grow). Keeping the newest rows visible and handing the oldest to the
+    /// caller matches a full-screen scroll, so the caller can append them to
+    /// the same history, and the shift lets a caller that owns a cursor move it
+    /// by the same amount. A no-op resize returns no rows and a zero shift.
+    pub(crate) fn resize(&mut self, size: Size) -> Displaced {
         if size == self.size {
-            return Vec::new();
+            return Displaced {
+                rows: Vec::new(),
+                row_shift: 0,
+            };
         }
         let old_rows = self.size.rows.get() as usize;
         let old_cols = self.size.cols.get() as usize;
@@ -106,7 +122,10 @@ impl Screen {
         self.size = size;
         self.cells = cells;
         self.dirty = true;
-        dropped
+        Displaced {
+            rows: dropped,
+            row_shift: row_shift as u16,
+        }
     }
 
     pub(crate) fn clear_cell(&mut self, row: u16, col: u16) {
