@@ -598,8 +598,9 @@ impl TerminalState {
     /// Resizes both primary and alternate screens.
     ///
     /// Existing contents are copied into the overlapping region. Broken wide
-    /// characters at the new right edge are cleared. The cursor and scroll
-    /// region are clamped into the new bounds.
+    /// characters at the new right edge are cleared. The scroll region is
+    /// clamped into the new bounds, and the cursor moves up with the rows a
+    /// vertical shrink keeps, then clamps.
     ///
     /// The visible grid reflows to the new size; the scrollback does not. Each
     /// retained [`ScrollbackLine`] keeps the width it had when it was
@@ -629,9 +630,11 @@ impl TerminalState {
             return;
         }
         let dropped = self.primary.resize(size);
-        self.alternate.resize(size);
+        // Both screens are kept at the same size, so they shift by the same
+        // amount; the primary's shift is the cursor's.
+        let _ = self.alternate.resize(size);
         if !self.on_alternate {
-            for row in dropped {
+            for row in dropped.rows {
                 let line = ScrollbackLine::new(row);
                 self.scrollback_cells = self.scrollback_cells.saturating_add(line.len());
                 self.scrollback.push_back(line);
@@ -641,6 +644,9 @@ impl TerminalState {
         self.size = size;
         self.scroll_top = 0;
         self.scroll_bottom = size.rows.get().saturating_sub(1);
+        // The surviving rows moved up by `row_shift`, so the cursor has to move
+        // with them before the clamp trims it to the new bounds.
+        self.cursor.row = self.cursor.row.saturating_sub(dropped.row_shift);
         self.cursor.row = self.cursor.row.min(size.rows.get() - 1);
         self.cursor.col = self.cursor.col.min(size.cols.get() - 1);
         self.wrap_pending = false;
