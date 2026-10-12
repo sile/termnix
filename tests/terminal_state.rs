@@ -687,27 +687,45 @@ fn insert_lines_delete_lines_and_scroll_down_are_not_added() {
 }
 
 #[test]
-fn resize_does_not_add_or_reflow_history() {
-    let mut t = term(3, 4);
+fn resize_moves_displaced_rows_into_history() {
+    let mut t = term(4, 8);
     t.feed(b"aaaa\r\nbbbb\r\ncccc\r\ndddd");
-    // After the fourth line the top row "aaaa" scrolled out.
-    let before = t.scrollback_lines().len();
-    assert_eq!(before, 1);
-    t.resize(size(2, 4));
-    let snap = &t;
-    assert_eq!(snap.scrollback_lines().len(), 1);
-    assert_eq!(
-        line_text(snap.scrollback_lines().front().expect("scrollback line")),
-        "aaaa"
-    );
-    assert_eq!(
-        snap.scrollback_lines()
-            .front()
-            .expect("scrollback line")
-            .cells()
-            .len(),
-        4
-    );
+    // The grid is full and nothing has scrolled off yet.
+    assert!(t.scrollback_lines().is_empty());
+
+    t.resize(size(2, 8));
+
+    // The two rows pushed off the top are kept, oldest-first, so stitching the
+    // scrollback then the visible rows still reads top-to-bottom.
+    let history: Vec<String> = t.scrollback_lines().iter().map(line_text).collect();
+    assert_eq!(history, ["aaaa", "bbbb"]);
+    assert_eq!(text_at(&t, 0), "cccc");
+    assert_eq!(text_at(&t, 1), "dddd");
+}
+
+#[test]
+fn resize_keeps_displaced_rows_at_the_pre_shrink_width() {
+    let mut t = term(2, 4);
+    t.feed(b"abcd\r\nefgh");
+
+    t.resize(size(1, 2));
+
+    // The row pushed off the top keeps the width it had before the shrink, like
+    // a line scrolled off already does.
+    let history: Vec<&termnix::ScrollbackLine> = t.scrollback_lines().iter().collect();
+    assert_eq!(history.len(), 1);
+    assert_eq!(line_text(history[0]), "abcd");
+    assert_eq!(history[0].cells().len(), 4);
+    assert_eq!(text_at(&t, 0), "ef");
+}
+
+#[test]
+fn resize_grow_and_no_op_leave_history_alone() {
+    let mut t = term(2, 4);
+    t.feed(b"abcd\r\nefgh");
+    t.resize(size(2, 4)); // no-op
+    t.resize(size(4, 6)); // grow
+    assert!(t.scrollback_lines().is_empty());
 }
 
 #[test]

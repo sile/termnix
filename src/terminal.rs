@@ -609,6 +609,14 @@ impl TerminalState {
     /// clear the scrollback via [`TerminalState::trim_scrollback()`] when a
     /// change of size makes mixed widths a problem.
     ///
+    /// A vertical shrink keeps the newest rows visible and appends the rows it
+    /// pushes off the top to the scrollback, at the pre-shrink width and in
+    /// top-to-bottom order, the same end and order a full-screen scroll uses.
+    /// No visible row a caller could read before the resize is dropped, so
+    /// stitching the scrollback then the visible rows still reads the text in
+    /// the order it appeared. The alternate screen has no scrollback, so its
+    /// displaced rows are discarded; a vertical grow displaces no row.
+    ///
     /// This method only re-lays out the emulator: it touches no file
     /// descriptor, sets no kernel winsize, and sends no signal. It knows
     /// nothing about a PTY or a child process. A caller that owns a PTY and
@@ -620,8 +628,16 @@ impl TerminalState {
         if size == self.size {
             return;
         }
-        self.primary.resize(size);
+        let dropped = self.primary.resize(size);
         self.alternate.resize(size);
+        if !self.on_alternate {
+            for row in dropped {
+                let line = ScrollbackLine::new(row);
+                self.scrollback_cells = self.scrollback_cells.saturating_add(line.len());
+                self.scrollback.push_back(line);
+                self.events.mark_scrollback_line_added();
+            }
+        }
         self.size = size;
         self.scroll_top = 0;
         self.scroll_bottom = size.rows.get().saturating_sub(1);

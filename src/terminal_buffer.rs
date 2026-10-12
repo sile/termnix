@@ -61,22 +61,43 @@ impl Screen {
         self.dirty = true;
     }
 
-    pub(crate) fn resize(&mut self, size: Size) {
+    /// Resizes the cell buffer, copying the overlapping region and clearing a
+    /// broken wide character at the new right edge.
+    ///
+    /// A vertical shrink keeps the rows at the new bottom edge and returns the
+    /// rows it pushes off the top in top-to-bottom order, each as a full
+    /// left-to-right row of cells at the pre-shrink width. Keeping the newest
+    /// rows visible and handing the oldest to the caller matches a full-screen
+    /// scroll, so the caller can append them to the same history. A vertical
+    /// grow and a no-op resize return nothing.
+    pub(crate) fn resize(&mut self, size: Size) -> Vec<Vec<Cell>> {
         if size == self.size {
-            return;
+            return Vec::new();
+        }
+        let old_rows = self.size.rows.get() as usize;
+        let old_cols = self.size.cols.get() as usize;
+        let copy_rows = self.size.rows.get().min(size.rows.get()) as usize;
+        let copy_cols = self.size.cols.get().min(size.cols.get()) as usize;
+        // The rows that do not fit at the new height leave at the top, so the
+        // newest rows stay visible. `row_shift` is how far each surviving row
+        // moves up (zero on a grow).
+        let row_shift = old_rows - copy_rows;
+        let mut dropped = Vec::new();
+        for row in 0..row_shift {
+            let start = row * old_cols;
+            dropped.push(self.cells[start..start + old_cols].to_vec());
         }
         let mut cells = vec![Cell::EMPTY; cell_count(size)];
-        let copy_rows = self.size.rows.get().min(size.rows.get());
-        let copy_cols = self.size.cols.get().min(size.cols.get());
         for row in 0..copy_rows {
+            let src_row = row + row_shift;
             for col in 0..copy_cols {
-                let src = row as usize * self.size.cols.get() as usize + col as usize;
-                let dst = row as usize * size.cols.get() as usize + col as usize;
+                let src = src_row * old_cols + col;
+                let dst = row * size.cols.get() as usize + col;
                 cells[dst] = self.cells[src];
             }
             if copy_cols > 0 {
                 let edge = copy_cols - 1;
-                let dst = row as usize * size.cols.get() as usize + edge as usize;
+                let dst = row * size.cols.get() as usize + edge;
                 if cells[dst].width == 2 {
                     cells[dst] = Cell::EMPTY;
                 }
@@ -85,6 +106,7 @@ impl Screen {
         self.size = size;
         self.cells = cells;
         self.dirty = true;
+        dropped
     }
 
     pub(crate) fn clear_cell(&mut self, row: u16, col: u16) {
