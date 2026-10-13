@@ -1,21 +1,32 @@
-# Bug: A vertical shrink pushes every surviving row into the scrollback
+# Bug: Blank rows displaced by a layout change go into the scrollback
 
 - Status: open
 
 ## Summary
 
-When a `TerminalState` is resized to fewer rows, `TerminalState::resize`
-appends the rows the shrink pushed off the top to the scrollback -- but on a
-shrink those rows are not "displaced content" the way they are on a scroll.
-The rows that leave are the rows *below* the new bottom edge, and they are
-often blank; the rows that survive are kept bottom-aligned. So a single shrink
-of a mostly-blank screen copies that blank screen into the history, and
-the visible grid is left blank while its text moves into the history.
+Rows that leave the grid because the layout changed end up in the scrollback
+whether or not they were content, so a blank screen that is erased or resized
+files its blanks as history. Two entry points reach the same append:
 
-Repeating a shrink-and-grow cycle appends the same rows again every time. A
-session that is resized periodically therefore grows its history without
-bound, with the real output buried under repeated copies of one screen, and
-the rows that a caller is showing on screen are the blank ones.
+- **A vertical shrink.** `TerminalState::resize` appends the rows the shrink
+  pushed off the top -- but on a shrink those rows are not "displaced content"
+  the way they are on a scroll. The rows that leave are the rows *below* the
+  new bottom edge, and they are often blank; the rows that survive are kept
+  bottom-aligned. So a single shrink of a mostly-blank screen copies that
+  blank screen into the history, and the visible grid is left blank while its
+  text moves into the history.
+- **An erase followed by a scroll.** `CSI 2 J` blanks the screen; the output
+  that follows scrolls the blanks off the top through the ordinary
+  `scroll_up_screen`, which appends them like any other scrolled row. Here the
+  rows really did scroll off, but they are blanks the clear made rather than
+  anything the child wrote. See "Second entry point" below.
+
+In both, the blanks are appended *newest*, so a caller trimming to a limit
+drops real output to make room for them. Repeating a shrink-and-grow cycle
+appends the same rows again every time: a session that is resized periodically
+grows its history without bound, with the real output buried under repeated
+copies of one screen, and the rows that a caller is showing on screen are the
+blank ones.
 
 ## Reproduction
 
@@ -56,6 +67,48 @@ for _ in 0..4 {
 Nothing about the fed text matters beyond there being blank rows below it,
 which is the ordinary case (a prompt at the top of a tall, mostly empty
 screen). The larger the shrink, the more rows are appended.
+
+## Second entry point: erasing the screen
+
+The same append fires when the screen is erased and then scrolled, with no
+resize involved. `CSI 2 J` (erase in display) clears the screen and leaves the
+cursor where it was; output that follows reaches the bottom row, scrolls the
+screen, and the scroll pushes the rows above it into the scrollback. On a
+screen the clear just blanked, those rows are blanks.
+
+```rust
+let mut term = TerminalState::new(size(24, 80));
+term.feed(b"first\r\nsecond\r\n");
+term.feed(b"\x1b[2J");                     // clear; cursor stays where it was
+term.feed(b"first\r\nsecond\r\n");         // rewrite the two lines
+for _ in 0..30 {
+    term.feed(b"\r\n");                   // carry the cursor to the bottom row
+}
+
+// Observed: scrollback_lines() holds 11 lines, and the first two are empty --
+// ahead of "first" and "second".
+// Expected: nothing scrolled off *before* the two lines were written, and the
+// blanks the clear made are not the child's output, so the history should
+// begin with "first".
+```
+
+The 30 newlines are only there to drive the scroll; any output that reaches
+the bottom row does it, and 11 is just what this size leaves. Clearing alone
+does not append (a clear followed by two lines leaves the history empty), and
+that is the trap: the append needs both the erase and a scroll, so it shows up
+in a program that clears before drawing rather than in the clear itself.
+
+Unlike the resize case, the scroll here is a real `scroll_up_screen` and the
+rows really do leave the top of the grid; what is wrong is that the rows it
+leaves with are the blank ones the clear produced rather than anything the
+child wrote. Read against `scroll_up_screen`'s contract ("pushes the displaced
+rows into scrollback") the append is faithful -- the rows were displaced -- so
+this is the same question as the resize case one level down: whether a blank
+row displaced by the screen's own layout is worth keeping, and whether the
+rows leaving the view are the ones that should be kept.
+
+For a host that hands the history to a reader, the visible symptom is a run of
+blank lines before the output, exactly as in the resize case.
 
 ## Observed behavior
 
@@ -159,6 +212,10 @@ Correctness and resource use, both reachable from the public API:
   are appended newest.
 - A caller that re-lays out its child on every layout change -- the ordinary
   thing to do on `SIGWINCH` -- pays this on every step of a drag-resize.
+- The erase case costs a blank run per clear-and-draw. A full-screen program
+  that clears before drawing (the common way to redraw a TUI) appends its own
+  blanked screen every time it redraws, so its history fills with the blanks
+  between its frames.
 
 ## Notes
 
@@ -180,3 +237,10 @@ Correctness and resource use, both reachable from the public API:
 - `Event::ScrollbackLineAppended` is marked inside the same loop, so a caller
   trimming on that event (the documented pattern) is handed a trim per shrink,
   not per append of real output.
+- The clear case ("Second entry point") reaches the append by a different
+  route -- `scroll_up_screen` rather than `resize` -- and so does not depend on
+  `Screen::resize`'s `row_shift` accounting. A fix for the resize case alone
+  (deciding there what may be appended) leaves the clear case appending blanks
+  through the ordinary scroll path. If the two are to be fixed by one rule,
+  the rule belongs where both meet the scrollback -- at the append itself,
+  deciding whether a blank row is worth keeping -- rather than in `resize`.
