@@ -610,13 +610,18 @@ impl TerminalState {
     /// clear the scrollback via [`TerminalState::trim_scrollback()`] when a
     /// change of size makes mixed widths a problem.
     ///
-    /// A vertical shrink keeps the newest rows visible and appends the rows it
-    /// pushes off the top to the scrollback, at the pre-shrink width and in
-    /// top-to-bottom order, the same end and order a full-screen scroll uses.
-    /// No visible row a caller could read before the resize is dropped, so
-    /// stitching the scrollback then the visible rows still reads the text in
-    /// the order it appeared. The alternate screen has no scrollback, so its
-    /// displaced rows are discarded; a vertical grow displaces no row.
+    /// A vertical shrink keeps the newest content rows visible and appends the
+    /// content rows it pushes off the top to the scrollback, at the pre-shrink
+    /// width and in top-to-bottom order, the same end and order a full-screen
+    /// scroll uses. A blank row is not content: the trailing blank rows of the
+    /// old grid are dropped, and only rows that draw something are kept or
+    /// appended. So on a grid that is full the shrink behaves as it always has,
+    /// while a grid with blank rows below its content keeps that content
+    /// visible instead of the blanks and appends nothing. No visible row a
+    /// caller could read before the resize is lost, so stitching the scrollback
+    /// then the visible rows still reads the text in the order it appeared. The
+    /// alternate screen has no scrollback, so its displaced rows are discarded;
+    /// a vertical grow displaces no row.
     ///
     /// This method only re-lays out the emulator: it touches no file
     /// descriptor, sets no kernel winsize, and sends no signal. It knows
@@ -630,23 +635,25 @@ impl TerminalState {
             return;
         }
         let dropped = self.primary.resize(size);
-        // Both screens are kept at the same size, so they shift by the same
-        // amount; the primary's shift is the cursor's.
-        let _ = self.alternate.resize(size);
+        let alt_dropped = self.alternate.resize(size);
         if !self.on_alternate {
-            for row in dropped.rows {
-                let line = ScrollbackLine::new(row);
-                self.scrollback_cells = self.scrollback_cells.saturating_add(line.len());
-                self.scrollback.push_back(line);
-                self.events.mark_scrollback_line_added();
-            }
+            self.push_displaced_to_scrollback(dropped.rows);
         }
         self.size = size;
         self.scroll_top = 0;
         self.scroll_bottom = size.rows.get().saturating_sub(1);
+        // The cursor draws on the active screen, so it moves with that screen's
+        // shift. The two screens' content can differ, and with it how far each
+        // shifts, so the active screen's shift -- not the primary's -- is the
+        // cursor's.
+        let row_shift = if self.on_alternate {
+            alt_dropped.row_shift
+        } else {
+            dropped.row_shift
+        };
         // The surviving rows moved up by `row_shift`, so the cursor has to move
         // with them before the clamp trims it to the new bounds.
-        self.cursor.row = self.cursor.row.saturating_sub(dropped.row_shift);
+        self.cursor.row = self.cursor.row.saturating_sub(row_shift);
         self.cursor.row = self.cursor.row.min(size.rows.get() - 1);
         self.cursor.col = self.cursor.col.min(size.cols.get() - 1);
         self.wrap_pending = false;
@@ -678,8 +685,11 @@ impl TerminalState {
     ///
     /// A full-screen scroll on the primary screen pushes the displaced rows
     /// into scrollback (top-to-bottom); partial regions, scroll-downs, line
-    /// edits, and the alternate screen never do. History grows without a
-    /// built-in bound; the caller trims it with [`Self::trim_scrollback()`].
+    /// edits, and the alternate screen never do. A row whose every cell is
+    /// blank is not pushed -- the blanks a clear leaves behind are not content
+    /// -- so a scroll over a just-erased screen adds nothing. History grows
+    /// without a built-in bound; the caller trims it with
+    /// [`Self::trim_scrollback()`].
     pub(crate) fn scroll_up_screen(&mut self, count: u16) {
         let top = self.scroll_top;
         let bottom = self.scroll_bottom;
@@ -687,12 +697,27 @@ impl TerminalState {
         let style = self.pen;
         let displaced = self.active_mut().scroll_up(count, top, bottom, style);
         if full_screen && !self.on_alternate {
-            for row in displaced {
-                let line = ScrollbackLine::new(row);
-                self.scrollback_cells = self.scrollback_cells.saturating_add(line.len());
-                self.scrollback.push_back(line);
-                self.events.mark_scrollback_line_added();
+            self.push_displaced_to_scrollback(displaced);
+        }
+    }
+
+    /// Appends the rows a scroll or a resize displaced to the retained history.
+    ///
+    /// A row whose every cell is a blank glyph carries no content -- it is what
+    /// a clear, a scroll, or a shrink leaves behind -- so it is not appended.
+    /// This is the one place both the scroll path ([`Self::scroll_up_screen`])
+    /// and the shrink path ([`Self::resize`]) meet the scrollback, so the rule
+    /// that decides what is worth keeping lives here rather than in either
+    /// caller. Rows with content are appended oldest-first, as before.
+    fn push_displaced_to_scrollback(&mut self, rows: Vec<Vec<Cell>>) {
+        for row in rows {
+            if row.iter().all(Cell::is_blank_glyph) {
+                continue;
             }
+            let line = ScrollbackLine::new(row);
+            self.scrollback_cells = self.scrollback_cells.saturating_add(line.len());
+            self.scrollback.push_back(line);
+            self.events.mark_scrollback_line_added();
         }
     }
 

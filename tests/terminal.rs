@@ -1181,11 +1181,27 @@ fn resize_moves_the_cursor_up_with_the_rows_it_keeps() {
     let mut t = term(24, 80);
     t.feed(b"\x1b[6;1H");
     t.feed(b"here");
+    // A content row at the bottom keeps the grid's content reaching its last
+    // row, so the shrink is a real one and the surviving rows move up by two.
+    t.feed(b"\x1b[24;1H");
+    t.feed(b"bottom");
+    t.feed(b"\x1b[6;5H"); // cursor back on the "here" row
     t.resize(size(22, 80));
-    // The surviving rows move up by two, so the text the child wrote is now on
-    // row 3, and the cursor has to move with it.
+    // The "here" row moves up with the surviving rows, and the cursor follows.
     assert_eq!(text_at(&t, 3), "here");
     assert_eq!(t.cursor(), at(3, 4));
+}
+
+#[test]
+fn resize_keeps_content_and_cursor_in_place_when_only_blanks_fall_off() {
+    let mut t = term(24, 80);
+    t.feed(b"\x1b[6;1H");
+    t.feed(b"here");
+    t.resize(size(22, 80));
+    // The only content is on row 5 and the rows below it are blank, so those
+    // blanks fall off and the row the child wrote does not move.
+    assert_eq!(text_at(&t, 5), "here");
+    assert_eq!(t.cursor(), at(5, 4));
 }
 
 #[test]
@@ -1194,6 +1210,9 @@ fn resize_moves_the_cursor_on_the_alternate_screen_too() {
     t.feed(b"\x1b[?1049h");
     t.feed(b"\x1b[6;1H");
     t.feed(b"here");
+    t.feed(b"\x1b[24;1H");
+    t.feed(b"bottom");
+    t.feed(b"\x1b[6;5H");
     t.resize(size(22, 80));
     assert!(t.is_on_alternate_screen());
     assert_eq!(text_at(&t, 3), "here");
@@ -1216,6 +1235,11 @@ fn resize_shrink_past_the_cursor_clamps_it_to_the_new_top() {
     let mut t = term(24, 80);
     t.feed(b"\x1b[2;1H");
     t.feed(b"here");
+    // Content at the bottom makes the grid full of content, so the shrink
+    // moves the surviving rows up by two.
+    t.feed(b"\x1b[24;1H");
+    t.feed(b"bottom");
+    t.feed(b"\x1b[2;5H"); // cursor back on the "here" row
     t.resize(size(22, 80));
     // The cursor's row (1) moves up by two past the new top and clamps to 0.
     assert_eq!(t.cursor(), at(0, 4));

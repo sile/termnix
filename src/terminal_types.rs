@@ -238,6 +238,15 @@ impl Cell {
             style,
         }
     }
+
+    /// Returns whether this cell draws nothing: a space, whatever its style.
+    ///
+    /// Style is ignored, so a cell the pen painted with a background but no
+    /// glyph still counts as empty. A row of these is what a clear, a scroll,
+    /// or a shrink leaves behind, and it is not content worth keeping.
+    pub(crate) fn is_blank_glyph(&self) -> bool {
+        self.ch == ' '
+    }
 }
 
 /// Mouse reporting mode retained for input encoding and snapshots.
