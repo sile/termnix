@@ -7,8 +7,11 @@ use crate::terminal_types::{Cell, Position, Style};
 /// full left-to-right row of cells at the pre-shrink width in top-to-bottom
 /// order, plus how far every surviving row moved up.
 ///
-/// The shift is zero on a grow, so a caller that owns a cursor can subtract it
-/// unconditionally and then clamp.
+/// Only rows that carry content are returned; the blank rows a shrink drops
+/// from the bottom of the old grid are not. The shift is measured against the
+/// old grid up to its last non-blank row, so it is zero on a grow and on a
+/// shrink that has nothing above the surviving content to push off. A caller
+/// that owns a cursor can subtract it unconditionally and then clamp.
 pub(crate) struct Displaced {
     pub(crate) rows: Vec<Vec<Cell>>,
     pub(crate) row_shift: u16,
@@ -75,14 +78,21 @@ impl Screen {
     /// Resizes the cell buffer, copying the overlapping region and clearing a
     /// broken wide character at the new right edge.
     ///
-    /// A vertical shrink keeps the rows at the new bottom edge and returns the
-    /// rows it pushes off the top in top-to-bottom order, each as a full
-    /// left-to-right row of cells at the pre-shrink width, along with the
+    /// A vertical shrink keeps the newest *content* rows visible and returns
+    /// the content rows it pushes off the top in top-to-bottom order, each as a
+    /// full left-to-right row of cells at the pre-shrink width, along with the
     /// distance every surviving row moved up ([`Displaced::row_shift`], zero on
-    /// a grow). Keeping the newest rows visible and handing the oldest to the
-    /// caller matches a full-screen scroll, so the caller can append them to
-    /// the same history, and the shift lets a caller that owns a cursor move it
-    /// by the same amount. A no-op resize returns no rows and a zero shift.
+    /// a grow). Keeping the newest content visible and handing the oldest to
+    /// the caller matches a full-screen scroll, so the caller can append them
+    /// to the same history, and the shift lets a caller that owns a cursor move
+    /// it by the same amount. A no-op resize returns no rows and a zero shift.
+    ///
+    /// A blank row is not content, so it is neither kept nor handed back: on a
+    /// shrink the trailing blank rows of the old grid are dropped, and the rows
+    /// that leave are counted against the grid up to its last non-blank row,
+    /// not its full height. A grid that is full behaves exactly as before; a
+    /// grid with blank rows below its content shrinks to show that content
+    /// rather than the blanks, and pushes nothing to the caller.
     pub(crate) fn resize(&mut self, size: Size) -> Displaced {
         if size == self.size {
             return Displaced {
@@ -92,12 +102,20 @@ impl Screen {
         }
         let old_rows = self.size.rows.get() as usize;
         let old_cols = self.size.cols.get() as usize;
-        let copy_rows = self.size.rows.get().min(size.rows.get()) as usize;
         let copy_cols = self.size.cols.get().min(size.cols.get()) as usize;
+        // The rows a shrink has to place: the old grid up to its last non-blank
+        // row. Trailing blank rows carry nothing, so they are dropped rather
+        // than counted, and a grid with none of them shrinks as it always has.
+        let effective_rows = if size.rows.get() as usize >= old_rows {
+            old_rows
+        } else {
+            self.last_content_row().map_or(0, |row| row + 1)
+        };
+        let copy_rows = effective_rows.min(size.rows.get() as usize);
         // The rows that do not fit at the new height leave at the top, so the
-        // newest rows stay visible. `row_shift` is how far each surviving row
-        // moves up (zero on a grow).
-        let row_shift = old_rows - copy_rows;
+        // newest content rows stay visible. `row_shift` is how far each
+        // surviving row moves up (zero on a grow).
+        let row_shift = effective_rows - copy_rows;
         let mut dropped = Vec::new();
         for row in 0..row_shift {
             let start = row * old_cols;
@@ -126,6 +144,22 @@ impl Screen {
             rows: dropped,
             row_shift: row_shift as u16,
         }
+    }
+
+    /// Returns the index of the last row that draws anything, if any.
+    ///
+    /// A row draws nothing when every cell in it is a blank glyph, whatever
+    /// style the pen gave those cells; such a row is not content.
+    fn last_content_row(&self) -> Option<usize> {
+        let cols = self.size.cols.get() as usize;
+        if cols == 0 {
+            return None;
+        }
+        (0..self.size.rows.get() as usize).rev().find(|row| {
+            !self.cells[row * cols..row * cols + cols]
+                .iter()
+                .all(Cell::is_blank_glyph)
+        })
     }
 
     pub(crate) fn clear_cell(&mut self, row: u16, col: u16) {

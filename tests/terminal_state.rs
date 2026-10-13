@@ -102,7 +102,11 @@ fn ref_lf(t: &mut RefTerm) {
 fn ref_scroll(t: &mut RefTerm) {
     t.scrolls += 1;
     let line = t.grid.remove(0);
-    t.scrollback.push(line);
+    // A blank row is not content, so it is not retained, matching the runtime
+    // rule that a scroll over a just-erased screen adds nothing.
+    if line.iter().any(|cell| cell.ch != ' ') {
+        t.scrollback.push(line);
+    }
     t.grid.push(vec![RefCell { ch: ' ', width: 1 }; t.cols]);
 }
 
@@ -726,6 +730,71 @@ fn resize_grow_and_no_op_leave_history_alone() {
     t.resize(size(2, 4)); // no-op
     t.resize(size(4, 6)); // grow
     assert!(t.scrollback_lines().is_empty());
+}
+
+#[test]
+fn resize_shrink_with_blank_rows_keeps_content_and_adds_no_history() {
+    // The rows below the two written lines are blank, and on a shrink they are
+    // the rows past the new bottom edge. They must not be kept (they carry
+    // nothing) and must not be appended; the content stays on screen.
+    let mut t = term(42, 80);
+    t.feed(b"line one\r\nline two\r\n");
+
+    t.resize(size(2, 80));
+
+    assert!(t.scrollback_lines().is_empty());
+    assert_eq!(text_at(&t, 0), "line one");
+    assert_eq!(text_at(&t, 1), "line two");
+}
+
+#[test]
+fn resize_shrink_and_grow_cycle_does_not_grow_history() {
+    // A caller that re-lays out on a timer shrinks and grows repeatedly. No text
+    // ever scrolls off, so the history must be as it was at the start each time.
+    let mut t = term(42, 80);
+    t.feed(b"only text\r\n");
+    for _ in 0..4 {
+        t.feed(b"prompt> ");
+        t.resize(size(2, 80));
+        t.resize(size(42, 80));
+        assert!(
+            t.scrollback_lines().is_empty(),
+            "a shrink-and-grow cycle filed blank rows as history"
+        );
+    }
+}
+
+#[test]
+fn resize_shrink_pushes_only_the_content_above_the_kept_rows() {
+    // Content on the top row and on the last row, with blanks between. The last
+    // row is content, so the shrink is measured against the whole grid: the top
+    // row is pushed off and kept, the blank rows it passes are dropped.
+    let mut t = term(4, 4);
+    t.feed(b"top\r\n");
+    t.feed(b"\x1b[4;1Hbot");
+
+    t.resize(size(2, 4));
+
+    let history: Vec<String> = t.scrollback_lines().iter().map(line_text).collect();
+    assert_eq!(history, ["top"]);
+    assert_eq!(text_at(&t, 0), "");
+    assert_eq!(text_at(&t, 1), "bot");
+}
+
+#[test]
+fn scroll_over_an_erased_screen_does_not_add_blank_rows() {
+    // A program that clears before drawing scrolls the blanked screen off the
+    // top as it redraws. Those blanks are not output and must not be kept.
+    let mut t = term(24, 80);
+    t.feed(b"first\r\nsecond\r\n");
+    t.feed(b"\x1b[2J");
+    t.feed(b"first\r\nsecond\r\n");
+    for _ in 0..30 {
+        t.feed(b"\r\n");
+    }
+
+    let history: Vec<String> = t.scrollback_lines().iter().map(line_text).collect();
+    assert_eq!(history, ["first", "second"]);
 }
 
 #[test]
