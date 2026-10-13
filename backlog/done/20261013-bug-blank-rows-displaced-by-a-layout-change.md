@@ -1,6 +1,6 @@
 # Bug: Blank rows displaced by a layout change go into the scrollback
 
-- Status: open
+- Status: fixed
 
 ## Summary
 
@@ -244,3 +244,41 @@ Correctness and resource use, both reachable from the public API:
   through the ordinary scroll path. If the two are to be fixed by one rule,
   the rule belongs where both meet the scrollback -- at the append itself,
   deciding whether a blank row is worth keeping -- rather than in `resize`.
+
+## Outcome
+
+Fixed in [#30](https://github.com/sile/termnix/pull/30) (merged as `9bddb09`).
+
+The append is now decided at one place. `push_displaced_to_scrollback` in
+`src/terminal.rs` skips a displaced row when every cell in it is a blank
+glyph, and both callers -- `resize` and `scroll_up_screen` -- go through it,
+so the erase-then-scroll entry point is covered by the same rule as the
+shrink.
+
+`Screen::resize` no longer displaces the top rows of the old grid on a
+shrink. It measures the effective grid -- the rows up to the last one holding
+a non-blank glyph -- and keeps the bottom of that, so a shrink of a
+mostly-blank screen leaves the text visible instead of moving it into
+history. The rows that do not fit in the new height are handed back as
+displaced, still top-to-bottom and at the pre-shrink width, but they are now
+the rows below the kept content rather than the ones above it. A grow is
+unchanged.
+
+`TerminalState::resize` uses the active screen's `row_shift` for the cursor,
+because the two screens can shift by different amounts once the shift follows
+the content rather than the height alone.
+
+Blankness is glyph-only: a row counts as blank when every cell is the space
+glyph, whatever its style. Testing the glyphs keeps a run of styled blanks --
+background colour set, no text -- out of the scrollback, which is the case the
+report is about.
+
+The cursor tests from #29 were rewritten to put content at the bottom of the
+grid so that a real shift still occurs, and the reference model in
+`tests/terminal_state.rs` now skips blank rows in `ref_scroll` while still
+counting every scroll. Regression tests cover the shrink leaving content
+visible with no history, a shrink-and-grow cycle leaving the history
+unchanged, a scroll over an erased screen adding no blanks, and a shrink
+pushing only the content above the kept rows.
+
+The scope is unchanged from what is described above.
